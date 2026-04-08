@@ -1,0 +1,29 @@
+agents:
+  hermes:
+    services: [openai, anthropic, minimax, github]
+    raw_secret_access: false
+    ephemeral_env_only: true
+    require_verification_before_reauth: true
+    max_ttl_seconds: 1800
+
+  dwight:
+    services: [github, openai]
+    raw_secret_access: false
+    ephemeral_env_only: true
+    require_verification_before_reauth: true
+    max_ttl_seconds: 900
+
+  pam:
+    services: [gmail, google_docs]
+    raw_secret_access: false
+    ephemeral_env_only: true
+    require_verification_before_reauth: true
+    max_ttl_seconds: 900
+
+managed_paths:
+  - "~/.hermes"
+  - "~/.config/hermes"
+
+plaintext_migration_paths: []
+plaintext_exempt_paths: []
+deny_plaintext_under_managed_paths: true

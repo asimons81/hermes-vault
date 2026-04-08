@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from hermes_vault.audit import AuditLogger
+from hermes_vault.broker import Broker
+from hermes_vault.models import AgentPolicy, PolicyConfig, VerificationCategory, VerificationResult
+from hermes_vault.policy import PolicyEngine
+from hermes_vault.vault import Vault
+
+
+class StubVerifier:
+    def verify(self, service: str, secret: str) -> VerificationResult:
+        return VerificationResult(
+            service=service,
+            category=VerificationCategory.valid,
+            success=True,
+            reason="ok",
+        )
+
+
+def test_broker_enforces_policy_and_returns_env(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-secret-1234567890", "api_key")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "dwight": AgentPolicy(
+                    services=["openai"],
+                    raw_secret_access=False,
+                    ephemeral_env_only=True,
+                    max_ttl_seconds=600,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    decision = broker.get_ephemeral_env("openai", "dwight", ttl=900)
+
+    assert decision.allowed is True
+    assert decision.ttl_seconds == 600
+    assert decision.env["OPENAI_API_KEY"] == "sk-secret-1234567890"
+
+
+def test_broker_denies_raw_secret_when_env_only(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-secret-1234567890", "api_key")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "dwight": AgentPolicy(
+                    services=["openai"],
+                    raw_secret_access=False,
+                    ephemeral_env_only=True,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    decision = broker.get_credential("openai", "test", "dwight")
+
+    assert decision.allowed is False
+    assert "ephemeral environment" in decision.reason
+
+
+def test_broker_does_not_expose_raw_secret_in_metadata_when_allowed(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-secret-1234567890", "api_key")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "hermes": AgentPolicy(
+                    services=["openai"],
+                    raw_secret_access=True,
+                    ephemeral_env_only=False,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    decision = broker.get_credential("openai", "test", "hermes")
+
+    assert decision.allowed is True
+    assert "secret" not in decision.metadata
+    assert decision.metadata["credential_id"]
