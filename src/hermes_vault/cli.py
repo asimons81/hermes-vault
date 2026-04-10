@@ -241,5 +241,39 @@ def generate_skill(
     console.print_json(data=json.dumps([str(path) for path in paths]))
 
 
+@app.command("backup")
+def backup_vault(output: Path = typer.Option(..., "--output", help="Output path for the backup file")) -> None:
+    """Export an encrypted backup of all vault credentials to a JSON file."""
+    vault, _, _ = build_services(prompt=True)
+    backup = vault.export_backup()
+    content = json.dumps(backup, indent=2, sort_keys=True)
+    output.write_text(content, encoding="utf-8")
+    output.chmod(0o600)
+    console.print(f"[green]Backup written to {output}[/green]")
+    console.print(f"  {len(backup['credentials'])} credential(s) exported")
+
+
+@app.command("restore")
+def restore_vault(
+    input: Path = typer.Option(..., "--input", help="Path to a vault backup file"),
+    yes: bool = typer.Option(False, "--yes", help="Confirm restoration"),
+) -> None:
+    """Restore vault credentials from a backup file."""
+    if not yes:
+        console.print("[red]Restoration requires --yes flag.[/red]")
+        raise typer.Exit(code=1)
+    vault, _, _ = build_services(prompt=True)
+    try:
+        backup = json.loads(input.read_text(encoding="utf-8"))
+    except Exception as exc:
+        console.print(f"[red]Failed to read backup file: {exc}[/red]")
+        raise typer.Exit(code=1)
+    if backup.get("version") != "hvbackup-v1":
+        console.print(f"[red]Unsupported backup version: {backup.get('version')}[/red]")
+        raise typer.Exit(code=1)
+    imported = vault.import_backup(backup)
+    console.print(f"[green]Restored {len(imported)} credential(s) from {input}[/green]")
+
+
 if __name__ == "__main__":
     app()

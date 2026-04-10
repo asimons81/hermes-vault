@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 from hermes_vault.crypto import (
@@ -259,3 +260,115 @@ class Vault:
                 (service, alias),
             ).fetchone()
         return self._row_to_record(row) if row else None
+
+    def export_backup(self) -> dict:
+        """Export all credentials as a portable backup dict (encrypted payloads preserved)."""
+        records = self.list_credentials()
+        backup_creds = []
+        for rec in records:
+            backup_creds.append({
+                "service": rec.service,
+                "alias": rec.alias,
+                "credential_type": rec.credential_type,
+                "encrypted_payload": rec.encrypted_payload,
+                "status": rec.status.value,
+                "scopes": rec.scopes,
+                "imported_from": rec.imported_from,
+                "expiry": rec.expiry.isoformat() if rec.expiry else None,
+                "crypto_version": rec.crypto_version,
+                "created_at": rec.created_at.isoformat(),
+                "updated_at": rec.updated_at.isoformat(),
+                "last_verified_at": rec.last_verified_at.isoformat() if rec.last_verified_at else None,
+            })
+        return {
+            "version": "hvbackup-v1",
+            "exported_at": utc_now().isoformat(),
+            "credentials": backup_creds,
+        }
+
+    def import_backup(self, backup: dict, replace: bool = True) -> list[CredentialRecord]:
+        """Import credentials from a backup dict. Existing records are replaced by default."""
+        if backup.get("version") != "hvbackup-v1":
+            raise ValueError(f"Unsupported backup version: {backup.get('version')}")
+        imported = []
+        for cred_data in backup.get("credentials", []):
+            existing = self._find_by_service_alias(cred_data["service"], cred_data["alias"])
+            if existing and not replace:
+                continue
+            # Parse ISO strings back to datetimes
+            last_verified_at = None
+            if cred_data.get("last_verified_at"):
+                last_verified_at = datetime.fromisoformat(cred_data["last_verified_at"])
+            expiry = None
+            if cred_data.get("expiry"):
+                expiry = datetime.fromisoformat(cred_data["expiry"])
+            record = CredentialRecord(
+                service=cred_data["service"],
+                alias=cred_data["alias"],
+                credential_type=cred_data["credential_type"],
+                encrypted_payload=cred_data["encrypted_payload"],
+                status=CredentialStatus(cred_data.get("status", "unknown")),
+                scopes=cred_data.get("scopes", []),
+                imported_from=cred_data.get("imported_from"),
+                expiry=expiry,
+                last_verified_at=last_verified_at,
+                crypto_version=cred_data.get("crypto_version", "aesgcm-v1"),
+            )
+            if existing:
+                record = existing.model_copy(update={
+                    "credential_type": cred_data["credential_type"],
+                    "encrypted_payload": cred_data["encrypted_payload"],
+                    "status": CredentialStatus(cred_data.get("status", "unknown")),
+                    "scopes": cred_data.get("scopes", []),
+                    "imported_from": cred_data.get("imported_from"),
+                    "last_verified_at": last_verified_at,
+                    "updated_at": utc_now(),
+                })
+            with sqlite3.connect(self.db_path) as conn:
+                if existing:
+                    conn.execute(
+                        """
+                        UPDATE credentials
+                        SET credential_type=?, encrypted_payload=?, status=?, scopes=?,
+                            updated_at=?, last_verified_at=?, imported_from=?, expiry=?
+                        WHERE id=?
+                        """,
+                        (
+                            record.credential_type,
+                            record.encrypted_payload,
+                            record.status.value,
+                            json.dumps(record.scopes),
+                            record.updated_at.isoformat(),
+                            record.last_verified_at.isoformat() if record.last_verified_at else None,
+                            record.imported_from,
+                            record.expiry.isoformat() if record.expiry else None,
+                            record.id,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO credentials (
+                            id, service, alias, credential_type, encrypted_payload, status, scopes,
+                            created_at, updated_at, last_verified_at, imported_from, expiry, crypto_version
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            record.id,
+                            record.service,
+                            record.alias,
+                            record.credential_type,
+                            record.encrypted_payload,
+                            record.status.value,
+                            json.dumps(record.scopes),
+                            record.created_at.isoformat(),
+                            record.updated_at.isoformat(),
+                            record.last_verified_at.isoformat() if record.last_verified_at else None,
+                            record.imported_from,
+                            record.expiry.isoformat() if record.expiry else None,
+                            record.crypto_version,
+                        ),
+                    )
+                conn.commit()
+            imported.append(record)
+        return imported
