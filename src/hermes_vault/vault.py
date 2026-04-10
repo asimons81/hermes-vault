@@ -4,6 +4,7 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from hermes_vault.crypto import (
     CRYPTO_VERSION,
@@ -267,6 +268,7 @@ class Vault:
         backup_creds = []
         for rec in records:
             backup_creds.append({
+                "id": rec.id,
                 "service": rec.service,
                 "alias": rec.alias,
                 "credential_type": rec.credential_type,
@@ -303,6 +305,7 @@ class Vault:
             if cred_data.get("expiry"):
                 expiry = datetime.fromisoformat(cred_data["expiry"])
             record = CredentialRecord(
+                id=cred_data.get("id") or str(uuid4()),  # validate or regenerate id
                 service=cred_data["service"],
                 alias=cred_data["alias"],
                 credential_type=cred_data["credential_type"],
@@ -312,6 +315,8 @@ class Vault:
                 imported_from=cred_data.get("imported_from"),
                 expiry=expiry,
                 last_verified_at=last_verified_at,
+                created_at=utc_now(),  # restore is a new creation event
+                updated_at=utc_now(),
                 crypto_version=cred_data.get("crypto_version", "aesgcm-v1"),
             )
             if existing:
