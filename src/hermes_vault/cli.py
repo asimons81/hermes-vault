@@ -67,17 +67,22 @@ def scan(path: list[Path] = typer.Option(None, "--path"), format: str = typer.Op
 def import_credentials(
     from_env: Path | None = typer.Option(None, "--from-env"),
     from_file: Path | None = typer.Option(None, "--from-file"),
+    redact_source: bool = typer.Option(False, "--redact-source", help="Comment out imported lines in the source file after successful import."),
 ) -> None:
     if not from_env and not from_file:
         raise typer.BadParameter("Provide --from-env or --from-file")
     vault, _, _ = build_services(prompt=True)
-    imported = []
+    imported_names: list[str] = []
     source = from_env or from_file
     assert source is not None
-    content = source.read_text(encoding="utf-8", errors="ignore")
+    original_content = source.read_text(encoding="utf-8", errors="ignore")
+    lines = original_content.splitlines()
+    imported_lines: set[int] = set()
+
     if from_env:
-        for line in content.splitlines():
-            if "=" not in line or line.strip().startswith("#"):
+        for i, line in enumerate(lines):
+            stripped = line.lstrip()
+            if not stripped or stripped.startswith("#") or "=" not in line:
                 continue
             name, value = line.split("=", 1)
             guessed = guess_from_env_name(name.strip())
@@ -85,19 +90,19 @@ def import_credentials(
                 continue
             service, credential_type = guessed
             try:
-                imported.append(
-                    vault.add_credential(
-                        service=service,
-                        secret=value.strip().strip("'\""),
-                        credential_type=credential_type,
-                        alias=name.strip().lower(),
-                        imported_from=str(source),
-                    )
+                vault.add_credential(
+                    service=service,
+                    secret=value.strip().strip("'\""),
+                    credential_type=credential_type,
+                    alias=name.strip().lower(),
+                    imported_from=str(source),
                 )
+                imported_names.append(name.strip())
+                imported_lines.add(i)
             except DuplicateCredentialError as exc:
                 raise typer.BadParameter(str(exc)) from exc
     else:
-        parsed = json.loads(content)
+        parsed = json.loads(original_content)
         for key, value in parsed.items():
             if not isinstance(value, str):
                 continue
@@ -106,18 +111,32 @@ def import_credentials(
                 continue
             detector, secret = matches[0]
             try:
-                imported.append(
-                    vault.add_credential(
-                        service=detector.service,
-                        secret=secret,
-                        credential_type=detector.credential_type,
-                        alias=key.lower(),
-                        imported_from=str(source),
-                    )
+                vault.add_credential(
+                    service=detector.service,
+                    secret=secret,
+                    credential_type=detector.credential_type,
+                    alias=key.lower(),
+                    imported_from=str(source),
                 )
+                imported_names.append(key)
             except DuplicateCredentialError as exc:
                 raise typer.BadParameter(str(exc)) from exc
-    console.print(f"Imported {len(imported)} credential(s). Review plaintext source removal separately.")
+
+    console.print(f"Imported {len(imported_names)} credential(s).")
+    if redact_source and imported_lines and from_env:
+        redacted_lines = []
+        for i, line in enumerate(lines):
+            if i in imported_lines:
+                redacted_lines.append(f"# REDACTED by hermes-vault import: {line}")
+            else:
+                redacted_lines.append(line)
+        source.write_text("\n".join(redacted_lines) + "\n", encoding="utf-8")
+        source.chmod(0o600)
+        console.print(f"[green]Source file redacted: {source}[/green] ({len(imported_lines)} line(s) commented out)")
+    elif redact_source and from_file:
+        console.print("[yellow]--redact-source only applies to --from-env files.[/yellow]")
+    else:
+        console.print("Review plaintext source removal separately.")
 
 
 @app.command()
