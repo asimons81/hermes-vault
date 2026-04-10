@@ -75,6 +75,17 @@ class Verifier:
             },
         ))
 
+    def _verify_supabase(self, secret: str) -> VerificationResult:
+        # Supabase personal access tokens can be verified against the management API
+        return self._http_verify(ProviderVerifierConfig(
+            service="supabase",
+            url="https://api.supabase.com/v1/projects",
+            headers={
+                "Authorization": f"Bearer {secret}",
+                "Accept": "application/json",
+            },
+        ))
+
     def _http_verify(self, config: ProviderVerifierConfig) -> VerificationResult:
         parsed = urlparse(config.url)
         if parsed.scheme not in {"https", "http"} or not parsed.netloc:

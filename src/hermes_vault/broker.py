@@ -15,6 +15,7 @@ SERVICE_ENV_MAP = {
     "github": {"GITHUB_TOKEN": "{secret}", "GH_TOKEN": "{secret}"},
     "google": {"GOOGLE_OAUTH_ACCESS_TOKEN": "{secret}"},
     "minimax": {"MINIMAX_API_KEY": "{secret}"},
+    "supabase": {"SUPABASE_ACCESS_TOKEN": "{secret}"},
 }
 
 
