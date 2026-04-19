@@ -14,3 +14,5 @@ htmlcov/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+.caliber/
+typescript

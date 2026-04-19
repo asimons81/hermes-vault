@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 authors = [
   { name = "Tony Simons" }
 ]
-license = { text = "MIT" }
+license = "MIT"
 dependencies = [
   "cryptography>=42.0.0",
   "pydantic>=2.7.0",
@@ -38,4 +38,3 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
