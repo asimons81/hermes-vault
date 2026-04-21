@@ -18,6 +18,8 @@ Hermes Vault is a local-first Python project that centralizes credential scannin
 - Stores encrypted credential payloads in SQLite
 - Keeps metadata separate from raw secret material
 - Supports add, list, show metadata, rotate, delete, and import workflows
+- Deterministic credential targeting: UUID, service+alias, or service-only (when unambiguous)
+- Raises `AmbiguousTargetError` when service-only matches multiple credentials
 
 ### `mutations.py`
 
@@ -37,6 +39,10 @@ Hermes Vault is a local-first Python project that centralizes credential scannin
 
 - Loads deny-by-default YAML policy
 - Enforces service allowlists, raw secret access settings, env-only access, and TTL ceilings
+- Policy v2: per-service action permissions (get_credential, get_env, verify, metadata, add_credential, rotate, delete)
+- Agent-level capabilities for non-service-scoped actions (list_credentials, scan_secrets, export_backup, import_credentials)
+- Backward compatible with legacy flat-list service format
+- Normalizes all service names to canonical IDs on load
 
 ### `broker.py`
 

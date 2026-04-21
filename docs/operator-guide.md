@@ -108,7 +108,7 @@ Custom service names (anything not in the table above) are preserved as-is.  Use
 
 ### "MiniMax verification endpoint is not configured"
 
-- Set `HERMES_VAULT_MINIMAX_VERIFY_URL` before running `hermes-vault verify --service minimax`
+- Set `HERMES_VAULT_MINIMAX_VERIFY_URL` before running `hermes-vault verify minimax`
 - Point it at an operator-validated authenticated GET endpoint that returns `200` for valid credentials and `401` or `403` for invalid ones
 - If you are testing an OpenAI-compatible MiniMax deployment, `/v1/models` is a candidate endpoint to validate, not an assumed contract
 
@@ -116,6 +116,34 @@ Custom service names (anything not in the table above) are preserved as-is.  Use
 
 - Read the exact denial reason
 - Update policy only if the service should genuinely be available to that agent
+- If the denial says "not permitted on service", the agent's policy v2 entry is missing that action
+- If the denial says "capability not granted", the agent needs the capability in its policy
+
+### "Ambiguous: Service has N credentials"
+
+- The service has multiple credentials under different aliases
+- Use `--alias` to target the specific one: `hermes-vault rotate github --alias work`
+- Or use the credential ID from `hermes-vault list`
+- This error prevents accidentally operating on the wrong credential
+
+### "Not found: credential"
+
+- The credential does not exist in the vault
+- Check `hermes-vault list` to see what's actually stored
+- Import or add the credential first
+- Make sure you're using the correct canonical service name (e.g. `openai` not `open_ai`)
+
+### "Denied: capability not granted"
+
+- The agent's policy has an explicit `capabilities` list that does not include this action
+- Add the capability to the agent's policy, or remove the `capabilities` field to grant all (backward compatible)
+- Capabilities: `list_credentials`, `scan_secrets`, `export_backup`, `import_credentials`, `add_credential`
+
+### "Denied: action not permitted on service"
+
+- The agent's policy v2 entry for this service does not include the requested action
+- Add the action to the service's `actions` list in the agent's policy
+- Or switch the agent to legacy format (flat service list) to allow all actions
 
 ## Safe Operating Defaults
 

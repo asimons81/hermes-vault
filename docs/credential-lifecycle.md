@@ -19,8 +19,10 @@
 ## 3. Brokered Use
 
 - Hermes or a sub-agent requests access through the broker
-- Policy determines whether access is allowed
+- Policy v2 determines whether access is allowed based on per-service action permissions
+- Agent-level capabilities gate non-service-scoped actions (list, scan, export, import)
 - Broker prefers ephemeral environment materialization for downstream task execution
+- All broker decisions are recorded in the audit log
 
 ## 4. Verification
 
