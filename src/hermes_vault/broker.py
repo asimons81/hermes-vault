@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from hermes_vault.audit import AuditLogger
 from hermes_vault.models import AgentCapability, AccessLogRecord, BrokerDecision, CredentialStatus, Decision
@@ -17,11 +18,13 @@ class Broker:
         policy: PolicyEngine,
         verifier: Verifier,
         audit: AuditLogger,
+        scanner: Any = None,
     ) -> None:
         self.vault = vault
         self.policy = policy
         self.verifier = verifier
         self.audit = audit
+        self.scanner = scanner
 
     def get_credential(self, service: str, purpose: str, agent_id: str) -> BrokerDecision:
         service = normalize(service)
@@ -143,8 +146,86 @@ class Broker:
                 decision=Decision.allow,
                 reason="returned policy-filtered credential metadata",
             )
-        )
+        )  # audit allow
         return visible
+
+    def scan_secrets(self, agent_id: str, paths: list | None = None) -> BrokerDecision:
+        """Scan filesystem for plaintext secrets.  Gated on ``scan_secrets`` capability."""
+        cap_ok, cap_reason = self.policy.can_capability(agent_id, AgentCapability.scan_secrets)
+        if not cap_ok:
+            return self._deny(agent_id, "n/a", "scan_secrets", cap_reason)
+        if self.scanner is None:
+            return self._deny(agent_id, "n/a", "scan_secrets", "scanner not available in broker")
+        findings = self.scanner.scan(paths=paths)
+        self.audit.record(
+            AccessLogRecord(
+                agent_id=agent_id,
+                service="*",
+                action="scan_secrets",
+                decision=Decision.allow,
+                reason=f"scan completed, {len(findings)} finding(s)",
+            )
+        )
+        return BrokerDecision(
+            allowed=True,
+            service="*",
+            agent_id=agent_id,
+            reason=f"scan completed, {len(findings)} finding(s)",
+            metadata={
+                "finding_count": len(findings),
+                "findings": [f.model_dump(mode="json") for f in findings],
+            },
+        )
+
+    def export_backup(self, agent_id: str) -> BrokerDecision:
+        """Export encrypted vault backup.  Gated on ``export_backup`` capability."""
+        cap_ok, cap_reason = self.policy.can_capability(agent_id, AgentCapability.export_backup)
+        if not cap_ok:
+            return self._deny(agent_id, "n/a", "export_backup", cap_reason)
+        backup = self.vault.export_backup()
+        cred_count = len(backup.get("credentials", []))
+        self.audit.record(
+            AccessLogRecord(
+                agent_id=agent_id,
+                service="*",
+                action="export_backup",
+                decision=Decision.allow,
+                reason=f"backup exported, {cred_count} credential(s)",
+            )
+        )
+        return BrokerDecision(
+            allowed=True,
+            service="*",
+            agent_id=agent_id,
+            reason=f"backup exported, {cred_count} credential(s)",
+            metadata={"backup": backup},
+        )
+
+    def import_credentials(self, agent_id: str, backup: dict, replace: bool = True) -> BrokerDecision:
+        """Import credentials from a backup dict.  Gated on ``import_credentials`` capability."""
+        cap_ok, cap_reason = self.policy.can_capability(agent_id, AgentCapability.import_credentials)
+        if not cap_ok:
+            return self._deny(agent_id, "n/a", "import_credentials", cap_reason)
+        imported = self.vault.import_backup(backup, replace=replace)
+        self.audit.record(
+            AccessLogRecord(
+                agent_id=agent_id,
+                service="*",
+                action="import_credentials",
+                decision=Decision.allow,
+                reason=f"imported {len(imported)} credential(s)",
+            )
+        )
+        return BrokerDecision(
+            allowed=True,
+            service="*",
+            agent_id=agent_id,
+            reason=f"imported {len(imported)} credential(s)",
+            metadata={
+                "imported_count": len(imported),
+                "imported_ids": [r.id for r in imported],
+            },
+        )
 
     def _allow(
         self,

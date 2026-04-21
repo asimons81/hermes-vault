@@ -174,3 +174,226 @@ def test_broker_list_denied_for_unknown_agent(tmp_path: Path) -> None:
     broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
     result = broker.list_available_credentials("nobody")
     assert result == []
+
+
+# ── scan_secrets capability gating ────────────────────────
+
+
+class StubScanner:
+    """Minimal scanner stub that returns pre-set findings."""
+
+    def __init__(self, findings: list | None = None) -> None:
+        self._findings = findings or []
+        self.scan_called_with = None
+
+    def scan(self, paths=None):
+        self.scan_called_with = paths
+        return self._findings
+
+
+def test_broker_scan_denied_without_capability(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "pam": AgentPolicy(
+                    services=["openai"],
+                    capabilities=[AgentCapability.list_credentials],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"), scanner=StubScanner())
+    decision = broker.scan_secrets("pam")
+    assert decision.allowed is False
+    assert "not granted" in decision.reason
+
+
+def test_broker_scan_allowed_with_capability(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "pam": AgentPolicy(
+                    services=["openai"],
+                    capabilities=[AgentCapability.scan_secrets],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    stub_scanner = StubScanner(findings=[])
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"), scanner=stub_scanner)
+    decision = broker.scan_secrets("pam")
+    assert decision.allowed is True
+    assert decision.metadata["finding_count"] == 0
+    assert stub_scanner.scan_called_with is None
+
+
+def test_broker_scan_allowed_legacy_agent(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "hermes": AgentPolicy(
+                    services=["openai"],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"), scanner=StubScanner())
+    decision = broker.scan_secrets("hermes")
+    assert decision.allowed is True
+
+
+def test_broker_scan_denied_no_scanner(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "hermes": AgentPolicy(
+                    services=["openai"],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    decision = broker.scan_secrets("hermes")
+    assert decision.allowed is False
+    assert "scanner not available" in decision.reason
+
+
+# ── export_backup capability gating ──────────────────────
+
+
+def test_broker_export_denied_without_capability(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-test", "api_key")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "pam": AgentPolicy(
+                    services=["openai"],
+                    capabilities=[AgentCapability.list_credentials],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    decision = broker.export_backup("pam")
+    assert decision.allowed is False
+    assert "not granted" in decision.reason
+
+
+def test_broker_export_allowed_with_capability(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-test", "api_key")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "pam": AgentPolicy(
+                    services=["openai"],
+                    capabilities=[AgentCapability.export_backup],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    decision = broker.export_backup("pam")
+    assert decision.allowed is True
+    assert "backup" in decision.metadata
+    assert len(decision.metadata["backup"]["credentials"]) == 1
+
+
+def test_broker_export_allowed_legacy_agent(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-test", "api_key")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "hermes": AgentPolicy(
+                    services=["openai"],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    decision = broker.export_backup("hermes")
+    assert decision.allowed is True
+    assert "backup" in decision.metadata
+
+
+# ── import_credentials capability gating ──────────────────
+
+
+def test_broker_import_denied_without_capability(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "pam": AgentPolicy(
+                    services=["openai"],
+                    capabilities=[AgentCapability.export_backup],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    fake_backup = {"version": "hvbackup-v1", "credentials": []}
+    decision = broker.import_credentials("pam", fake_backup)
+    assert decision.allowed is False
+    assert "not granted" in decision.reason
+
+
+def test_broker_import_allowed_with_capability(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    # Export a backup from a fresh vault to get valid backup data
+    vault.add_credential("openai", "sk-test", "api_key")
+    backup = vault.export_backup()
+
+    # Fresh vault for import target
+    vault2 = Vault(tmp_path / "vault2.db", tmp_path / "salt2.bin", "test-passphrase")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "pam": AgentPolicy(
+                    services=["openai"],
+                    capabilities=[AgentCapability.import_credentials],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault2, policy, StubVerifier(), AuditLogger(tmp_path / "vault2.db"))
+    decision = broker.import_credentials("pam", backup)
+    assert decision.allowed is True
+    assert decision.metadata["imported_count"] == 1
+
+
+def test_broker_import_allowed_legacy_agent(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-test", "api_key")
+    backup = vault.export_backup()
+
+    vault2 = Vault(tmp_path / "vault2.db", tmp_path / "salt2.bin", "test-passphrase")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "hermes": AgentPolicy(
+                    services=["openai"],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault2, policy, StubVerifier(), AuditLogger(tmp_path / "vault2.db"))
+    decision = broker.import_credentials("hermes", backup)
+    assert decision.allowed is True
+    assert decision.metadata["imported_count"] == 1
