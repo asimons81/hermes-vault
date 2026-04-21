@@ -100,6 +100,7 @@ class ServiceAction(str, Enum):
     get_env = "get_env"
     verify = "verify"
     metadata = "metadata"
+    add_credential = "add_credential"
     rotate = "rotate"
     delete = "delete"
 
@@ -111,6 +112,7 @@ class AgentCapability(str, Enum):
     """Agent-level capabilities for actions not scoped to a single service."""
 
     list_credentials = "list_credentials"
+    add_credential = "add_credential"
     scan_secrets = "scan_secrets"
     export_backup = "export_backup"
     import_credentials = "import_credentials"
@@ -156,4 +158,15 @@ class BrokerDecision(BaseModel):
     reason: str
     ttl_seconds: int | None = None
     env: dict[str, str] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MutationResult(BaseModel):
+    """Standardized result for audited vault mutations."""
+    allowed: bool
+    service: str
+    agent_id: str
+    action: str
+    reason: str
+    record: CredentialRecord | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

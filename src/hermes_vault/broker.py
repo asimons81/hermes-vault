@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from hermes_vault.audit import AuditLogger
-from hermes_vault.models import AgentCapability, AccessLogRecord, BrokerDecision, CredentialStatus, Decision
+from hermes_vault.models import AgentCapability, AccessLogRecord, BrokerDecision, CredentialStatus, Decision, MutationResult, ServiceAction
+from hermes_vault.mutations import VaultMutations
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.service_ids import get_env_var_map, normalize
 from hermes_vault.verifier import Verifier
@@ -25,6 +26,7 @@ class Broker:
         self.verifier = verifier
         self.audit = audit
         self.scanner = scanner
+        self._mutations = VaultMutations(vault=vault, policy=policy, audit=audit)
 
     def get_credential(self, service: str, purpose: str, agent_id: str) -> BrokerDecision:
         service = normalize(service)
@@ -226,6 +228,74 @@ class Broker:
                 "imported_ids": [r.id for r in imported],
             },
         )
+
+    # ── mutation paths (policy-checked, audited) ──────────────────────────
+
+    def add_credential(
+        self,
+        agent_id: str,
+        service: str,
+        secret: str,
+        credential_type: str = "api_key",
+        alias: str = "default",
+        imported_from: str | None = None,
+        scopes: list[str] | None = None,
+        replace_existing: bool = False,
+    ) -> MutationResult:
+        """Add a credential through the centralized mutation path."""
+        return self._mutations.add_credential(
+            agent_id=agent_id,
+            service=service,
+            secret=secret,
+            credential_type=credential_type,
+            alias=alias,
+            imported_from=imported_from,
+            scopes=scopes,
+            replace_existing=replace_existing,
+        )
+
+    def rotate_credential(
+        self,
+        agent_id: str,
+        service_or_id: str,
+        new_secret: str,
+        alias: str | None = None,
+    ) -> MutationResult:
+        """Rotate a credential through the centralized mutation path."""
+        return self._mutations.rotate_credential(
+            agent_id=agent_id,
+            service_or_id=service_or_id,
+            new_secret=new_secret,
+            alias=alias,
+        )
+
+    def delete_credential(
+        self,
+        agent_id: str,
+        service_or_id: str,
+        alias: str | None = None,
+    ) -> MutationResult:
+        """Delete a credential through the centralized mutation path."""
+        return self._mutations.delete_credential(
+            agent_id=agent_id,
+            service_or_id=service_or_id,
+            alias=alias,
+        )
+
+    def get_metadata(
+        self,
+        agent_id: str,
+        service_or_id: str,
+        alias: str | None = None,
+    ) -> MutationResult:
+        """Fetch credential metadata through the centralized mutation path."""
+        return self._mutations.get_metadata(
+            agent_id=agent_id,
+            service_or_id=service_or_id,
+            alias=alias,
+        )
+
+    # ── internal helpers ──────────────────────────────────────────────────
 
     def _allow(
         self,

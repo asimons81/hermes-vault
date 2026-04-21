@@ -26,7 +26,7 @@ def test_verify_accepts_service_flag(monkeypatch) -> None:
     broker = StubBroker()
 
     def fake_build_services(prompt: bool = False):
-        return object(), object(), broker
+        return object(), object(), broker, object()
 
     monkeypatch.setattr("hermes_vault.cli.build_services", fake_build_services)
 
