@@ -49,7 +49,7 @@ class Broker:
         allowed, reason = self.policy.can_access_service(agent_id, service)
         if not allowed:
             return self._deny(agent_id, service, "get_ephemeral_env", reason, ttl_seconds=ttl)
-        ttl_ok, ttl_reason, effective_ttl = self.policy.enforce_ttl(agent_id, ttl)
+        ttl_ok, ttl_reason, effective_ttl = self.policy.enforce_ttl(agent_id, ttl, service=service)
         if not ttl_ok:
             return self._deny(agent_id, service, "get_ephemeral_env", ttl_reason, ttl_seconds=ttl)
         secret = self.vault.get_secret(service)

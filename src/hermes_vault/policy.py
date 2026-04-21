@@ -4,8 +4,64 @@ from pathlib import Path
 
 import yaml
 
-from hermes_vault.models import AgentPolicy, FindingSeverity, PolicyConfig
+from hermes_vault.models import (
+    AgentPolicy,
+    ALL_SERVICE_ACTIONS,
+    FindingSeverity,
+    PolicyConfig,
+    ServiceAction,
+    ServicePolicyEntry,
+)
 from hermes_vault.service_ids import normalize
+
+
+def _normalize_agent_services(agent: AgentPolicy) -> AgentPolicy:
+    """Ensure *service_actions* is populated from the raw input.
+
+    Handles three input shapes:
+    - legacy list  → ``services=[\"openai\"]``  (all actions, agent max_ttl)
+    - v2 dict      → ``services={\"openai\": {\"actions\": [...]}}``
+    - already-normalized → ``service_actions`` already populated
+    """
+    if agent.service_actions:
+        return agent  # already v2
+
+    if not agent.services:
+        return agent.model_copy(update={"service_actions": {}})
+
+    # If services is a flat list (legacy), build service_actions.
+    # If it was a dict (v2 raw input), services was already converted
+    # to a list by _preprocess_policy and service_actions was set there.
+    entry = ServicePolicyEntry(
+        actions=list(ALL_SERVICE_ACTIONS),
+        max_ttl_seconds=None,  # inherit agent-level
+    )
+    sa = {s: entry for s in agent.services}
+    return agent.model_copy(update={"service_actions": sa})
+
+
+def _preprocess_policy(raw: dict) -> dict:
+    """Convert v2 ``services: {name: {actions: …}}`` to normalised intermediate form.
+
+    Legacy ``services: [name, …]`` dicts pass through unchanged.
+    """
+    agents = raw.get("agents", {})
+    for _agent_id, agent_data in agents.items():
+        svc = agent_data.get("services")
+        if isinstance(svc, dict):
+            # v2 format — convert to service_actions
+            sa: dict = {}
+            for svc_name, entry_data in svc.items():
+                actions_raw = entry_data.get("actions", [])
+                actions = [ServiceAction(a) for a in actions_raw]
+                sa[svc_name] = ServicePolicyEntry(
+                    actions=actions,
+                    max_ttl_seconds=entry_data.get("max_ttl_seconds"),
+                )
+            agent_data["service_actions"] = sa
+            agent_data["services"] = list(svc.keys())
+        # legacy list passes through as-is
+    return raw
 
 
 def _normalize_policy(config: PolicyConfig) -> PolicyConfig:
@@ -16,10 +72,16 @@ def _normalize_policy(config: PolicyConfig) -> PolicyConfig:
     """
     normalized_agents: dict[str, AgentPolicy] = {}
     for agent_id, policy in config.agents.items():
+        policy = _normalize_agent_services(policy)
         normalized_agents[agent_id] = policy.model_copy(
             update={
                 "services": [normalize(s) for s in policy.services],
-                "approval_required_services": [normalize(s) for s in policy.approval_required_services],
+                "approval_required_services": [
+                    normalize(s) for s in policy.approval_required_services
+                ],
+                "service_actions": {
+                    normalize(k): v for k, v in policy.service_actions.items()
+                },
             }
         )
     return config.model_copy(update={"agents": normalized_agents})
@@ -54,6 +116,7 @@ class PolicyEngine:
         if not path.exists():
             return cls(DEFAULT_POLICY)
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        raw = _preprocess_policy(raw)
         return cls(PolicyConfig.model_validate(raw))
 
     def write_default(self, path: Path) -> None:
@@ -74,6 +137,31 @@ class PolicyEngine:
             return False, f"agent '{agent_id}' is not defined in policy"
         if service not in agent.services:
             return False, f"service '{service}' is not allowed for agent '{agent_id}'"
+        return True, "allowed by policy"
+
+    def can(self, agent_id: str, service: str, action: str | ServiceAction) -> tuple[bool, str]:
+        """Action-aware permission check (policy v2).
+
+        Falls back to legacy service-list check when no per-service
+        actions are defined.
+        """
+        service = normalize(service)
+        agent = self.get_agent_policy(agent_id)
+        if not agent:
+            return False, f"agent '{agent_id}' is not defined in policy"
+        if service not in agent.services:
+            return False, f"service '{service}' is not allowed for agent '{agent_id}'"
+        if agent.service_actions:
+            entry = agent.service_actions.get(service)
+            if not entry:
+                return False, f"service '{service}' is not allowed for agent '{agent_id}'"
+            act = ServiceAction(action) if isinstance(action, str) else action
+            if act not in entry.actions:
+                return (
+                    False,
+                    f"action '{act.value}' not permitted on service '{service}' for agent '{agent_id}'",
+                )
+        # Legacy: no per-service action restrictions — any action allowed.
         return True, "allowed by policy"
 
     def classify_plaintext_storage(self, path: Path) -> tuple[FindingSeverity, str]:
@@ -113,13 +201,18 @@ class PolicyEngine:
             return False, "policy requires ephemeral environment materialization only"
         return True, "raw secret access allowed"
 
-    def enforce_ttl(self, agent_id: str, requested_ttl: int) -> tuple[bool, str, int]:
+    def enforce_ttl(self, agent_id: str, requested_ttl: int, service: str | None = None) -> tuple[bool, str, int]:
         agent = self.get_agent_policy(agent_id)
         if not agent:
             return False, f"agent '{agent_id}' is not defined in policy", 0
         if requested_ttl <= 0:
             return False, "ttl must be greater than zero", 0
-        effective = min(requested_ttl, agent.max_ttl_seconds)
+        ceiling = agent.max_ttl_seconds
+        if service and agent.service_actions:
+            entry = agent.service_actions.get(normalize(service))
+            if entry and entry.max_ttl_seconds is not None:
+                ceiling = min(ceiling, entry.max_ttl_seconds)
+        effective = min(requested_ttl, ceiling)
         return True, "ttl accepted", effective
 
     def _matches_any(self, path: Path, patterns: list[str]) -> bool:
@@ -131,3 +224,20 @@ class PolicyEngine:
             if any(candidate.startswith(item.rstrip("/")) for candidate in candidates for item in expanded_candidates):
                 return True
         return False
+
+    def suggest_v2_migration(self, agent_id: str) -> dict | None:
+        """Return a v2 ``services`` dict snippet for the given agent, or *None*
+        if the agent is not found or already uses v2 format."""
+        agent = self.get_agent_policy(agent_id)
+        if not agent:
+            return None
+        # If service_actions has entries with restricted actions (not all), it's already v2.
+        if agent.service_actions and any(
+            len(e.actions) < len(ALL_SERVICE_ACTIONS) for e in agent.service_actions.values()
+        ):
+            return None
+        # Build a v2 snippet with all actions and no per-service TTL.
+        return {
+            svc: {"actions": [a.value for a in ALL_SERVICE_ACTIONS]}
+            for svc in agent.services
+        }

@@ -1,4 +1,21 @@
+# ──────────────────────────────────────────────────────────────
+#  Hermes Vault Policy — v1 (legacy) and v2 (per-service actions)
+# ──────────────────────────────────────────────────────────────
+#
+#  v1 format (still supported):
+#    services is a flat list — agent gets all actions on every listed service.
+#
+#  v2 format:
+#    services is a dict keyed by service name.  Each entry specifies:
+#      actions:       list of allowed actions
+#                     (get_credential, get_env, verify, metadata, rotate, delete)
+#      max_ttl_seconds: optional per-service TTL cap (cannot exceed agent-level max)
+#
+#  Both formats can coexist across different agents in the same file.
+# ──────────────────────────────────────────────────────────────
+
 agents:
+  # ── v1 legacy agent (flat list) ──────────────────────────
   hermes:
     services: [openai, anthropic, minimax, github]
     raw_secret_access: false
@@ -6,15 +23,26 @@ agents:
     require_verification_before_reauth: true
     max_ttl_seconds: 1800
 
+  # ── v2 agent (per-service action permissions) ────────────
   dwight:
-    services: [github, openai]
+    services:
+      openai:
+        actions: [get_credential, get_env, verify, metadata]
+        max_ttl_seconds: 900
+      github:
+        actions: [get_env, verify, metadata]
+        # no max_ttl_seconds — inherits agent-level default
     raw_secret_access: false
     ephemeral_env_only: true
     require_verification_before_reauth: true
     max_ttl_seconds: 900
 
+  # ── v2 agent with restricted actions ─────────────────────
   pam:
-    services: [google]
+    services:
+      google:
+        actions: [get_env, verify, metadata]
+        max_ttl_seconds: 600
     raw_secret_access: false
     ephemeral_env_only: true
     require_verification_before_reauth: true

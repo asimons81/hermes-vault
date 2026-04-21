@@ -95,7 +95,29 @@ class VerificationResult(BaseModel):
     status_code: int | None = None
 
 
+class ServiceAction(str, Enum):
+    get_credential = "get_credential"
+    get_env = "get_env"
+    verify = "verify"
+    metadata = "metadata"
+    rotate = "rotate"
+    delete = "delete"
+
+
+ALL_SERVICE_ACTIONS: list[ServiceAction] = list(ServiceAction)
+
+
+class ServicePolicyEntry(BaseModel):
+    """Per-service permissions in policy v2."""
+
+    actions: list[ServiceAction]
+    max_ttl_seconds: int | None = None
+
+
 class AgentPolicy(BaseModel):
+    # v2: per-service action permissions.  Normalized from legacy list or v2 dict.
+    service_actions: dict[str, ServicePolicyEntry] = Field(default_factory=dict)
+    # Legacy flat list — kept for backward compat.  Populated in all cases.
     services: list[str] = Field(default_factory=list)
     raw_secret_access: bool = False
     ephemeral_env_only: bool = True
