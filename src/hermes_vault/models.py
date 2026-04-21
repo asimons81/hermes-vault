@@ -107,6 +107,18 @@ class ServiceAction(str, Enum):
 ALL_SERVICE_ACTIONS: list[ServiceAction] = list(ServiceAction)
 
 
+class AgentCapability(str, Enum):
+    """Agent-level capabilities for actions not scoped to a single service."""
+
+    list_credentials = "list_credentials"
+    scan_secrets = "scan_secrets"
+    export_backup = "export_backup"
+    import_credentials = "import_credentials"
+
+
+ALL_AGENT_CAPABILITIES: list[AgentCapability] = list(AgentCapability)
+
+
 class ServicePolicyEntry(BaseModel):
     """Per-service permissions in policy v2."""
 
@@ -117,6 +129,9 @@ class ServicePolicyEntry(BaseModel):
 class AgentPolicy(BaseModel):
     # v2: per-service action permissions.  Normalized from legacy list or v2 dict.
     service_actions: dict[str, ServicePolicyEntry] = Field(default_factory=dict)
+    # Agent-level capabilities for non-service-scoped actions.
+    # Empty list = all capabilities allowed (backward compat with pre-v0.2.0 policies).
+    capabilities: list[AgentCapability] = Field(default_factory=list)
     # Legacy flat list — kept for backward compat.  Populated in all cases.
     services: list[str] = Field(default_factory=list)
     raw_secret_access: bool = False

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from hermes_vault.audit import AuditLogger
-from hermes_vault.models import AccessLogRecord, BrokerDecision, CredentialStatus, Decision
+from hermes_vault.models import AgentCapability, AccessLogRecord, BrokerDecision, CredentialStatus, Decision
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.service_ids import get_env_var_map, normalize
 from hermes_vault.verifier import Verifier
@@ -114,6 +114,11 @@ class Broker:
         )
 
     def list_available_credentials(self, agent_id: str) -> list[dict[str, str]]:
+        # Gate on agent-level capability (non-service-scoped action).
+        cap_ok, cap_reason = self.policy.can_capability(agent_id, AgentCapability.list_credentials)
+        if not cap_ok:
+            self._deny(agent_id, "n/a", "list_available_credentials", cap_reason)
+            return []
         agent_policy = self.policy.get_agent_policy(agent_id)
         if not agent_policy:
             self._deny(agent_id, "n/a", "list_available_credentials", "agent is not defined in policy")

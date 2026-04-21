@@ -4,7 +4,7 @@ from pathlib import Path
 
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
-from hermes_vault.models import AgentPolicy, PolicyConfig, VerificationCategory, VerificationResult
+from hermes_vault.models import AgentCapability, AgentPolicy, PolicyConfig, VerificationCategory, VerificationResult
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.vault import Vault
 
@@ -105,3 +105,72 @@ def test_broker_normalizes_service_on_env_request(tmp_path: Path) -> None:
     decision = broker.get_ephemeral_env("GH", "hermes", ttl=900)
     assert decision.allowed is True
     assert "GITHUB_TOKEN" in decision.env
+
+
+# ── agent capability gating ───────────────────────────────
+
+
+def test_broker_list_denied_without_capability(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-test", "api_key")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "pam": AgentPolicy(
+                    services=["openai"],
+                    capabilities=[AgentCapability.scan_secrets],  # no list_credentials
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    result = broker.list_available_credentials("pam")
+    assert result == []
+
+
+def test_broker_list_allowed_with_capability(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-test", "api_key")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "pam": AgentPolicy(
+                    services=["openai"],
+                    capabilities=[AgentCapability.list_credentials],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    result = broker.list_available_credentials("pam")
+    assert len(result) == 1
+    assert result[0]["service"] == "openai"
+
+
+def test_broker_list_allowed_with_legacy_agent(tmp_path: Path) -> None:
+    """Legacy agent (no capabilities field) should still list credentials."""
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-test", "api_key")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "hermes": AgentPolicy(
+                    services=["openai"],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    result = broker.list_available_credentials("hermes")
+    assert len(result) == 1
+
+
+def test_broker_list_denied_for_unknown_agent(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    policy = PolicyEngine(PolicyConfig())
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    result = broker.list_available_credentials("nobody")
+    assert result == []
