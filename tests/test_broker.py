@@ -65,7 +65,7 @@ def test_broker_denies_raw_secret_when_env_only(tmp_path: Path) -> None:
 
 def test_broker_does_not_expose_raw_secret_in_metadata_when_allowed(tmp_path: Path) -> None:
     vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
-    vault.add_credential("openai", "sk-secret-1234567890", "api_key")
+    vault.add_credential("openai", "sk-sec...7890", "api_key")
     policy = PolicyEngine(
         PolicyConfig(
             agents={
@@ -83,3 +83,25 @@ def test_broker_does_not_expose_raw_secret_in_metadata_when_allowed(tmp_path: Pa
     assert decision.allowed is True
     assert "secret" not in decision.metadata
     assert decision.metadata["credential_id"]
+
+
+def test_broker_normalizes_service_on_env_request(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("github", "ghp_xxx", "personal_access_token")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "hermes": AgentPolicy(
+                    services=["github"],
+                    raw_secret_access=False,
+                    ephemeral_env_only=True,
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+    # Use legacy alias "GH" — should normalize to "github"
+    decision = broker.get_ephemeral_env("GH", "hermes", ttl=900)
+    assert decision.allowed is True
+    assert "GITHUB_TOKEN" in decision.env

@@ -26,6 +26,24 @@ hermes-vault generate-skill --all-agents
 - Use `plaintext_migration_paths` only for short-lived cutovers
 - Treat plaintext under `managed_paths` as a policy violation unless explicitly exempted
 
+## Canonical Service IDs
+
+Hermes Vault uses canonical service IDs internally.  When you `add`, `import`, or reference a service in policy, the name is normalized automatically:
+
+| Canonical ID | Recognized aliases |
+|---|---|
+| `openai` | `open_ai`, `open-ai` |
+| `anthropic` | `anthropic_ai` |
+| `github` | `gh`, `github_pat` |
+| `google` | `gmail`, `google_docs`, `google_drive`, `google_oauth` |
+| `minimax` | `mini_max`, `mini-max` |
+| `supabase` | `supa`, `supabase_db` |
+| `telegram` | — |
+| `netlify` | — |
+| `generic` | `bearer`, `token` |
+
+Custom service names (anything not in the table above) are preserved as-is.  Use lowercase for new entries.
+
 ## Troubleshooting
 
 ### "No passphrase available"

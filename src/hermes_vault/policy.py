@@ -5,28 +5,49 @@ from pathlib import Path
 import yaml
 
 from hermes_vault.models import AgentPolicy, FindingSeverity, PolicyConfig
+from hermes_vault.service_ids import normalize
 
 
-DEFAULT_POLICY = PolicyConfig(
-    agents={
-        "hermes": AgentPolicy(
-            services=["openai", "anthropic", "minimax", "github"],
-            raw_secret_access=False,
-            ephemeral_env_only=True,
-            require_verification_before_reauth=True,
-            max_ttl_seconds=1800,
+def _normalize_policy(config: PolicyConfig) -> PolicyConfig:
+    """Normalize all service references in a PolicyConfig to canonical IDs.
+
+    Returns a new PolicyConfig with service names normalized.  The original
+    is not mutated (Pydantic models are immutable by default).
+    """
+    normalized_agents: dict[str, AgentPolicy] = {}
+    for agent_id, policy in config.agents.items():
+        normalized_agents[agent_id] = policy.model_copy(
+            update={
+                "services": [normalize(s) for s in policy.services],
+                "approval_required_services": [normalize(s) for s in policy.approval_required_services],
+            }
         )
-    },
-    managed_paths=["~/.hermes", "~/.config/hermes"],
-    plaintext_migration_paths=[],
-    plaintext_exempt_paths=[],
-    deny_plaintext_under_managed_paths=True,
+    return config.model_copy(update={"agents": normalized_agents})
+
+
+DEFAULT_POLICY = _normalize_policy(
+    PolicyConfig(
+        agents={
+            "hermes": AgentPolicy(
+                services=["openai", "anthropic", "minimax", "github"],
+                raw_secret_access=False,
+                ephemeral_env_only=True,
+                require_verification_before_reauth=True,
+                max_ttl_seconds=1800,
+            )
+        },
+        managed_paths=["~/.hermes", "~/.config/hermes"],
+        plaintext_migration_paths=[],
+        plaintext_exempt_paths=[],
+        deny_plaintext_under_managed_paths=True,
+    )
 )
 
 
 class PolicyEngine:
     def __init__(self, config: PolicyConfig | None = None) -> None:
-        self.config = config or DEFAULT_POLICY
+        raw = config or DEFAULT_POLICY
+        self.config = _normalize_policy(raw)
 
     @classmethod
     def from_yaml(cls, path: Path) -> "PolicyEngine":
@@ -47,6 +68,7 @@ class PolicyEngine:
         return self.config.agents.get(agent_id)
 
     def can_access_service(self, agent_id: str, service: str) -> tuple[bool, str]:
+        service = normalize(service)
         agent = self.get_agent_policy(agent_id)
         if not agent:
             return False, f"agent '{agent_id}' is not defined in policy"
@@ -82,6 +104,7 @@ class PolicyEngine:
         )
 
     def allow_raw_secret_access(self, agent_id: str, service: str) -> tuple[bool, str]:
+        service = normalize(service)
         allowed, reason = self.can_access_service(agent_id, service)
         if not allowed:
             return False, reason

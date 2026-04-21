@@ -5,18 +5,9 @@ from datetime import datetime, timezone
 from hermes_vault.audit import AuditLogger
 from hermes_vault.models import AccessLogRecord, BrokerDecision, CredentialStatus, Decision
 from hermes_vault.policy import PolicyEngine
+from hermes_vault.service_ids import get_env_var_map, normalize
 from hermes_vault.verifier import Verifier
 from hermes_vault.vault import Vault
-
-
-SERVICE_ENV_MAP = {
-    "openai": {"OPENAI_API_KEY": "{secret}"},
-    "anthropic": {"ANTHROPIC_API_KEY": "{secret}"},
-    "github": {"GITHUB_TOKEN": "{secret}", "GH_TOKEN": "{secret}"},
-    "google": {"GOOGLE_OAUTH_ACCESS_TOKEN": "{secret}"},
-    "minimax": {"MINIMAX_API_KEY": "{secret}"},
-    "supabase": {"SUPABASE_ACCESS_TOKEN": "{secret}"},
-}
 
 
 class Broker:
@@ -33,6 +24,7 @@ class Broker:
         self.audit = audit
 
     def get_credential(self, service: str, purpose: str, agent_id: str) -> BrokerDecision:
+        service = normalize(service)
         allowed, reason = self.policy.allow_raw_secret_access(agent_id, service)
         if not allowed:
             return self._deny(agent_id, service, "get_credential", reason)
@@ -53,6 +45,7 @@ class Broker:
         )
 
     def get_ephemeral_env(self, service: str, agent_id: str, ttl: int) -> BrokerDecision:
+        service = normalize(service)
         allowed, reason = self.policy.can_access_service(agent_id, service)
         if not allowed:
             return self._deny(agent_id, service, "get_ephemeral_env", reason, ttl_seconds=ttl)
@@ -62,7 +55,7 @@ class Broker:
         secret = self.vault.get_secret(service)
         if not secret:
             return self._deny(agent_id, service, "get_ephemeral_env", "credential not found in vault", ttl_seconds=effective_ttl)
-        env_template = SERVICE_ENV_MAP.get(service, {"HERMES_VAULT_SECRET": "{secret}"})
+        env_template = get_env_var_map(service)
         env = {key: value.format(secret=secret.secret) for key, value in env_template.items()}
         return self._allow(
             agent_id,
@@ -74,6 +67,7 @@ class Broker:
         )
 
     def verify_credential(self, service: str) -> BrokerDecision:
+        service = normalize(service)
         record = self.vault.get_credential(service)
         if not record:
             return BrokerDecision(

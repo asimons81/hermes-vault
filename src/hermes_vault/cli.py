@@ -19,6 +19,7 @@ from hermes_vault.detectors import detect_matches, guess_from_env_name
 from hermes_vault.models import CredentialStatus
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.scanner import Scanner
+from hermes_vault.service_ids import normalize
 from hermes_vault.skillgen import SkillGenerator
 from hermes_vault.verifier import Verifier
 from hermes_vault.vault import DuplicateCredentialError, Vault
@@ -266,6 +267,7 @@ def add(
     secret: str | None = typer.Option(None, "--secret"),
 ) -> None:
     vault, _, _ = build_services(prompt=True)
+    service = normalize(service)
     secret_value = secret or typer.prompt("Secret", hide_input=True)
     try:
         record = vault.add_credential(service=service, alias=alias, credential_type=credential_type, secret=secret_value)

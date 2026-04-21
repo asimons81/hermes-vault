@@ -4,6 +4,8 @@ import hashlib
 import re
 from dataclasses import dataclass
 
+from hermes_vault.service_ids import normalize
+
 
 @dataclass(frozen=True)
 class DetectorPattern:
@@ -46,13 +48,18 @@ DETECTORS: list[DetectorPattern] = [
     ),
 ]
 
-ENV_NAME_HINTS = {
+# Map env-var names → (canonical_service, credential_type).
+# env var names are always UPPER so keys here are UPPER.
+ENV_NAME_HINTS: dict[str, tuple[str, str]] = {
     "OPENAI_API_KEY": ("openai", "api_key"),
     "ANTHROPIC_API_KEY": ("anthropic", "api_key"),
     "GITHUB_TOKEN": ("github", "personal_access_token"),
     "GH_TOKEN": ("github", "personal_access_token"),
     "GOOGLE_OAUTH_ACCESS_TOKEN": ("google", "oauth_access_token"),
     "MINIMAX_API_KEY": ("minimax", "api_key"),
+    "SUPABASE_ACCESS_TOKEN": ("supabase", "personal_access_token"),
+    "TELEGRAM_BOT_TOKEN": ("telegram", "bot_token"),
+    "NETLIFY_AUTH_TOKEN": ("netlify", "personal_access_token"),
 }
 
 
@@ -66,10 +73,14 @@ def detect_matches(text: str) -> list[tuple[DetectorPattern, str]]:
 
 
 def guess_from_env_name(name: str) -> tuple[str, str] | None:
-    return ENV_NAME_HINTS.get(name.strip().upper())
+    """Look up canonical (service, credential_type) from an env-var name."""
+    hint = ENV_NAME_HINTS.get(name.strip().upper())
+    if hint is None:
+        return None
+    # service in ENV_NAME_HINTS is already canonical — normalize defensively
+    return normalize(hint[0]), hint[1]
 
 
 def fingerprint_secret(secret: str) -> str:
     digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()
     return digest[:16]
-

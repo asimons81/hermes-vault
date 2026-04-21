@@ -14,7 +14,7 @@ agents:
     max_ttl_seconds: 900
 
   pam:
-    services: [gmail, google_docs]
+    services: [google]
     raw_secret_access: false
     ephemeral_env_only: true
     require_verification_before_reauth: true

@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 from hermes_vault.models import VerificationCategory, VerificationResult
+from hermes_vault.service_ids import normalize
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class Verifier:
         self.timeout_seconds = timeout_seconds
 
     def verify(self, service: str, secret: str) -> VerificationResult:
+        service = normalize(service)
         adapter = getattr(self, f"_verify_{service}", None)
         if adapter is None:
             return VerificationResult(

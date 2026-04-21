@@ -17,6 +17,7 @@ from hermes_vault.crypto import (
     load_or_create_salt,
 )
 from hermes_vault.models import CredentialRecord, CredentialSecret, CredentialStatus, utc_now
+from hermes_vault.service_ids import normalize
 
 
 class DuplicateCredentialError(RuntimeError):
@@ -86,6 +87,7 @@ class Vault:
         scopes: list[str] | None = None,
         replace_existing: bool = False,
     ) -> CredentialRecord:
+        service = normalize(service)
         existing = self._find_by_service_alias(service, alias)
         if existing and not replace_existing:
             raise DuplicateCredentialError(
@@ -167,16 +169,30 @@ class Vault:
         return [self._row_to_record(row) for row in rows]
 
     def get_credential(self, service_or_id: str) -> CredentialRecord | None:
+        # Try by raw id first (UUID), then by canonicalized service name
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 """
                 SELECT * FROM credentials
-                WHERE id = ? OR service = ?
+                WHERE id = ?
                 ORDER BY updated_at DESC
                 LIMIT 1
                 """,
-                (service_or_id, service_or_id),
+                (service_or_id,),
+            ).fetchone()
+            if row:
+                return self._row_to_record(row)
+            # Fall back to service lookup with normalization
+            normalized = normalize(service_or_id)
+            row = conn.execute(
+                """
+                SELECT * FROM credentials
+                WHERE service = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (normalized,),
             ).fetchone()
         return self._row_to_record(row) if row else None
 
@@ -191,14 +207,26 @@ class Vault:
         self, service_or_id: str, status: CredentialStatus, verified_at: str | None = None
     ) -> None:
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
+            # Try raw id first
+            cursor = conn.execute(
                 """
                 UPDATE credentials
                 SET status = ?, last_verified_at = COALESCE(?, last_verified_at), updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? OR service = ?
+                WHERE id = ?
                 """,
-                (status.value, verified_at, service_or_id, service_or_id),
+                (status.value, verified_at, service_or_id),
             )
+            if cursor.rowcount == 0:
+                # Fall back to normalized service name
+                normalized = normalize(service_or_id)
+                conn.execute(
+                    """
+                    UPDATE credentials
+                    SET status = ?, last_verified_at = COALESCE(?, last_verified_at), updated_at = CURRENT_TIMESTAMP
+                    WHERE service = ?
+                    """,
+                    (status.value, verified_at, normalized),
+                )
             conn.commit()
 
     def rotate(
@@ -236,9 +264,16 @@ class Vault:
 
     def delete(self, service_or_id: str) -> bool:
         with sqlite3.connect(self.db_path) as conn:
+            # Try raw id first
             cursor = conn.execute(
-                "DELETE FROM credentials WHERE id = ? OR service = ?", (service_or_id, service_or_id)
+                "DELETE FROM credentials WHERE id = ?", (service_or_id,)
             )
+            if cursor.rowcount == 0:
+                # Fall back to normalized service name
+                normalized = normalize(service_or_id)
+                cursor = conn.execute(
+                    "DELETE FROM credentials WHERE service = ?", (normalized,)
+                )
             conn.commit()
         return cursor.rowcount > 0
 
@@ -294,7 +329,9 @@ class Vault:
             raise ValueError(f"Unsupported backup version: {backup.get('version')}")
         imported = []
         for cred_data in backup.get("credentials", []):
-            existing = self._find_by_service_alias(cred_data["service"], cred_data["alias"])
+            # Normalize service name on import
+            service = normalize(cred_data["service"])
+            existing = self._find_by_service_alias(service, cred_data["alias"])
             if existing and not replace:
                 continue
             # Parse ISO strings back to datetimes
@@ -306,7 +343,7 @@ class Vault:
                 expiry = datetime.fromisoformat(cred_data["expiry"])
             record = CredentialRecord(
                 id=cred_data.get("id") or str(uuid4()),  # validate or regenerate id
-                service=cred_data["service"],
+                service=service,
                 alias=cred_data["alias"],
                 credential_type=cred_data["credential_type"],
                 encrypted_payload=cred_data["encrypted_payload"],
