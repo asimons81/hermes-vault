@@ -20,10 +20,10 @@ from hermes_vault.models import CredentialStatus
 from hermes_vault.mutations import VaultMutations, OPERATOR_AGENT_ID
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.scanner import Scanner
-from hermes_vault.service_ids import normalize
+from hermes_vault.service_ids import is_canonical, normalize
 from hermes_vault.skillgen import SkillGenerator
 from hermes_vault.verifier import Verifier
-from hermes_vault.vault import Vault
+from hermes_vault.vault import AmbiguousTargetError, Vault
 
 # ── Banner helpers ──────────────────────────────────────────────────────────────
 
@@ -157,8 +157,38 @@ def build_services(prompt: bool = False) -> tuple[Vault, PolicyEngine, Broker, V
     return vault, policy, broker, mutations
 
 
+def _handle_mutation_error(result, success_msg: str | None = None) -> None:
+    """Handle a MutationResult: print error and exit on deny, otherwise print success."""
+    if not result.allowed:
+        console.print(f"[red]Denied: {result.reason}[/red]")
+        raise typer.Exit(code=1)
+    if success_msg:
+        console.print(success_msg)
+
+
+# ── Selector help text ───────────────────────────────────────────────────────────
+SELECTOR_HELP = (
+    "Target a credential by:\n"
+    "  • credential ID (UUID) — exact match\n"
+    "  • service + --alias — exact match\n"
+    "  • service only — allowed only when exactly one credential exists for that service\n"
+    "Service names are normalized to canonical IDs (e.g. 'open_ai' → 'openai')."
+)
+
+
 @_typer_app.command()
-def scan(ctx: typer.Context, path: list[Path] = typer.Option(None, "--path"), format: str = typer.Option("table", "--format")) -> None:
+def scan(
+    ctx: typer.Context,
+    path: list[Path] = typer.Option(None, "--path", help="Paths to scan. Defaults to managed paths from policy."),
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+) -> None:
+    """Scan the filesystem for plaintext secrets.
+
+    \b
+    Examples:
+      hermes-vault scan --path ~/.hermes
+      hermes-vault scan --path ~/.config --format json
+    """
     settings = get_settings()
     policy = PolicyEngine.from_yaml(settings.effective_policy_path)
     scanner = Scanner(settings, policy=policy)
@@ -186,12 +216,22 @@ def scan(ctx: typer.Context, path: list[Path] = typer.Option(None, "--path"), fo
 @_typer_app.command("import")
 def import_credentials(
     ctx: typer.Context,
-    from_env: Path | None = typer.Option(None, "--from-env"),
-    from_file: Path | None = typer.Option(None, "--from-file"),
+    from_env: Path | None = typer.Option(None, "--from-env", help="Import from a .env file (KEY=value format)."),
+    from_file: Path | None = typer.Option(None, "--from-file", help="Import from a JSON file (auto-detects secrets)."),
     redact_source: bool = typer.Option(False, "--redact-source", help="Comment out imported lines in the source file after successful import."),
 ) -> None:
+    """Import credentials from env files or JSON.
+
+    Service names are normalized to canonical IDs automatically.
+
+    \b
+    Examples:
+      hermes-vault import --from-env ~/.hermes/.env
+      hermes-vault import --from-file secrets.json --redact-source
+    """
     if not from_env and not from_file:
-        raise typer.BadParameter("Provide --from-env or --from-file")
+        console.print("[red]Provide --from-env or --from-file[/red]")
+        raise typer.Exit(code=1)
     vault, _, _, mutations = build_services(prompt=True)
     imported_names: list[str] = []
     source = from_env or from_file
@@ -219,7 +259,8 @@ def import_credentials(
                 imported_from=str(source),
             )
             if not result.allowed:
-                raise typer.BadParameter(result.reason)
+                console.print(f"[red]Denied importing '{name.strip()}': {result.reason}[/red]")
+                raise typer.Exit(code=1)
             imported_names.append(name.strip())
             imported_lines.add(i)
     else:
@@ -240,10 +281,11 @@ def import_credentials(
                 imported_from=str(source),
             )
             if not result.allowed:
-                raise typer.BadParameter(result.reason)
+                console.print(f"[red]Denied importing '{key}': {result.reason}[/red]")
+                raise typer.Exit(code=1)
             imported_names.append(key)
 
-    console.print(f"Imported {len(imported_names)} credential(s).")
+    console.print(f"[green]Imported {len(imported_names)} credential(s).[/green]")
     if redact_source and imported_lines and from_env:
         redacted_lines = []
         for i, line in enumerate(lines):
@@ -263,29 +305,48 @@ def import_credentials(
 @_typer_app.command()
 def add(
     ctx: typer.Context,
-    service: str,
-    alias: str = typer.Option("default", "--alias"),
-    credential_type: str = typer.Option("api_key", "--credential-type"),
-    secret: str | None = typer.Option(None, "--secret"),
+    service: str = typer.Argument(help="Service name (normalized to canonical ID, e.g. 'open_ai' → 'openai')."),
+    alias: str = typer.Option("default", "--alias", help="Alias for this credential. Required when adding a second credential for the same service."),
+    credential_type: str = typer.Option("api_key", "--credential-type", help="Credential type (api_key, personal_access_token, oauth_access_token, etc.)."),
+    secret: str | None = typer.Option(None, "--secret", help="The secret value. Prompts interactively if omitted."),
 ) -> None:
+    """Add a credential to the vault.
+
+    Service names are normalized to canonical IDs automatically.
+    Use --alias to distinguish multiple credentials for the same service.
+
+    \b
+    Examples:
+      hermes-vault add openai --secret sk-...
+      hermes-vault add github --alias work --credential-type personal_access_token
+      hermes-vault add open_ai          # normalizes to 'openai'
+    """
     vault, _, _, mutations = build_services(prompt=True)
-    service = normalize(service)
+    canonical = normalize(service)
     secret_value = secret or typer.prompt("Secret", hide_input=True)
     result = mutations.add_credential(
         agent_id=OPERATOR_AGENT_ID,
-        service=service,
+        service=canonical,
         secret=secret_value,
         credential_type=credential_type,
         alias=alias,
     )
     if not result.allowed:
-        raise typer.BadParameter(result.reason)
+        console.print(f"[red]Denied: {result.reason}[/red]")
+        raise typer.Exit(code=1)
     assert result.record is not None
-    console.print(f"Stored credential {result.record.id} for service '{result.record.service}' alias '{result.record.alias}'.")
+    console.print(
+        f"Stored credential [cyan]{result.record.id}[/cyan] "
+        f"for service [bold]{result.record.service}[/bold] alias '{result.record.alias}'."
+    )
 
 
 @_typer_app.command(name="list")
 def list_credentials_cmd(ctx: typer.Context) -> None:
+    """List all credentials in the vault.
+
+    Shows canonical service IDs, aliases, and credential status.
+    """
     vault, _, _, _ = build_services(prompt=True)
     records = vault.list_credentials()
     table = Table(title="Vault Credentials")
@@ -310,18 +371,32 @@ def list_credentials_cmd(ctx: typer.Context) -> None:
 @_typer_app.command("show-metadata")
 def show_metadata(
     ctx: typer.Context,
-    service_or_id: str,
+    service_or_id: str = typer.Argument(help=SELECTOR_HELP),
     alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
 ) -> None:
+    """Show credential metadata (no raw secret).
+
+    \b
+    Examples:
+      hermes-vault show-metadata openai
+      hermes-vault show-metadata github --alias work
+      hermes-vault show-metadata a1b2c3d4-...   # by credential ID
+    """
     vault, _, _, mutations = build_services(prompt=True)
-    result = mutations.get_metadata(
-        agent_id=OPERATOR_AGENT_ID,
-        service_or_id=service_or_id,
-        alias=alias,
-    )
-    if not result.allowed:
-        console.print(f"[red]Denied: {result.reason}[/red]")
+    try:
+        result = mutations.get_metadata(
+            agent_id=OPERATOR_AGENT_ID,
+            service_or_id=service_or_id,
+            alias=alias,
+        )
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
         raise typer.Exit(code=1)
+    except KeyError as exc:
+        console.print(f"[red]Not found: {exc}[/red]")
+        raise typer.Exit(code=1)
+    _handle_mutation_error(result)
     assert result.record is not None
     console.print_json(data=result.record.model_dump_json(exclude={"encrypted_payload"}))
 
@@ -329,70 +404,145 @@ def show_metadata(
 @_typer_app.command()
 def rotate(
     ctx: typer.Context,
-    service_or_id: str,
+    service_or_id: str = typer.Argument(help=SELECTOR_HELP),
     alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
-    secret: str | None = typer.Option(None, "--secret"),
+    secret: str | None = typer.Option(None, "--secret", help="The new secret value. Prompts interactively if omitted."),
 ) -> None:
+    """Rotate a credential's secret.
+
+    \b
+    Examples:
+      hermes-vault rotate openai --secret sk-new-...
+      hermes-vault rotate github --alias work --secret ghp_new-...
+      hermes-vault rotate a1b2c3d4-... --secret sk-new-...
+    """
     vault, _, _, mutations = build_services(prompt=True)
     secret_value = secret or typer.prompt("New secret", hide_input=True)
-    result = mutations.rotate_credential(
-        agent_id=OPERATOR_AGENT_ID,
-        service_or_id=service_or_id,
-        new_secret=secret_value,
-        alias=alias,
-    )
-    if not result.allowed:
-        console.print(f"[red]Denied: {result.reason}[/red]")
+    try:
+        result = mutations.rotate_credential(
+            agent_id=OPERATOR_AGENT_ID,
+            service_or_id=service_or_id,
+            new_secret=secret_value,
+            alias=alias,
+        )
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
         raise typer.Exit(code=1)
+    except KeyError as exc:
+        console.print(f"[red]Not found: {exc}[/red]")
+        raise typer.Exit(code=1)
+    _handle_mutation_error(result)
     assert result.record is not None
-    console.print(f"Rotated credential for service '{result.record.service}' alias '{result.record.alias}'.")
+    console.print(
+        f"Rotated credential [cyan]{result.record.id}[/cyan] "
+        f"for service [bold]{result.record.service}[/bold] alias '{result.record.alias}'."
+    )
 
 
 @_typer_app.command()
 def delete(
     ctx: typer.Context,
-    service_or_id: str,
+    service_or_id: str = typer.Argument(help=SELECTOR_HELP),
     alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
-    yes: bool = typer.Option(False, "--yes"),
+    yes: bool = typer.Option(False, "--yes", help="Confirm deletion without prompting."),
 ) -> None:
+    """Delete a credential from the vault.
+
+    Requires --yes to confirm. Destructive and irreversible.
+
+    \b
+    Examples:
+      hermes-vault delete openai --yes
+      hermes-vault delete github --alias work --yes
+      hermes-vault delete a1b2c3d4-... --yes
+    """
     if not yes:
-        raise typer.BadParameter("Deletion requires --yes")
-    vault, _, _, mutations = build_services(prompt=True)
-    result = mutations.delete_credential(
-        agent_id=OPERATOR_AGENT_ID,
-        service_or_id=service_or_id,
-        alias=alias,
-    )
-    if not result.allowed:
-        console.print(f"[red]Denied: {result.reason}[/red]")
+        console.print("[red]Deletion requires --yes[/red]")
         raise typer.Exit(code=1)
-    console.print(f"Deleted credential '{service_or_id}'.")
+    vault, _, _, mutations = build_services(prompt=True)
+    try:
+        result = mutations.delete_credential(
+            agent_id=OPERATOR_AGENT_ID,
+            service_or_id=service_or_id,
+            alias=alias,
+        )
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+        raise typer.Exit(code=1)
+    except KeyError as exc:
+        console.print(f"[red]Not found: {exc}[/red]")
+        raise typer.Exit(code=1)
+    _handle_mutation_error(
+        result,
+        success_msg=f"[green]Deleted credential [cyan]{result.metadata.get('credential_id', service_or_id)}[/cyan].[/green]",
+    )
 
 
 @_typer_app.command()
 def verify(
     ctx: typer.Context,
-    service: str | None = typer.Option(None, "--service"),
+    target: str | None = typer.Argument(None, help=SELECTOR_HELP),
     alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
-    all: bool = typer.Option(False, "--all"),
+    all: bool = typer.Option(False, "--all", help="Verify all credentials in the vault."),
 ) -> None:
+    """Verify credential(s) against provider endpoints.
+
+    Target a single credential or use --all to verify everything.
+
+    \b
+    Examples:
+      hermes-vault verify openai
+      hermes-vault verify github --alias work
+      hermes-vault verify a1b2c3d4-...
+      hermes-vault verify --all
+    """
     vault, _, broker, _ = build_services(prompt=True)
     if all:
         targets = [(record.service, record.alias) for record in vault.list_credentials()]
-    elif service:
-        targets = [(service, alias)]
+    elif target:
+        # Resolve the canonical service name for the display
+        normalized = normalize(target)
+        targets = [(normalized, alias)]
     else:
-        raise typer.BadParameter("Provide --service or use --all")
+        console.print("[red]Provide a credential target or use --all[/red]")
+        console.print("[yellow]Examples:[/yellow]")
+        console.print("  hermes-vault verify openai")
+        console.print("  hermes-vault verify github --alias work")
+        console.print("  hermes-vault verify --all")
+        raise typer.Exit(code=1)
     results = []
     for svc, als in targets:
-        results.append(broker.verify_credential(svc, alias=als))
+        try:
+            results.append(broker.verify_credential(svc, alias=als))
+        except AmbiguousTargetError as exc:
+            console.print(f"[red]Ambiguous: {exc}[/red]")
+            console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+            raise typer.Exit(code=1)
+        except KeyError as exc:
+            console.print(f"[red]Not found: {exc}[/red]")
+            raise typer.Exit(code=1)
     console.print_json(data=json.dumps([result.model_dump(mode="json") for result in results]))
 
 
 @broker_app.command("get")
-def broker_get(ctx: typer.Context, service: str, agent: str = typer.Option(..., "--agent"), purpose: str = typer.Option("task", "--purpose")) -> None:
+def broker_get(
+    ctx: typer.Context,
+    service: str = typer.Argument(help="Service name (normalized to canonical ID)."),
+    agent: str = typer.Option(..., "--agent", help="Agent ID requesting the credential."),
+    purpose: str = typer.Option("task", "--purpose", help="Purpose of the credential access."),
+) -> None:
+    """Get a raw credential secret for an agent.
+
+    \b
+    Examples:
+      hermes-vault broker get openai --agent hermes --purpose "api-calls"
+      hermes-vault broker get github --agent deploy-bot
+    """
     _, _, broker, _ = build_services(prompt=True)
-    decision = broker.get_credential(service=service, purpose=purpose, agent_id=agent)
+    canonical = normalize(service)
+    decision = broker.get_credential(service=canonical, purpose=purpose, agent_id=agent)
     if not decision.allowed:
         console.print_json(data=decision.model_dump_json())
         raise typer.Exit(code=1)
@@ -400,9 +550,22 @@ def broker_get(ctx: typer.Context, service: str, agent: str = typer.Option(..., 
 
 
 @broker_app.command("env")
-def broker_env(ctx: typer.Context, service: str, agent: str = typer.Option(..., "--agent"), ttl: int = typer.Option(900, "--ttl")) -> None:
+def broker_env(
+    ctx: typer.Context,
+    service: str = typer.Argument(help="Service name (normalized to canonical ID)."),
+    agent: str = typer.Option(..., "--agent", help="Agent ID requesting ephemeral env."),
+    ttl: int = typer.Option(900, "--ttl", help="Time-to-live in seconds for the ephemeral env."),
+) -> None:
+    """Materialize ephemeral environment variables for an agent.
+
+    \b
+    Examples:
+      hermes-vault broker env openai --agent hermes
+      hermes-vault broker env github --agent deploy-bot --ttl 300
+    """
     _, _, broker, _ = build_services(prompt=True)
-    decision = broker.get_ephemeral_env(service=service, agent_id=agent, ttl=ttl)
+    canonical = normalize(service)
+    decision = broker.get_ephemeral_env(service=canonical, agent_id=agent, ttl=ttl)
     if not decision.allowed:
         console.print_json(data=decision.model_dump_json())
         raise typer.Exit(code=1)
@@ -410,7 +573,16 @@ def broker_env(ctx: typer.Context, service: str, agent: str = typer.Option(..., 
 
 
 @broker_app.command("list")
-def broker_list(ctx: typer.Context, agent: str = typer.Option(..., "--agent")) -> None:
+def broker_list(
+    ctx: typer.Context,
+    agent: str = typer.Option(..., "--agent", help="Agent ID to list available credentials for."),
+) -> None:
+    """List credentials available to an agent (filtered by policy).
+
+    \b
+    Example:
+      hermes-vault broker list --agent hermes
+    """
     _, _, broker, _ = build_services(prompt=True)
     console.print_json(data=json.dumps(broker.list_available_credentials(agent)))
 
@@ -429,8 +601,18 @@ def generate_skill(
 
 
 @_typer_app.command("backup")
-def backup_vault(ctx: typer.Context, output: Path = typer.Option(..., "--output", help="Output path for the backup file")) -> None:
-    """Export an encrypted backup of all vault credentials to a JSON file."""
+def backup_vault(
+    ctx: typer.Context,
+    output: Path = typer.Option(..., "--output", "-o", help="Output path for the backup file."),
+) -> None:
+    """Export an encrypted backup of all vault credentials to a JSON file.
+
+    Backup file is chmod 600. Store it alongside your salt file.
+
+    \b
+    Example:
+      hermes-vault backup --output ~/vault-backup-2026-04.json
+    """
     vault, _, _, _ = build_services(prompt=True)
     backup = vault.export_backup()
     content = json.dumps(backup, indent=2, sort_keys=True)
@@ -443,10 +625,18 @@ def backup_vault(ctx: typer.Context, output: Path = typer.Option(..., "--output"
 @_typer_app.command("restore")
 def restore_vault(
     ctx: typer.Context,
-    input: Path = typer.Option(..., "--input", help="Path to a vault backup file"),
-    yes: bool = typer.Option(False, "--yes", help="Confirm restoration"),
+    input: Path = typer.Option(..., "--input", "-i", help="Path to a vault backup file."),
+    yes: bool = typer.Option(False, "--yes", help="Confirm restoration without prompting."),
 ) -> None:
-    """Restore vault credentials from a backup file."""
+    """Restore vault credentials from a backup file.
+
+    Existing credentials with the same service+alias are replaced.
+    Requires --yes to confirm.
+
+    \b
+    Example:
+      hermes-vault restore --input ~/vault-backup-2026-04.json --yes
+    """
     if not yes:
         console.print("[red]Restoration requires --yes flag.[/red]")
         raise typer.Exit(code=1)
