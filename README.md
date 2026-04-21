@@ -34,6 +34,7 @@ Hermes Vault targets Python 3.11+.
 export HERMES_VAULT_PASSPHRASE='choose-a-strong-local-passphrase'
 hermes-vault --help
 hermes-vault scan --path ~/.hermes
+hermes-vault import --from-env ~/.hermes/.env
 hermes-vault verify --all
 hermes-vault generate-skill --all-agents
 ```
@@ -47,9 +48,62 @@ hermes-vault scan
 hermes-vault import --from-env ~/.hermes/.env
 hermes-vault add openai --alias primary
 hermes-vault list
-hermes-vault verify --service openai
+hermes-vault verify openai
 hermes-vault broker env openai --agent dwight --ttl 900
 ```
+
+## What's New in 0.2.0
+
+### Canonical Service IDs
+
+All service names are normalized to canonical IDs automatically. `open_ai`, `open-ai` → `openai`; `gmail`, `google_docs` → `google`; `gh` → `github`. See [docs/operator-guide.md](docs/operator-guide.md) for the full alias table.
+
+### Deterministic Credential Selectors
+
+Commands that target a credential accept three forms:
+
+- **credential ID** (UUID) — always exact
+- **service + `--alias`** — always exact
+- **service only** — works only when exactly one credential exists for that service
+
+If you have multiple credentials for the same service (e.g. `github` with aliases `work` and `personal`), the CLI fails with an `Ambiguous` error and asks for `--alias` or the credential ID.
+
+Commands that use selectors: `verify`, `rotate`, `delete`, `show-metadata`.
+
+### Policy v2
+
+Policy now supports per-service action permissions:
+
+```yaml
+agents:
+  dwight:
+    services:
+      openai:
+        actions: [get_credential, get_env, verify, metadata]
+        max_ttl_seconds: 900
+      github:
+        actions: [get_env, verify, metadata]
+    max_ttl_seconds: 900
+```
+
+Legacy flat-list format (`services: [openai, github]`) still works and grants all actions.
+
+### Agent Capabilities
+
+Non-service-scoped actions are gated by agent-level capabilities:
+
+| Capability | Controls |
+|---|---|
+| `list_credentials` | `broker list` |
+| `scan_secrets` | `scan` |
+| `export_backup` | `backup` |
+| `import_credentials` | `import` |
+
+If `capabilities` is omitted from an agent's policy, all capabilities are implicitly granted (backward compatible).
+
+### Centralized Mutation Paths
+
+All write/destructive operations (add, rotate, delete, metadata) flow through `VaultMutations` — a centralized, policy-checked, audited mutation layer. The operator CLI path skips policy checks but still produces audit entries.
 
 ## Configuration
 
@@ -70,4 +124,4 @@ If you need a starting policy, copy `policy.example.yaml` into the runtime home 
 
 ## More Detail
 
-See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/credential-lifecycle.md](docs/credential-lifecycle.md), and [docs/operator-guide.md](docs/operator-guide.md).
+See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/credential-lifecycle.md](docs/credential-lifecycle.md), [docs/operator-guide.md](docs/operator-guide.md), and [docs/migration-0.1-to-0.2.md](docs/migration-0.1-to-0.2.md).
