@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml
 
 from hermes_vault.models import (
+    AgentCapability,
     AgentPolicy,
     ALL_SERVICE_ACTIONS,
     FindingSeverity,
@@ -43,6 +44,9 @@ def _normalize_agent_services(agent: AgentPolicy) -> AgentPolicy:
 def _preprocess_policy(raw: dict) -> dict:
     """Convert v2 ``services: {name: {actions: …}}`` to normalised intermediate form.
 
+    Also converts ``capabilities: [list_credentials, …]`` string list to
+    ``AgentCapability`` enums before Pydantic validation.
+
     Legacy ``services: [name, …]`` dicts pass through unchanged.
     """
     agents = raw.get("agents", {})
@@ -61,6 +65,10 @@ def _preprocess_policy(raw: dict) -> dict:
             agent_data["service_actions"] = sa
             agent_data["services"] = list(svc.keys())
         # legacy list passes through as-is
+        # capabilities: convert string list to AgentCapability enums
+        caps_raw = agent_data.get("capabilities", [])
+        if caps_raw and isinstance(caps_raw[0], str):
+            agent_data["capabilities"] = [AgentCapability(c) for c in caps_raw]
     return raw
 
 
@@ -163,6 +171,28 @@ class PolicyEngine:
                 )
         # Legacy: no per-service action restrictions — any action allowed.
         return True, "allowed by policy"
+
+    def can_capability(self, agent_id: str, capability: str | AgentCapability) -> tuple[bool, str]:
+        """Check whether an agent has a non-service-scoped capability.
+
+        Capabilities cover actions that aren't naturally scoped to a single
+        service — e.g. ``list_credentials``, ``scan_secrets``,
+        ``export_backup``, ``import_credentials``.
+
+        Backward compatibility: if the agent's ``capabilities`` list is empty
+        (i.e. the policy predates capability support), all capabilities are
+        implicitly allowed.
+        """
+        agent = self.get_agent_policy(agent_id)
+        if not agent:
+            return False, f"agent '{agent_id}' is not defined in policy"
+        cap = AgentCapability(capability) if isinstance(capability, str) else capability
+        # Empty capabilities list = legacy policy → allow all (backward compat).
+        if not agent.capabilities:
+            return True, "allowed by policy (implicit — legacy agent)"
+        if cap in agent.capabilities:
+            return True, "allowed by policy"
+        return False, f"capability '{cap.value}' not granted to agent '{agent_id}'"
 
     def classify_plaintext_storage(self, path: Path) -> tuple[FindingSeverity, str]:
         normalized = path.expanduser()

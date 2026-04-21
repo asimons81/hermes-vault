@@ -26,6 +26,40 @@ hermes-vault generate-skill --all-agents
 - Use `plaintext_migration_paths` only for short-lived cutovers
 - Treat plaintext under `managed_paths` as a policy violation unless explicitly exempted
 
+## Agent Capabilities
+
+Some actions are not scoped to a single service.  These are controlled by the
+`capabilities` field on each agent in `policy.yaml`.
+
+| Capability | Controls |
+|---|---|
+| `list_credentials` | `broker list` — enumerate credentials the agent may access |
+| `scan_secrets` | `scan` — scan the filesystem for plaintext secrets |
+| `export_backup` | `backup` — export an encrypted backup of the vault |
+| `import_credentials` | `import` — add credentials from env files or JSON |
+
+**Backward compatibility:** if an agent has no `capabilities` field (or an
+empty list), all capabilities are implicitly granted.  This preserves existing
+policies without modification.
+
+When `capabilities` is explicitly set, only the listed capabilities are allowed.
+For example, an agent with `capabilities: [list_credentials]` can enumerate
+credentials but cannot run scans or exports.
+
+### Example — restrict capabilities
+
+```yaml
+agents:
+  pam:
+    services:
+      google:
+        actions: [get_env, verify, metadata]
+    capabilities: [list_credentials, scan_secrets]
+```
+
+In this configuration, `pam` can list available credentials and scan for
+plaintext secrets, but cannot export backups or import new credentials.
+
 ## Canonical Service IDs
 
 Hermes Vault uses canonical service IDs internally.  When you `add`, `import`, or reference a service in policy, the name is normalized automatically:

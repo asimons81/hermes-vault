@@ -1,9 +1,11 @@
 # ──────────────────────────────────────────────────────────────
-#  Hermes Vault Policy — v1 (legacy) and v2 (per-service actions)
+#  Hermes Vault Policy — v1 (legacy), v2 (per-service actions),
+#  and agent-level capabilities
 # ──────────────────────────────────────────────────────────────
 #
 #  v1 format (still supported):
 #    services is a flat list — agent gets all actions on every listed service.
+#    capabilities omitted → agent implicitly gets all capabilities.
 #
 #  v2 format:
 #    services is a dict keyed by service name.  Each entry specifies:
@@ -11,19 +13,25 @@
 #                     (get_credential, get_env, verify, metadata, rotate, delete)
 #      max_ttl_seconds: optional per-service TTL cap (cannot exceed agent-level max)
 #
+#  Capabilities (agent-level, not scoped to a service):
+#    list_credentials, scan_secrets, export_backup, import_credentials
+#    If omitted, all capabilities are implicitly granted (backward compat).
+#    When set, only listed capabilities are allowed.
+#
 #  Both formats can coexist across different agents in the same file.
 # ──────────────────────────────────────────────────────────────
 
 agents:
-  # ── v1 legacy agent (flat list) ──────────────────────────
+  # ── v1 legacy agent (flat list, all capabilities) ──────────
   hermes:
     services: [openai, anthropic, minimax, github]
     raw_secret_access: false
     ephemeral_env_only: true
     require_verification_before_reauth: true
     max_ttl_seconds: 1800
+    # capabilities omitted → implicit grant of all capabilities
 
-  # ── v2 agent (per-service action permissions) ────────────
+  # ── v2 agent with restricted actions ───────────────────────
   dwight:
     services:
       openai:
@@ -36,8 +44,9 @@ agents:
     ephemeral_env_only: true
     require_verification_before_reauth: true
     max_ttl_seconds: 900
+    # capabilities omitted → implicit grant of all capabilities
 
-  # ── v2 agent with restricted actions ─────────────────────
+  # ── v2 agent with restricted capabilities ──────────────────
   pam:
     services:
       google:
@@ -47,6 +56,8 @@ agents:
     ephemeral_env_only: true
     require_verification_before_reauth: true
     max_ttl_seconds: 900
+    # Explicit capabilities — only these are allowed.
+    capabilities: [list_credentials, scan_secrets]
 
 managed_paths:
   - "~/.hermes"

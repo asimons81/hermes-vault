@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml
 
 from hermes_vault.models import (
+    AgentCapability,
     AgentPolicy,
     PolicyConfig,
     ServiceAction,
@@ -437,3 +438,159 @@ def test_v2_policy_normalizes_service_names() -> None:
     assert "google" in agent.services
     assert "gmail" not in agent.services
     assert "google" in agent.service_actions
+
+
+# ── agent capabilities ────────────────────────────────────
+
+
+def test_can_capability_allows_when_empty_list_backward_compat() -> None:
+    """Legacy agent with no capabilities field gets all capabilities implicitly."""
+    config = PolicyConfig(
+        agents={
+            "hermes": AgentPolicy(services=["openai"], max_ttl_seconds=900)
+        }
+    )
+    policy = PolicyEngine(config)
+
+    for cap in AgentCapability:
+        allowed, reason = policy.can_capability("hermes", cap)
+        assert allowed is True, f"legacy agent should have capability {cap.value}"
+        assert "implicit" in reason or "allowed" in reason
+
+
+def test_can_capability_allows_granted_capability() -> None:
+    config = PolicyConfig(
+        agents={
+            "pam": AgentPolicy(
+                services=["google"],
+                capabilities=[AgentCapability.list_credentials, AgentCapability.scan_secrets],
+                max_ttl_seconds=900,
+            )
+        }
+    )
+    policy = PolicyEngine(config)
+
+    allowed, reason = policy.can_capability("pam", "list_credentials")
+    assert allowed is True
+
+    allowed, reason = policy.can_capability("pam", AgentCapability.scan_secrets)
+    assert allowed is True
+
+
+def test_can_capability_denies_ungranted_capability() -> None:
+    config = PolicyConfig(
+        agents={
+            "pam": AgentPolicy(
+                services=["google"],
+                capabilities=[AgentCapability.list_credentials],
+                max_ttl_seconds=900,
+            )
+        }
+    )
+    policy = PolicyEngine(config)
+
+    allowed, reason = policy.can_capability("pam", "export_backup")
+    assert allowed is False
+    assert "not granted" in reason
+
+    allowed, reason = policy.can_capability("pam", AgentCapability.import_credentials)
+    assert allowed is False
+
+
+def test_can_capability_denies_unknown_agent() -> None:
+    policy = PolicyEngine(PolicyConfig())
+    allowed, reason = policy.can_capability("nobody", "list_credentials")
+    assert allowed is False
+    assert "not defined" in reason
+
+
+def test_can_capability_accepts_string_or_enum() -> None:
+    config = PolicyConfig(
+        agents={
+            "pam": AgentPolicy(
+                services=["google"],
+                capabilities=[AgentCapability.scan_secrets],
+            )
+        }
+    )
+    policy = PolicyEngine(config)
+
+    # string input
+    allowed_str, _ = policy.can_capability("pam", "scan_secrets")
+    # enum input
+    allowed_enum, _ = policy.can_capability("pam", AgentCapability.scan_secrets)
+    assert allowed_str is True
+    assert allowed_enum is True
+
+
+def test_capabilities_loaded_from_yaml(tmp_path: Path) -> None:
+    policy_yaml = {
+        "agents": {
+            "pam": {
+                "services": {
+                    "google": {
+                        "actions": ["get_env", "verify"],
+                    },
+                },
+                "capabilities": ["list_credentials", "scan_secrets"],
+                "max_ttl_seconds": 900,
+            }
+        }
+    }
+    path = tmp_path / "policy.yaml"
+    path.write_text(yaml.safe_dump(policy_yaml))
+
+    policy = PolicyEngine.from_yaml(path)
+    agent = policy.get_agent_policy("pam")
+
+    assert agent is not None
+    assert AgentCapability.list_credentials in agent.capabilities
+    assert AgentCapability.scan_secrets in agent.capabilities
+    assert AgentCapability.export_backup not in agent.capabilities
+
+    allowed, _ = policy.can_capability("pam", "list_credentials")
+    assert allowed is True
+
+    allowed, reason = policy.can_capability("pam", "export_backup")
+    assert allowed is False
+    assert "not granted" in reason
+
+
+def test_capabilities_backward_compat_legacy_yaml(tmp_path: Path) -> None:
+    """Legacy YAML with no capabilities field should grant all capabilities."""
+    policy_yaml = {
+        "agents": {
+            "hermes": {
+                "services": ["openai", "github"],
+                "max_ttl_seconds": 1800,
+            }
+        }
+    }
+    path = tmp_path / "policy.yaml"
+    path.write_text(yaml.safe_dump(policy_yaml))
+
+    policy = PolicyEngine.from_yaml(path)
+    agent = policy.get_agent_policy("hermes")
+    assert agent is not None
+    assert agent.capabilities == []  # empty → backward compat
+
+    for cap in AgentCapability:
+        allowed, _ = policy.can_capability("hermes", cap)
+        assert allowed is True
+
+
+def test_capabilities_empty_explicit_list_grants_all() -> None:
+    """Explicitly empty capabilities: [] should also grant all (backward compat)."""
+    config = PolicyConfig(
+        agents={
+            "hermes": AgentPolicy(
+                services=["openai"],
+                capabilities=[],
+                max_ttl_seconds=900,
+            )
+        }
+    )
+    policy = PolicyEngine(config)
+    for cap in AgentCapability:
+        allowed, _ = policy.can_capability("hermes", cap)
+        assert allowed is True
