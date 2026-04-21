@@ -19,6 +19,14 @@ Hermes Vault is a local-first Python project that centralizes credential scannin
 - Keeps metadata separate from raw secret material
 - Supports add, list, show metadata, rotate, delete, and import workflows
 
+### `mutations.py`
+
+- Centralized mutation service layer for all write/destructive operations
+- Enforces policy checks (agent capability + service action) before mutations
+- Writes standardized audit entries for every mutation (allow and deny)
+- Operator path (``agent_id="operator"``) skips policy checks but still audits
+- Used by the Broker for agent-facing mutations and by the CLI for operator-facing mutations
+
 ### `crypto.py`
 
 - Uses PBKDF2-HMAC-SHA256 to derive a master key from a local passphrase
@@ -35,6 +43,7 @@ Hermes Vault is a local-first Python project that centralizes credential scannin
 - Canonical credential access layer
 - Applies policy before access decisions
 - Preferentially materializes ephemeral environment variables instead of returning raw secrets
+- Routes mutations (add, rotate, delete, metadata) through ``VaultMutations`` for policy and audit
 - Records broker decisions in `audit.py`
 
 ### `verifier.py`

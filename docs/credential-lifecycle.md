@@ -8,6 +8,9 @@
 ## 2. Import or Add
 
 - Operator imports from `.env` or JSON, or manually adds a credential
+- All additions flow through ``VaultMutations`` (centralized audit-backed mutation path)
+- Operator path skips policy checks but produces audit entries
+- Agent path requires ``add_credential`` capability and service action permission
 - Raw secret is encrypted before being written to the vault
 - Metadata records service, alias, type, provenance, timestamps, and crypto version
 - Plaintext copies are allowed only during migration windows or explicit exemptions
@@ -29,12 +32,16 @@
 ## 5. Rotation
 
 - Operator replaces the secret for an existing record
+- Rotation flows through ``VaultMutations`` with policy check and audit
+- Agent path requires ``rotate`` service action permission
 - Old ciphertext is overwritten in the record
 - Status returns to unknown until verification runs again
 
 ## 6. Deletion
 
 - Operator explicitly confirms deletion
+- Deletion flows through ``VaultMutations`` with policy check and audit
+- Agent path requires ``delete`` service action permission
 - Metadata and encrypted payload are removed from SQLite
 
 ## 7. Skill Contract

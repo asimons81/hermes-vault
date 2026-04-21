@@ -17,12 +17,13 @@ from hermes_vault.config import get_settings
 from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase
 from hermes_vault.detectors import detect_matches, guess_from_env_name
 from hermes_vault.models import CredentialStatus
+from hermes_vault.mutations import VaultMutations, OPERATOR_AGENT_ID
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.scanner import Scanner
 from hermes_vault.service_ids import normalize
 from hermes_vault.skillgen import SkillGenerator
 from hermes_vault.verifier import Verifier
-from hermes_vault.vault import DuplicateCredentialError, Vault
+from hermes_vault.vault import Vault
 
 # ── Banner helpers ──────────────────────────────────────────────────────────────
 
@@ -143,7 +144,7 @@ _hermes_group = HermesGroup(
 _hermes_group.add_typer(_typer_app)
 
 
-def build_services(prompt: bool = False) -> tuple[Vault, PolicyEngine, Broker]:
+def build_services(prompt: bool = False) -> tuple[Vault, PolicyEngine, Broker, VaultMutations]:
     settings = get_settings()
     policy = PolicyEngine.from_yaml(settings.effective_policy_path)
     policy.write_default(settings.effective_policy_path)
@@ -152,7 +153,8 @@ def build_services(prompt: bool = False) -> tuple[Vault, PolicyEngine, Broker]:
     audit = AuditLogger(settings.db_path)
     verifier = Verifier()
     broker = Broker(vault=vault, policy=policy, verifier=verifier, audit=audit)
-    return vault, policy, broker
+    mutations = VaultMutations(vault=vault, policy=policy, audit=audit)
+    return vault, policy, broker, mutations
 
 
 @_typer_app.command()
@@ -190,7 +192,7 @@ def import_credentials(
 ) -> None:
     if not from_env and not from_file:
         raise typer.BadParameter("Provide --from-env or --from-file")
-    vault, _, _ = build_services(prompt=True)
+    vault, _, _, mutations = build_services(prompt=True)
     imported_names: list[str] = []
     source = from_env or from_file
     assert source is not None
@@ -208,18 +210,18 @@ def import_credentials(
             if not guessed:
                 continue
             service, credential_type = guessed
-            try:
-                vault.add_credential(
-                    service=service,
-                    secret=value.strip().strip("'\""),
-                    credential_type=credential_type,
-                    alias=name.strip().lower(),
-                    imported_from=str(source),
-                )
-                imported_names.append(name.strip())
-                imported_lines.add(i)
-            except DuplicateCredentialError as exc:
-                raise typer.BadParameter(str(exc)) from exc
+            result = mutations.add_credential(
+                agent_id=OPERATOR_AGENT_ID,
+                service=service,
+                secret=value.strip().strip("'\""),
+                credential_type=credential_type,
+                alias=name.strip().lower(),
+                imported_from=str(source),
+            )
+            if not result.allowed:
+                raise typer.BadParameter(result.reason)
+            imported_names.append(name.strip())
+            imported_lines.add(i)
     else:
         parsed = json.loads(original_content)
         for key, value in parsed.items():
@@ -229,17 +231,17 @@ def import_credentials(
             if not matches:
                 continue
             detector, secret = matches[0]
-            try:
-                vault.add_credential(
-                    service=detector.service,
-                    secret=secret,
-                    credential_type=detector.credential_type,
-                    alias=key.lower(),
-                    imported_from=str(source),
-                )
-                imported_names.append(key)
-            except DuplicateCredentialError as exc:
-                raise typer.BadParameter(str(exc)) from exc
+            result = mutations.add_credential(
+                agent_id=OPERATOR_AGENT_ID,
+                service=detector.service,
+                secret=secret,
+                credential_type=detector.credential_type,
+                alias=key.lower(),
+                imported_from=str(source),
+            )
+            if not result.allowed:
+                raise typer.BadParameter(result.reason)
+            imported_names.append(key)
 
     console.print(f"Imported {len(imported_names)} credential(s).")
     if redact_source and imported_lines and from_env:
@@ -266,19 +268,25 @@ def add(
     credential_type: str = typer.Option("api_key", "--credential-type"),
     secret: str | None = typer.Option(None, "--secret"),
 ) -> None:
-    vault, _, _ = build_services(prompt=True)
+    vault, _, _, mutations = build_services(prompt=True)
     service = normalize(service)
     secret_value = secret or typer.prompt("Secret", hide_input=True)
-    try:
-        record = vault.add_credential(service=service, alias=alias, credential_type=credential_type, secret=secret_value)
-    except DuplicateCredentialError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    console.print(f"Stored credential {record.id} for service '{record.service}' alias '{record.alias}'.")
+    result = mutations.add_credential(
+        agent_id=OPERATOR_AGENT_ID,
+        service=service,
+        secret=secret_value,
+        credential_type=credential_type,
+        alias=alias,
+    )
+    if not result.allowed:
+        raise typer.BadParameter(result.reason)
+    assert result.record is not None
+    console.print(f"Stored credential {result.record.id} for service '{result.record.service}' alias '{result.record.alias}'.")
 
 
 @_typer_app.command(name="list")
 def list_credentials_cmd(ctx: typer.Context) -> None:
-    vault, _, _ = build_services(prompt=True)
+    vault, _, _, _ = build_services(prompt=True)
     records = vault.list_credentials()
     table = Table(title="Vault Credentials")
     table.add_column("ID")
@@ -305,9 +313,17 @@ def show_metadata(
     service_or_id: str,
     alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
 ) -> None:
-    vault, _, _ = build_services(prompt=True)
-    record = vault.resolve_credential(service_or_id, alias=alias)
-    console.print_json(data=record.model_dump_json(exclude={"encrypted_payload"}))
+    vault, _, _, mutations = build_services(prompt=True)
+    result = mutations.get_metadata(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id=service_or_id,
+        alias=alias,
+    )
+    if not result.allowed:
+        console.print(f"[red]Denied: {result.reason}[/red]")
+        raise typer.Exit(code=1)
+    assert result.record is not None
+    console.print_json(data=result.record.model_dump_json(exclude={"encrypted_payload"}))
 
 
 @_typer_app.command()
@@ -317,10 +333,19 @@ def rotate(
     alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
     secret: str | None = typer.Option(None, "--secret"),
 ) -> None:
-    vault, _, _ = build_services(prompt=True)
+    vault, _, _, mutations = build_services(prompt=True)
     secret_value = secret or typer.prompt("New secret", hide_input=True)
-    record = vault.rotate(service_or_id, secret_value, alias=alias)
-    console.print(f"Rotated credential for service '{record.service}' alias '{record.alias}'.")
+    result = mutations.rotate_credential(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id=service_or_id,
+        new_secret=secret_value,
+        alias=alias,
+    )
+    if not result.allowed:
+        console.print(f"[red]Denied: {result.reason}[/red]")
+        raise typer.Exit(code=1)
+    assert result.record is not None
+    console.print(f"Rotated credential for service '{result.record.service}' alias '{result.record.alias}'.")
 
 
 @_typer_app.command()
@@ -332,8 +357,14 @@ def delete(
 ) -> None:
     if not yes:
         raise typer.BadParameter("Deletion requires --yes")
-    vault, _, _ = build_services(prompt=True)
-    if not vault.delete(service_or_id, alias=alias):
+    vault, _, _, mutations = build_services(prompt=True)
+    result = mutations.delete_credential(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id=service_or_id,
+        alias=alias,
+    )
+    if not result.allowed:
+        console.print(f"[red]Denied: {result.reason}[/red]")
         raise typer.Exit(code=1)
     console.print(f"Deleted credential '{service_or_id}'.")
 
@@ -345,7 +376,7 @@ def verify(
     alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
     all: bool = typer.Option(False, "--all"),
 ) -> None:
-    vault, _, broker = build_services(prompt=True)
+    vault, _, broker, _ = build_services(prompt=True)
     if all:
         targets = [(record.service, record.alias) for record in vault.list_credentials()]
     elif service:
@@ -360,7 +391,7 @@ def verify(
 
 @broker_app.command("get")
 def broker_get(ctx: typer.Context, service: str, agent: str = typer.Option(..., "--agent"), purpose: str = typer.Option("task", "--purpose")) -> None:
-    _, _, broker = build_services(prompt=True)
+    _, _, broker, _ = build_services(prompt=True)
     decision = broker.get_credential(service=service, purpose=purpose, agent_id=agent)
     if not decision.allowed:
         console.print_json(data=decision.model_dump_json())
@@ -370,7 +401,7 @@ def broker_get(ctx: typer.Context, service: str, agent: str = typer.Option(..., 
 
 @broker_app.command("env")
 def broker_env(ctx: typer.Context, service: str, agent: str = typer.Option(..., "--agent"), ttl: int = typer.Option(900, "--ttl")) -> None:
-    _, _, broker = build_services(prompt=True)
+    _, _, broker, _ = build_services(prompt=True)
     decision = broker.get_ephemeral_env(service=service, agent_id=agent, ttl=ttl)
     if not decision.allowed:
         console.print_json(data=decision.model_dump_json())
@@ -380,7 +411,7 @@ def broker_env(ctx: typer.Context, service: str, agent: str = typer.Option(..., 
 
 @broker_app.command("list")
 def broker_list(ctx: typer.Context, agent: str = typer.Option(..., "--agent")) -> None:
-    _, _, broker = build_services(prompt=True)
+    _, _, broker, _ = build_services(prompt=True)
     console.print_json(data=json.dumps(broker.list_available_credentials(agent)))
 
 
@@ -390,7 +421,7 @@ def generate_skill(
     agent: str | None = typer.Option(None, "--agent"),
     all_agents: bool = typer.Option(False, "--all-agents"),
 ) -> None:
-    _, policy, _ = build_services(prompt=True)
+    _, policy, _, _ = build_services(prompt=True)
     settings = get_settings()
     generator = SkillGenerator(policy=policy, output_dir=settings.generated_skills_dir)
     paths = generator.generate_all() if all_agents else [generator.generate_for_agent(agent or "hermes")]
@@ -400,7 +431,7 @@ def generate_skill(
 @_typer_app.command("backup")
 def backup_vault(ctx: typer.Context, output: Path = typer.Option(..., "--output", help="Output path for the backup file")) -> None:
     """Export an encrypted backup of all vault credentials to a JSON file."""
-    vault, _, _ = build_services(prompt=True)
+    vault, _, _, _ = build_services(prompt=True)
     backup = vault.export_backup()
     content = json.dumps(backup, indent=2, sort_keys=True)
     output.write_text(content, encoding="utf-8")
@@ -419,7 +450,7 @@ def restore_vault(
     if not yes:
         console.print("[red]Restoration requires --yes flag.[/red]")
         raise typer.Exit(code=1)
-    vault, _, _ = build_services(prompt=True)
+    vault, _, _, _ = build_services(prompt=True)
     try:
         backup = json.loads(input.read_text(encoding="utf-8"))
     except Exception as exc:
