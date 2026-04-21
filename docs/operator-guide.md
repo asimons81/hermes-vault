@@ -124,3 +124,42 @@ Custom service names (anything not in the table above) are preserved as-is.  Use
 - Use broker env materialization for tasks
 - Keep audit records for false-auth troubleshooting
 - Treat generated skills as review artifacts unless you explicitly install them
+
+## Credential Selectors
+
+Most CLI commands that target an existing credential accept a **credential selector** — a positional argument that resolves to exactly one credential. Three forms are supported:
+
+| Selector | Example | When it works |
+|---|---|---|
+| **credential ID** (UUID) | `hermes-vault rotate a1b2c3d4-...` | Always — exact match |
+| **service + `--alias`** | `hermes-vault rotate github --alias work` | Always — exact match |
+| **service only** | `hermes-vault rotate openai` | Only when exactly one credential exists for that service |
+
+### When service-only is ambiguous
+
+If you have multiple credentials for the same service (e.g. `github` with aliases `work` and `personal`), using just the service name will fail:
+
+```
+$ hermes-vault rotate github
+Ambiguous: Service 'github' has 2 credentials — specify credential ID or service+alias
+Use --alias or provide the credential ID.
+```
+
+Fix it by adding `--alias` or using the credential ID from `hermes-vault list`.
+
+### Commands that use selectors
+
+- `show-metadata <target> [--alias ALIAS]`
+- `rotate <target> --secret SECRET [--alias ALIAS]`
+- `delete <target> --yes [--alias ALIAS]`
+- `verify <target> [--alias ALIAS]` or `verify --all`
+
+### Commands that accept service names only
+
+These commands accept a service name (normalized to canonical ID) and don't require alias disambiguation:
+
+- `add <service> --secret SECRET [--alias ALIAS]` — adds a new credential
+- `broker get <service> --agent AGENT` — fetches a credential via policy
+- `broker env <service> --agent AGENT` — materializes ephemeral env vars
+
+Service names are normalized automatically (see [Canonical Service IDs](#canonical-service-ids) above).
