@@ -24,6 +24,11 @@ class DuplicateCredentialError(RuntimeError):
     pass
 
 
+class AmbiguousTargetError(RuntimeError):
+    """Raised when a service-only lookup matches multiple credentials."""
+    pass
+
+
 class Vault:
     def __init__(self, db_path: Path, salt_path: Path, passphrase: str) -> None:
         self.db_path = db_path
@@ -204,8 +209,28 @@ class Vault:
         return CredentialSecret.model_validate_json(payload)
 
     def update_status(
-        self, service_or_id: str, status: CredentialStatus, verified_at: str | None = None
+        self, service_or_id: str, status: CredentialStatus, verified_at: str | None = None,
+        alias: str | None = None,
     ) -> None:
+        """Update credential status deterministically.
+
+        Requires credential_id or service+alias when multiple credentials share a service.
+        Service-only is allowed only when exactly one credential matches.
+        """
+        if alias is not None:
+            normalized = normalize(service_or_id)
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE credentials
+                    SET status = ?, last_verified_at = COALESCE(?, last_verified_at), updated_at = CURRENT_TIMESTAMP
+                    WHERE service = ? AND alias = ?
+                    """,
+                    (status.value, verified_at, normalized, alias),
+                )
+                conn.commit()
+            return
+
         with sqlite3.connect(self.db_path) as conn:
             # Try raw id first
             cursor = conn.execute(
@@ -216,17 +241,34 @@ class Vault:
                 """,
                 (status.value, verified_at, service_or_id),
             )
-            if cursor.rowcount == 0:
-                # Fall back to normalized service name
-                normalized = normalize(service_or_id)
-                conn.execute(
-                    """
-                    UPDATE credentials
-                    SET status = ?, last_verified_at = COALESCE(?, last_verified_at), updated_at = CURRENT_TIMESTAMP
-                    WHERE service = ?
-                    """,
-                    (status.value, verified_at, normalized),
+            if cursor.rowcount > 0:
+                conn.commit()
+                return
+
+            # Service-only — check count
+            normalized = normalize(service_or_id)
+            count_row = conn.execute(
+                "SELECT COUNT(*) FROM credentials WHERE service = ?", (normalized,)
+            ).fetchone()
+            count = count_row[0] if count_row else 0
+
+            if count == 0:
+                conn.commit()
+                return
+            if count > 1:
+                conn.commit()
+                raise AmbiguousTargetError(
+                    f"Service '{normalized}' has {count} credentials — "
+                    f"specify credential ID or service+alias to update exactly one"
                 )
+            conn.execute(
+                """
+                UPDATE credentials
+                SET status = ?, last_verified_at = COALESCE(?, last_verified_at), updated_at = CURRENT_TIMESTAMP
+                WHERE service = ?
+                """,
+                (status.value, verified_at, normalized),
+            )
             conn.commit()
 
     def rotate(
@@ -234,8 +276,9 @@ class Vault:
         service_or_id: str,
         new_secret: str,
         imported_from: str | None = None,
+        alias: str | None = None,
     ) -> CredentialRecord:
-        current = self.get_credential(service_or_id)
+        current = self.resolve_credential(service_or_id, alias=alias)
         if not current:
             raise KeyError(f"Credential '{service_or_id}' not found")
         payload = CredentialSecret(secret=new_secret).model_dump_json()
@@ -262,18 +305,52 @@ class Vault:
             conn.commit()
         return current
 
-    def delete(self, service_or_id: str) -> bool:
+    def delete(self, service_or_id: str, alias: str | None = None) -> bool:
+        """Delete a credential deterministically.
+
+        If alias is provided, deletes service+alias.
+        If service_or_id is a UUID, deletes that exact record.
+        If service_only and multiple exist, raises AmbiguousTargetError.
+        If service_only and exactly one exists, deletes it.
+        """
+        if alias is not None:
+            normalized = normalize(service_or_id)
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    "DELETE FROM credentials WHERE service = ? AND alias = ?",
+                    (normalized, alias),
+                )
+                conn.commit()
+            return cursor.rowcount > 0
+
         with sqlite3.connect(self.db_path) as conn:
             # Try raw id first
             cursor = conn.execute(
                 "DELETE FROM credentials WHERE id = ?", (service_or_id,)
             )
-            if cursor.rowcount == 0:
-                # Fall back to normalized service name
-                normalized = normalize(service_or_id)
-                cursor = conn.execute(
-                    "DELETE FROM credentials WHERE service = ?", (normalized,)
+            if cursor.rowcount > 0:
+                conn.commit()
+                return True
+
+            # Service-only — check count before deleting
+            normalized = normalize(service_or_id)
+            count_row = conn.execute(
+                "SELECT COUNT(*) FROM credentials WHERE service = ?", (normalized,)
+            ).fetchone()
+            count = count_row[0] if count_row else 0
+
+            if count == 0:
+                conn.commit()
+                return False
+            if count > 1:
+                conn.commit()
+                raise AmbiguousTargetError(
+                    f"Service '{normalized}' has {count} credentials — "
+                    f"specify credential ID or service+alias to delete exactly one"
                 )
+            cursor = conn.execute(
+                "DELETE FROM credentials WHERE service = ?", (normalized,)
+            )
             conn.commit()
         return cursor.rowcount > 0
 
@@ -282,6 +359,59 @@ class Vault:
         payload["scopes"] = json.loads(payload["scopes"])
         payload["status"] = CredentialStatus(payload["status"])
         return CredentialRecord.model_validate(payload)
+
+    def resolve_credential(self, service_or_id: str, alias: str | None = None) -> CredentialRecord:
+        """Resolve a credential deterministically.
+
+        Accepts:
+          - credential UUID → exact match
+          - service + alias → exact match
+          - service only → only if exactly one credential exists for that service
+
+        Raises:
+          AmbiguousTargetError: service-only lookup matches multiple credentials.
+          KeyError: no matching credential found.
+        """
+        # If alias is provided, always do service+alias lookup
+        if alias is not None:
+            normalized = normalize(service_or_id)
+            record = self._find_by_service_alias(normalized, alias)
+            if not record:
+                raise KeyError(f"No credential for service '{normalized}' alias '{alias}'")
+            return record
+
+        # Try by raw id first (UUID exact match)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM credentials WHERE id = ?", (service_or_id,)
+            ).fetchone()
+            if row:
+                return self._row_to_record(row)
+
+            # Service-only lookup — must be unambiguous
+            normalized = normalize(service_or_id)
+            rows = conn.execute(
+                "SELECT * FROM credentials WHERE service = ? ORDER BY updated_at DESC",
+                (normalized,),
+            ).fetchall()
+
+        if not rows:
+            raise KeyError(f"Service '{normalized}' not found in vault")
+        if len(rows) > 1:
+            raise AmbiguousTargetError(
+                f"Service '{normalized}' has {len(rows)} credentials — "
+                f"specify credential ID or service+alias to target exactly one"
+            )
+        return self._row_to_record(rows[0])
+
+    def _count_by_service(self, service: str) -> int:
+        """Count credentials for a normalized service name."""
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM credentials WHERE service = ?", (service,)
+            ).fetchone()
+            return row[0] if row else 0
 
     def _find_by_service_alias(self, service: str, alias: str) -> CredentialRecord | None:
         with sqlite3.connect(self.db_path) as conn:

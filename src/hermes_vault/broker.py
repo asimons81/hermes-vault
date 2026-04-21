@@ -66,23 +66,31 @@ class Broker:
             env=env,
         )
 
-    def verify_credential(self, service: str) -> BrokerDecision:
+    def verify_credential(self, service: str, alias: str | None = None) -> BrokerDecision:
         service = normalize(service)
-        record = self.vault.get_credential(service)
-        if not record:
+        try:
+            record = self.vault.resolve_credential(service, alias=alias)
+        except KeyError:
             return BrokerDecision(
                 allowed=False,
                 service=service,
                 agent_id="hermes-vault",
                 reason="credential not found in vault",
             )
-        secret = self.vault.get_secret(service)
+        except Exception as exc:
+            return BrokerDecision(
+                allowed=False,
+                service=service,
+                agent_id="hermes-vault",
+                reason=str(exc),
+            )
+        secret = self.vault.get_secret(record.id)
         assert secret is not None
         result = self.verifier.verify(service, secret.secret)
         status = CredentialStatus.active if result.success else (
             CredentialStatus.invalid if result.category.value == "invalid_or_expired" else CredentialStatus.unknown
         )
-        self.vault.update_status(service, status=status, verified_at=result.checked_at.isoformat())
+        self.vault.update_status(record.id, status=status, verified_at=result.checked_at.isoformat())
         self.audit.record(
             AccessLogRecord(
                 agent_id="hermes-vault",
@@ -98,7 +106,11 @@ class Broker:
             service=service,
             agent_id="hermes-vault",
             reason=result.reason,
-            metadata={"verification_result": result.model_dump(mode="json")},
+            metadata={
+                "credential_id": record.id,
+                "alias": record.alias,
+                "verification_result": result.model_dump(mode="json"),
+            },
         )
 
     def list_available_credentials(self, agent_id: str) -> list[dict[str, str]]:

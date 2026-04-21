@@ -300,28 +300,40 @@ def list_credentials_cmd(ctx: typer.Context) -> None:
 
 
 @_typer_app.command("show-metadata")
-def show_metadata(ctx: typer.Context, service_or_id: str) -> None:
+def show_metadata(
+    ctx: typer.Context,
+    service_or_id: str,
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
+) -> None:
     vault, _, _ = build_services(prompt=True)
-    record = vault.get_credential(service_or_id)
-    if not record:
-        raise typer.Exit(code=1)
+    record = vault.resolve_credential(service_or_id, alias=alias)
     console.print_json(data=record.model_dump_json(exclude={"encrypted_payload"}))
 
 
 @_typer_app.command()
-def rotate(ctx: typer.Context, service_or_id: str, secret: str | None = typer.Option(None, "--secret")) -> None:
+def rotate(
+    ctx: typer.Context,
+    service_or_id: str,
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
+    secret: str | None = typer.Option(None, "--secret"),
+) -> None:
     vault, _, _ = build_services(prompt=True)
     secret_value = secret or typer.prompt("New secret", hide_input=True)
-    record = vault.rotate(service_or_id, secret_value)
+    record = vault.rotate(service_or_id, secret_value, alias=alias)
     console.print(f"Rotated credential for service '{record.service}' alias '{record.alias}'.")
 
 
 @_typer_app.command()
-def delete(ctx: typer.Context, service_or_id: str, yes: bool = typer.Option(False, "--yes")) -> None:
+def delete(
+    ctx: typer.Context,
+    service_or_id: str,
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
+    yes: bool = typer.Option(False, "--yes"),
+) -> None:
     if not yes:
         raise typer.BadParameter("Deletion requires --yes")
     vault, _, _ = build_services(prompt=True)
-    if not vault.delete(service_or_id):
+    if not vault.delete(service_or_id, alias=alias):
         raise typer.Exit(code=1)
     console.print(f"Deleted credential '{service_or_id}'.")
 
@@ -330,17 +342,19 @@ def delete(ctx: typer.Context, service_or_id: str, yes: bool = typer.Option(Fals
 def verify(
     ctx: typer.Context,
     service: str | None = typer.Option(None, "--service"),
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
     all: bool = typer.Option(False, "--all"),
 ) -> None:
     vault, _, broker = build_services(prompt=True)
-    targets = [service] if service else []
     if all:
-        targets = [record.service for record in vault.list_credentials()]
-    if not targets:
-        raise typer.BadParameter("Provide a service or use --all")
+        targets = [(record.service, record.alias) for record in vault.list_credentials()]
+    elif service:
+        targets = [(service, alias)]
+    else:
+        raise typer.BadParameter("Provide --service or use --all")
     results = []
-    for target in targets:
-        results.append(broker.verify_credential(target))
+    for svc, als in targets:
+        results.append(broker.verify_credential(svc, alias=als))
     console.print_json(data=json.dumps([result.model_dump(mode="json") for result in results]))
 
 

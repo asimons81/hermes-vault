@@ -12,7 +12,7 @@ class StubBroker:
     def __init__(self) -> None:
         self.called_with: list[str] = []
 
-    def verify_credential(self, service: str) -> BrokerDecision:
+    def verify_credential(self, service: str, alias: str | None = None) -> BrokerDecision:
         self.called_with.append(service)
         return BrokerDecision(
             allowed=True,
