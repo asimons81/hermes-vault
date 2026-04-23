@@ -679,6 +679,29 @@ def restore_vault(
     console.print(f"[green]Restored {len(imported)} credential(s) from {input}[/green]")
 
 
+@_typer_app.command("mcp")
+def mcp_command(ctx: typer.Context) -> None:
+    """Start the Hermes Vault MCP server (stdio transport).
+
+    This command launches the Model Context Protocol server so that
+    compatible hosts (Claude Desktop, Cursor, etc.) can request
+    credentials through the vault broker.
+
+    The server reads HERMES_VAULT_PASSPHRASE from the environment and
+    loads the same policy and vault as the CLI.
+
+    \b
+    Example:
+      hermes-vault mcp
+    """
+    import asyncio
+    from hermes_vault.mcp_server import main as mcp_main
+    try:
+        asyncio.run(mcp_main())
+    except KeyboardInterrupt:
+        pass
+
+
 @_typer_app.command()
 def update(
     ctx: typer.Context,

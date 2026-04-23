@@ -1,0 +1,245 @@
+"""Tests for the Hermes Vault MCP server."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+import pytest
+from mcp.types import TextContent
+
+from hermes_vault.mcp_server import call_tool, list_tools, server
+from hermes_vault.models import CredentialStatus
+
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+
+def _run_async(coro):
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def _text(content: list[TextContent]) -> str:
+    assert len(content) == 1
+    assert content[0].type == "text"
+    return content[0].text
+
+
+def _json(content: list[TextContent]) -> Any:
+    return json.loads(_text(content))
+
+
+# ── server metadata ────────────────────────────────────────────────────────────
+
+
+def test_list_tools_returns_expected_tools():
+    tools = _run_async(list_tools())
+    names = {t.name for t in tools}
+    expected = {
+        "list_services",
+        "get_credential_metadata",
+        "get_ephemeral_env",
+        "verify_credential",
+        "rotate_credential",
+        "scan_for_secrets",
+    }
+    assert names == expected
+
+
+# ── list_services ──────────────────────────────────────────────────────────────
+
+
+def test_list_services_requires_agent_id():
+    result = _run_async(call_tool("list_services", {}))
+    assert "Missing required parameter: agent_id" in _text(result)
+
+
+def test_list_services_returns_policy_filtered_results(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("list_services", {"agent_id": "test-agent"}))
+    data = _json(result)
+    # test-agent policy allows openai and supabase
+    services = {d["service"] for d in data}
+    assert "openai" in services
+    assert "supabase" in services
+
+
+def test_list_services_respects_filter(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("list_services", {"agent_id": "test-agent", "filter": "open"}))
+    data = _json(result)
+    assert len(data) == 1
+    assert data[0]["service"] == "openai"
+
+
+# ── get_credential_metadata ────────────────────────────────────────────────────
+
+
+def test_get_metadata_requires_agent_id():
+    result = _run_async(call_tool("get_credential_metadata", {"service": "openai"}))
+    assert "Missing required parameter: agent_id" in _text(result)
+
+
+def test_get_metadata_denied_for_unknown_agent(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("get_credential_metadata", {"agent_id": "unknown-agent", "service": "openai"}))
+    assert "Denied:" in _text(result)
+
+
+def test_get_metadata_returns_metadata(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("get_credential_metadata", {"agent_id": "test-agent", "service": "openai"}))
+    data = _json(result)
+    assert data["service"] == "openai"
+    assert "id" in data
+
+
+# ── get_ephemeral_env ──────────────────────────────────────────────────────────
+
+
+def test_get_ephemeral_env_requires_agent_id():
+    result = _run_async(call_tool("get_ephemeral_env", {"service": "openai"}))
+    assert "Missing required parameter: agent_id" in _text(result)
+
+
+def test_get_ephemeral_env_denied_for_unauthorized_service(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("get_ephemeral_env", {"agent_id": "test-agent", "service": "github"}))
+    assert "Denied:" in _text(result)
+
+
+def test_get_ephemeral_env_returns_env(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("get_ephemeral_env", {"agent_id": "test-agent", "service": "openai"}))
+    data = _json(result)
+    assert "env" in data
+    assert "OPENAI_API_KEY" in data["env"]
+    assert data["env"]["OPENAI_API_KEY"] == "sk-test-openai"
+
+
+# ── verify_credential ──────────────────────────────────────────────────────────
+
+
+def test_verify_requires_agent_id():
+    result = _run_async(call_tool("verify_credential", {"service": "openai"}))
+    assert "Missing required parameter: agent_id" in _text(result)
+
+
+def test_verify_denied_when_agent_lacks_verify_action(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    # test-agent has actions: [get_credential, get_env] — verify is not included
+    result = _run_async(call_tool("verify_credential", {"agent_id": "test-agent", "service": "openai"}))
+    assert "Denied:" in _text(result)
+
+
+# ── rotate_credential ──────────────────────────────────────────────────────────
+
+
+def test_rotate_requires_agent_id():
+    result = _run_async(call_tool("rotate_credential", {"service": "openai", "new_secret": "new"}))
+    assert "Missing required parameter: agent_id" in _text(result)
+
+
+def test_rotate_denied_for_unauthorized_agent(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    # test-agent does NOT have rotate permission on supabase
+    result = _run_async(call_tool("rotate_credential", {"agent_id": "test-agent", "service": "supabase", "new_secret": "new-secret"}))
+    assert "Denied:" in _text(result)
+
+
+def test_rotate_succeeds_for_authorized_agent(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    # test-agent HAS rotate permission on openai
+    result = _run_async(call_tool("rotate_credential", {"agent_id": "test-agent", "service": "openai", "new_secret": "new-secret"}))
+    data = _json(result)
+    assert data["allowed"] is True
+
+
+# ── scan_for_secrets ───────────────────────────────────────────────────────────
+
+
+def test_scan_requires_agent_id():
+    result = _run_async(call_tool("scan_for_secrets", {}))
+    assert "Missing required parameter: agent_id" in _text(result)
+
+
+def test_scan_denied_for_agent_without_capability(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("scan_for_secrets", {"agent_id": "restricted-agent"}))
+    assert "Denied:" in _text(result)
+
+
+# ── fixtures ───────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def vault_with_policy(tmp_path):
+    """Create a vault with policy and a few credentials for MCP tests."""
+    from hermes_vault.audit import AuditLogger
+    from hermes_vault.broker import Broker
+    from hermes_vault.config import get_settings
+    from hermes_vault.crypto import derive_key
+    from hermes_vault.policy import PolicyEngine
+    from hermes_vault.verifier import Verifier
+    from hermes_vault.vault import Vault
+
+    home = tmp_path
+    db_path = home / "vault.db"
+    salt_path = home / "master_key_salt.bin"
+    policy_path = home / "policy.yaml"
+
+    os.environ["HERMES_VAULT_HOME"] = str(home)
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test-passphrase"
+    os.environ["HERMES_VAULT_POLICY"] = str(policy_path)
+
+    salt_path.write_bytes(os.urandom(16))
+    vault = Vault(db_path, salt_path, "test-passphrase")
+    vault.initialize()
+
+    vault.add_credential(service="openai", secret="sk-test-openai", credential_type="api_key", alias="primary")
+    vault.add_credential(service="supabase", secret="sb-test-supabase", credential_type="api_key", alias="primary")
+
+    policy_yaml = """
+agents:
+  test-agent:
+    services:
+      openai:
+        actions:
+          - get_credential
+          - get_env
+          - metadata
+          - rotate
+          - delete
+          - add_credential
+      supabase:
+        actions:
+          - get_credential
+          - get_env
+    max_ttl: 3600
+    raw_secret_access: false
+    env_only: true
+  restricted-agent:
+    services:
+      openai:
+        actions:
+          - get_env
+    capabilities:
+      - list_credentials
+    max_ttl: 3600
+    raw_secret_access: false
+    env_only: true
+"""
+    policy_path.write_text(policy_yaml, encoding="utf-8")
+    policy = PolicyEngine.from_yaml(policy_path)
+    audit = AuditLogger(db_path)
+    verifier = Verifier()
+    broker = Broker(vault=vault, policy=policy, verifier=verifier, audit=audit)
+
+    yield broker
+
+    # Cleanup
+    for key in ("HERMES_VAULT_HOME", "HERMES_VAULT_PASSPHRASE", "HERMES_VAULT_POLICY"):
+        os.environ.pop(key, None)

@@ -62,6 +62,14 @@ Hermes Vault is a local-first Python project that centralizes credential scannin
 - Generates SKILL.md contracts that enforce the Hermes Vault access workflow
 - Keeps sub-agents from freelancing credential discovery
 
+### `mcp_server.py`
+
+- Stdio-based MCP server using the official Python MCP SDK
+- Exposes brokered capabilities as MCP tools: list_services, get_credential_metadata, get_ephemeral_env, verify_credential, rotate_credential, scan_for_secrets
+- Every tool call requires `agent_id` — policy enforcement reuses the existing broker and VaultMutations layers
+- Raw secrets are never transmitted over MCP; the default access pattern is ephemeral env materialization
+- Loads the same vault, policy, and crypto configuration as the CLI
+
 ## Runtime Layout
 
 Default runtime state lives outside the project tree at `~/.hermes/hermes-vault-data`:
@@ -80,6 +88,8 @@ This keeps repository code separate from live secrets and operator state.
 - No normal CLI path prints raw secrets
 - No secret logging in audit records
 - Broker and verifier make re-auth decisions explicit instead of speculative
+- MCP transport is a thin wrapper: all policy enforcement reuses the broker; no parallel authority
+- Raw secrets are never transmitted over MCP — only ephemeral environment materialization
 
 ## Extension Points
 
@@ -87,4 +97,5 @@ This keeps repository code separate from live secrets and operator state.
 - Add new provider verifiers in `verifier.py`
 - Extend broker env mappings in `broker.py`
 - Add policy fields in `models.py` and `policy.py`
+- Add new MCP tools in `mcp_server.py` (must require `agent_id` and route through broker)
 

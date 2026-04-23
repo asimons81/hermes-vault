@@ -63,3 +63,26 @@ Reduce false auth failures, secret sprawl, and uncontrolled credential access in
 - V1 does not yet implement full key rotation or automated backup/restore tooling
 - MiniMax verification is still configuration-dependent and not yet a fully opinionated default adapter
 - Provider verification depends on network reachability and stable provider endpoints
+
+## MCP Threat Model
+
+### What an attacker with MCP host access can do
+
+- Request any MCP tool call with any `agent_id` they know or guess
+- If the agent is registered in policy, the attacker gains whatever that agent is authorized to do
+- If the agent is not registered, all requests are denied
+
+### What an attacker with MCP host access cannot do
+
+- Extract raw secrets — the MCP server only returns ephemeral env materialization or metadata
+- Bypass policy — all tool calls route through the broker, which applies the same policy checks as the CLI
+- Mutate the vault without policy authorization — rotate, scan, and other destructive operations require explicit action permissions
+- Access the vault without `HERMES_VAULT_PASSPHRASE` — the MCP server fails closed if the passphrase is not available
+
+### Operator mitigations
+
+- Register only the minimum set of agents and actions needed for each MCP host
+- Use short TTLs for ephemeral env materialization
+- Keep `raw_secret_access: false` for all MCP-facing agents
+- Restart the MCP server after policy changes — the server loads policy at startup
+- Do not share `agent_id` values across untrusted hosts

@@ -64,6 +64,45 @@ hermes-vault generate-skill --all-agents
 
 Default runtime state lives in `~/.hermes/hermes-vault-data`.
 
+## MCP Server
+
+Hermes Vault exposes the broker as an MCP (Model Context Protocol) server so that compatible hosts can request credentials programmatically.
+
+```bash
+hermes-vault mcp
+```
+
+Configure your MCP host (Claude Desktop, Cursor, etc.) to run:
+
+```json
+{
+  "mcpServers": {
+    "hermes-vault": {
+      "command": "hermes-vault",
+      "args": ["mcp"],
+      "env": {
+        "HERMES_VAULT_PASSPHRASE": "your-passphrase"
+      }
+    }
+  }
+}
+```
+
+All MCP tool calls require an `agent_id`. The same policy.yaml that gates CLI access also gates MCP access.
+
+### MCP Tools
+
+| Tool | Description | Policy Gate |
+|---|---|---|
+| `list_services` | List credentials visible to the agent | `capability:list_credentials` |
+| `get_credential_metadata` | Fetch credential metadata (no secrets) | `can_read(service)` |
+| `get_ephemeral_env` | Materialise ephemeral env vars | `can_env(service)` |
+| `verify_credential` | Verify a credential against its provider | `can_verify(service)` |
+| `rotate_credential` | Rotate a credential to a new secret | `can_rotate(service)` |
+| `scan_for_secrets` | Scan filesystem for plaintext secrets | `capability:scan_secrets` |
+
+Raw secrets are **never** transmitted over MCP. The default access pattern is `get_ephemeral_env`.
+
 ## Common Commands
 
 ```bash
@@ -74,6 +113,8 @@ hermes-vault add openai --alias primary
 hermes-vault list
 hermes-vault verify openai
 hermes-vault broker env openai --agent dwight --ttl 900
+hermes-vault update --check
+hermes-vault update
 ```
 
 ## What's New in 0.2.0

@@ -60,6 +60,79 @@ agents:
 In this configuration, `pam` can list available credentials and scan for
 plaintext secrets, but cannot export backups or import new credentials.
 
+## MCP Setup
+
+Hermes Vault can expose the broker through the Model Context Protocol (MCP) so that compatible hosts (Claude Desktop, Cursor, etc.) can request credentials programmatically.
+
+### Running the MCP server
+
+```bash
+hermes-vault mcp
+```
+
+The server uses stdio transport and reads `HERMES_VAULT_PASSPHRASE` from the environment.
+
+### Connecting from Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or the equivalent config path for your host:
+
+```json
+{
+  "mcpServers": {
+    "hermes-vault": {
+      "command": "hermes-vault",
+      "args": ["mcp"],
+      "env": {
+        "HERMES_VAULT_PASSPHRASE": "your-passphrase"
+      }
+    }
+  }
+}
+```
+
+### Agent registration for MCP
+
+Every MCP tool call requires an `agent_id`. Register agents in `policy.yaml` just like CLI sub-agents:
+
+```yaml
+agents:
+  claude-desktop:
+    services:
+      openai:
+        actions: [get_env, verify, metadata]
+      supabase:
+        actions: [get_env]
+    capabilities: [list_credentials]
+    max_ttl: 3600
+    raw_secret_access: false
+    env_only: true
+```
+
+The MCP server applies the same policy checks as the CLI broker.
+
+### MCP troubleshooting
+
+- **"Missing required parameter: agent_id"** — Every MCP tool call must include `agent_id`. The host does not pass identity automatically.
+- **"Denied: agent 'X' is not defined in policy"** — Add the agent to `policy.yaml` and restart the MCP server.
+- **"Denied: action 'Y' not permitted on service 'Z'"** — Add the action to the agent's service entry in policy.
+- **Server fails to start** — Ensure `HERMES_VAULT_PASSPHRASE` is set in the environment passed to the MCP server process.
+
+## Update Command
+
+Check for updates safely:
+
+```bash
+hermes-vault update --check
+```
+
+Perform a guarded update (only for supported install methods):
+
+```bash
+hermes-vault update
+```
+
+Supported install methods: `pip`, `pipx`, `uv tool`. Unsupported methods (editable installs, unknown) receive exact manual instructions instead of auto-update.
+
 ## Canonical Service IDs
 
 Hermes Vault uses canonical service IDs internally.  When you `add`, `import`, or reference a service in policy, the name is normalized automatically:
