@@ -22,6 +22,7 @@ from hermes_vault.policy import PolicyEngine
 from hermes_vault.scanner import Scanner
 from hermes_vault.service_ids import is_canonical, normalize
 from hermes_vault.skillgen import SkillGenerator
+from hermes_vault.update import UpdateError, UpdatePlan, perform_update, resolve_update_plan
 from hermes_vault.verifier import Verifier
 from hermes_vault.vault import AmbiguousTargetError, Vault
 
@@ -61,6 +62,31 @@ _typer_app = typer.Typer(
 broker_app = typer.Typer(help="Broker operations.")
 _typer_app.add_typer(broker_app, name="broker")
 console = Console()
+
+
+def _print_update_plan(plan: UpdatePlan) -> None:
+    table = Table(title="Hermes Vault Update")
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("Current version", plan.current_version)
+    table.add_row("Latest version", plan.latest_release.version)
+    table.add_row("Release source", plan.latest_release.url)
+    table.add_row("Install method", plan.installation.method.value)
+    table.add_row("Detected state", plan.installation.detail)
+    table.add_row(
+        "Auto-update supported",
+        "yes" if plan.installation.auto_update_supported else "no",
+    )
+    if plan.needs_update:
+        action = (
+            "Run " + " ".join(plan.installation.auto_update_command)
+            if plan.installation.auto_update_supported and plan.installation.auto_update_command
+            else plan.installation.manual_command
+        )
+    else:
+        action = "Already up to date. No changes required."
+    table.add_row("Planned action", action)
+    console.print(table)
 
 
 # ── HermesGroup — Click Group with add_typer + banner invoke ───────────────────────
@@ -651,6 +677,47 @@ def restore_vault(
         raise typer.Exit(code=1)
     imported = vault.import_backup(backup)
     console.print(f"[green]Restored {len(imported)} credential(s) from {input}[/green]")
+
+
+@_typer_app.command()
+def update(
+    ctx: typer.Context,
+    check: bool = typer.Option(
+        False,
+        "--check",
+        help="Read-only update check that prints the detected install method and planned action.",
+    ),
+) -> None:
+    """Check for or apply a safe Hermes Vault CLI upgrade."""
+    try:
+        plan = resolve_update_plan()
+    except UpdateError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    _print_update_plan(plan)
+
+    if check:
+        console.print("[green]Read-only check complete. No changes were made.[/green]")
+        return
+
+    if not plan.needs_update:
+        console.print("[green]Hermes Vault is already up to date.[/green]")
+        return
+
+    if not plan.installation.auto_update_supported:
+        console.print("[red]Auto-update is not supported for this installation.[/red]")
+        console.print(f"Manual command: {plan.installation.manual_command}")
+        raise typer.Exit(code=1)
+
+    assert plan.installation.auto_update_command is not None
+    console.print(f"Running: {' '.join(plan.installation.auto_update_command)}")
+    try:
+        verified_version = perform_update(plan)
+    except UpdateError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]Hermes Vault updated successfully to {verified_version}.[/green]")
 
 
 # ── App proxy ──────────────────────────────────────────────────────────────────

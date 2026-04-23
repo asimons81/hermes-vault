@@ -14,7 +14,14 @@ Hermes Vault is a local-first credential broker and encrypted vault for Hermes a
 
 ## Install
 
-Recommended with `uv`:
+Released CLI installs are safest with an isolated tool manager:
+
+```bash
+uv tool install git+https://github.com/asimons81/hermes-vault.git@vX.Y.Z
+pipx install git+https://github.com/asimons81/hermes-vault.git@vX.Y.Z
+```
+
+For local development, use `uv` or editable `pip`:
 
 ```bash
 uv sync --extra dev
@@ -27,6 +34,22 @@ python3 -m pip install -e .[dev]
 ```
 
 Hermes Vault targets Python 3.11+.
+
+## Update
+
+Check for the latest tagged release without changing the environment:
+
+```bash
+hermes-vault update --check
+```
+
+Apply a guarded update:
+
+```bash
+hermes-vault update
+```
+
+`hermes-vault update` currently auto-updates only for `pipx` and `uv tool` installs. Editable/dev installs, generic `pip` installs, and unknown environments receive an explicit manual command instead of an automatic mutation.
 
 ## Quick Start
 
@@ -45,6 +68,7 @@ Default runtime state lives in `~/.hermes/hermes-vault-data`.
 
 ```bash
 hermes-vault scan
+hermes-vault update --check
 hermes-vault import --from-env ~/.hermes/.env
 hermes-vault add openai --alias primary
 hermes-vault list
@@ -124,4 +148,4 @@ If you need a starting policy, copy `policy.example.yaml` into the runtime home 
 
 ## More Detail
 
-See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/credential-lifecycle.md](docs/credential-lifecycle.md), [docs/operator-guide.md](docs/operator-guide.md), and [docs/migration-0.1-to-0.2.md](docs/migration-0.1-to-0.2.md).
+See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/credential-lifecycle.md](docs/credential-lifecycle.md), [docs/operator-guide.md](docs/operator-guide.md), [docs/migration-0.1-to-0.2.md](docs/migration-0.1-to-0.2.md), and [docs/update-workflow.md](docs/update-workflow.md).
