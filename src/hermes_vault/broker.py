@@ -49,22 +49,29 @@ class Broker:
             },
         )
 
-    def get_ephemeral_env(self, service: str, agent_id: str, ttl: int) -> BrokerDecision:
-        service = normalize(service)
-        allowed, reason = self.policy.can_access_service(agent_id, service)
+    def get_ephemeral_env(self, service: str, agent_id: str, ttl: int, alias: str | None = None) -> BrokerDecision:
+        canonical = normalize(service)
+        allowed, reason = self.policy.can_access_service(agent_id, canonical)
         if not allowed:
-            return self._deny(agent_id, service, "get_ephemeral_env", reason, ttl_seconds=ttl)
-        ttl_ok, ttl_reason, effective_ttl = self.policy.enforce_ttl(agent_id, ttl, service=service)
+            return self._deny(agent_id, canonical, "get_ephemeral_env", reason, ttl_seconds=ttl)
+        ttl_ok, ttl_reason, effective_ttl = self.policy.enforce_ttl(agent_id, ttl, service=canonical)
         if not ttl_ok:
-            return self._deny(agent_id, service, "get_ephemeral_env", ttl_reason, ttl_seconds=ttl)
-        secret = self.vault.get_secret(service)
+            return self._deny(agent_id, canonical, "get_ephemeral_env", ttl_reason, ttl_seconds=ttl)
+        if alias:
+            try:
+                record = self.vault.resolve_credential(service, alias=alias)
+            except KeyError as exc:
+                return self._deny(agent_id, canonical, "get_ephemeral_env", str(exc), ttl_seconds=effective_ttl)
+            secret = self.vault.get_secret(record.id)
+        else:
+            secret = self.vault.get_secret(canonical)
         if not secret:
-            return self._deny(agent_id, service, "get_ephemeral_env", "credential not found in vault", ttl_seconds=effective_ttl)
-        env_template = get_env_var_map(service)
+            return self._deny(agent_id, canonical, "get_ephemeral_env", "credential not found in vault", ttl_seconds=effective_ttl)
+        env_template = get_env_var_map(canonical)
         env = {key: value.format(secret=secret.secret) for key, value in env_template.items()}
         return self._allow(
             agent_id,
-            service,
+            canonical,
             "get_ephemeral_env",
             "ephemeral environment materialization approved",
             ttl_seconds=effective_ttl,

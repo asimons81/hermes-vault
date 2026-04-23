@@ -118,6 +118,54 @@ def test_get_ephemeral_env_returns_env(vault_with_policy, tmp_path):
     assert "env" in data
     assert "OPENAI_API_KEY" in data["env"]
     assert data["env"]["OPENAI_API_KEY"] == "sk-test-openai"
+    assert "expires_at" in data
+    assert data["expires_at"] is not None
+
+
+def test_get_ephemeral_env_with_alias_succeeds(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("get_ephemeral_env", {
+        "agent_id": "test-agent",
+        "service": "openai",
+        "alias": "primary",
+    }))
+    data = _json(result)
+    assert "env" in data
+    assert "OPENAI_API_KEY" in data["env"]
+
+
+def test_get_ephemeral_env_with_alias_denied_for_unauthorized_service(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("get_ephemeral_env", {
+        "agent_id": "test-agent",
+        "service": "github",
+        "alias": "work",
+    }))
+    assert "Denied:" in _text(result)
+
+
+def test_get_metadata_excludes_encrypted_payload(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("get_credential_metadata", {"agent_id": "test-agent", "service": "openai"}))
+    data = _json(result)
+    assert "encrypted_payload" not in data
+
+
+# ── policy strict validation ───────────────────────────────────────────────────
+
+
+def test_policy_yaml_rejects_unknown_fields(tmp_path):
+    from hermes_vault.policy import PolicyEngine
+    policy_path = tmp_path / "bad_policy.yaml"
+    policy_path.write_text("""
+agents:
+  test-agent:
+    services: [openai]
+    max_ttl: 3600
+    env_only: true
+""", encoding="utf-8")
+    with pytest.raises(Exception):
+        PolicyEngine.from_yaml(policy_path)
 
 
 # ── verify_credential ──────────────────────────────────────────────────────────
@@ -218,9 +266,9 @@ agents:
         actions:
           - get_credential
           - get_env
-    max_ttl: 3600
+    max_ttl_seconds: 3600
     raw_secret_access: false
-    env_only: true
+    ephemeral_env_only: true
   restricted-agent:
     services:
       openai:
@@ -228,9 +276,9 @@ agents:
           - get_env
     capabilities:
       - list_credentials
-    max_ttl: 3600
+    max_ttl_seconds: 3600
     raw_secret_access: false
-    env_only: true
+    ephemeral_env_only: true
 """
     policy_path.write_text(policy_yaml, encoding="utf-8")
     policy = PolicyEngine.from_yaml(policy_path)

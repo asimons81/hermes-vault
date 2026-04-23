@@ -94,6 +94,9 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
 
 # ── broker lifecycle ───────────────────────────────────────────────────────────
 
+_broker: Broker | None = None
+
+
 def _build_broker() -> Broker:
     """Initialise vault, policy, and broker — same rules as the CLI."""
     settings = get_settings()
@@ -105,6 +108,14 @@ def _build_broker() -> Broker:
     verifier = Verifier()
     scanner = Scanner(settings, policy=policy)
     return Broker(vault=vault, policy=policy, verifier=verifier, audit=audit, scanner=scanner)
+
+
+def _get_broker() -> Broker:
+    """Return the cached broker, building lazily if needed (e.g. in tests)."""
+    global _broker
+    if _broker is None:
+        _broker = _build_broker()
+    return _broker
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -122,7 +133,7 @@ def _json_text(data: Any) -> str:
 
 # ── server ─────────────────────────────────────────────────────────────────────
 
-server = Server("hermes-vault", version="0.3.0")
+server = Server("hermes-vault", version="0.3.1")
 
 
 @server.list_tools()
@@ -168,7 +179,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         if not arguments.get("agent_id"):
             return [TextContent(type="text", text="Error: Missing required parameter: agent_id")]
 
-    broker = _build_broker()
+    broker = _get_broker()
 
     try:
         if name == "list_services":
@@ -186,7 +197,11 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             result = broker.get_metadata(agent_id, service, alias)
             if not result.allowed:
                 return [TextContent(type="text", text=f"Denied: {result.reason}")]
-            payload = result.record.model_dump(mode="json") if result.record else result.metadata
+            payload = (
+                result.record.model_dump(mode="json", exclude={"encrypted_payload"})
+                if result.record
+                else result.metadata
+            )
             return [TextContent(type="text", text=_json_text(payload))]
 
         if name == "get_ephemeral_env":
@@ -194,17 +209,17 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             service = arguments["service"]
             alias = arguments.get("alias")
             ttl = arguments.get("ttl_seconds")
-            # Alias disambiguation for secret retrieval
-            if alias:
-                record = broker.vault.resolve_credential(service, alias=alias)
-                service = record.id
-            result = broker.get_ephemeral_env(service, agent_id, ttl or 900)
+            result = broker.get_ephemeral_env(service, agent_id, ttl or 900, alias=alias)
             if not result.allowed:
                 return [TextContent(type="text", text=f"Denied: {result.reason}")]
+            expires_at = None
+            if result.ttl_seconds is not None:
+                from datetime import datetime, timezone, timedelta
+                expires_at = (datetime.now(timezone.utc) + timedelta(seconds=result.ttl_seconds)).isoformat()
             return [TextContent(type="text", text=_json_text({
                 "env": result.env,
                 "ttl_seconds": result.ttl_seconds,
-                "expires_at": result.metadata.get("expires_at") if result.metadata else None,
+                "expires_at": expires_at,
             }))]
 
         if name == "verify_credential":
@@ -259,11 +274,15 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 # ── entrypoint ─────────────────────────────────────────────────────────────────
 
 async def main() -> None:
+    log_path = Path.home() / ".hermes" / "hermes-vault-data" / "mcp.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        stream=sys.stderr,
+        filename=str(log_path),
     )
+    global _broker
+    _broker = _get_broker()
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,

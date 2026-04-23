@@ -103,9 +103,9 @@ agents:
       supabase:
         actions: [get_env]
     capabilities: [list_credentials]
-    max_ttl: 3600
+    max_ttl_seconds: 3600
     raw_secret_access: false
-    env_only: true
+    ephemeral_env_only: true
 ```
 
 The MCP server applies the same policy checks as the CLI broker.

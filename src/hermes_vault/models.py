@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def utc_now() -> datetime:
@@ -129,6 +129,7 @@ class ServicePolicyEntry(BaseModel):
 
 
 class AgentPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     # v2: per-service action permissions.  Normalized from legacy list or v2 dict.
     service_actions: dict[str, ServicePolicyEntry] = Field(default_factory=dict)
     # Agent-level capabilities for non-service-scoped actions.
@@ -144,6 +145,7 @@ class AgentPolicy(BaseModel):
 
 
 class PolicyConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     agents: dict[str, AgentPolicy] = Field(default_factory=dict)
     managed_paths: list[str] = Field(default_factory=lambda: ["~/.hermes", "~/.config/hermes"])
     plaintext_migration_paths: list[str] = Field(default_factory=list)
