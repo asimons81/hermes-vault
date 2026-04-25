@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hermes_vault.models import AccessLogRecord
@@ -27,6 +28,15 @@ class AuditLogger:
                     verification_result TEXT
                 )
                 """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_access_logs_agent_id ON access_logs(agent_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_access_logs_service ON access_logs(service)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_access_logs_timestamp ON access_logs(timestamp)"
             )
             conn.commit()
         if self.db_path.exists():
@@ -55,13 +65,46 @@ class AuditLogger:
             )
             conn.commit()
 
-    def list_recent(self, limit: int = 100) -> list[dict[str, object]]:
+    def list_recent(
+        self,
+        limit: int = 100,
+        agent_id: str | None = None,
+        service: str | None = None,
+        action: str | None = None,
+        decision: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[dict[str, object]]:
         self.initialize()
+        conditions: list[str] = []
+        params: list[object] = []
+
+        if agent_id is not None:
+            conditions.append("agent_id = ?")
+            params.append(agent_id)
+        if service is not None:
+            conditions.append("service = ?")
+            params.append(service)
+        if action is not None:
+            conditions.append("action = ?")
+            params.append(action)
+        if decision is not None:
+            conditions.append("decision = ?")
+            params.append(decision)
+        if since is not None:
+            conditions.append("timestamp >= ?")
+            params.append(since.isoformat())
+        if until is not None:
+            conditions.append("timestamp <= ?")
+            params.append(until.isoformat())
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        query = f"SELECT * FROM access_logs WHERE {where_clause} ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT * FROM access_logs ORDER BY timestamp DESC LIMIT ?", (limit,)
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
     def export_jsonl(self, path: Path, limit: int = 100) -> None:

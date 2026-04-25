@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
@@ -504,6 +505,103 @@ def delete(
         result,
         success_msg=f"[green]Deleted credential [cyan]{result.metadata.get('credential_id', service_or_id)}[/cyan].[/green]",
     )
+
+
+@_typer_app.command()
+def audit(
+    ctx: typer.Context,
+    agent: str | None = typer.Option(None, "--agent", help="Filter by agent ID."),
+    service: str | None = typer.Option(None, "--service", help="Filter by service name."),
+    action: str | None = typer.Option(None, "--action", help="Filter by action."),
+    decision: str | None = typer.Option(None, "--decision", help="Filter by decision (allow|deny)."),
+    since: str | None = typer.Option(None, "--since", help="Filter since timestamp. Use '7d' for 7 days ago, or 'YYYY-MM-DD' for a specific date."),
+    until: str | None = typer.Option(None, "--until", help="Filter until timestamp. Use 'YYYY-MM-DD' for a specific date."),
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+    limit: int = typer.Option(100, "--limit", help="Maximum number of entries to return."),
+) -> None:
+    """Query the audit log.
+
+    \b
+    Examples:
+      hermes-vault audit
+      hermes-vault audit --agent hermes --limit 50
+      hermes-vault audit --since 7d --format json
+      hermes-vault audit --decision deny --since 2026-03-01
+    """
+    import re
+
+    def parse_date(value: str | None) -> datetime | None:
+        if value is None:
+            return None
+        # Relative: "7d", "30d", etc.
+        m = re.match(r"^(\d+)d$", value)
+        if m:
+            return datetime.now(timezone.utc) - timedelta(days=int(m.group(1)))
+        # Absolute: "YYYY-MM-DD"
+        try:
+            return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    if limit < 1:
+        console.print("[red]--limit must be a positive integer[/red]")
+        raise typer.Exit(code=1)
+
+    since_dt = parse_date(since)
+    until_dt = parse_date(until)
+
+    if since is not None and since_dt is None:
+        console.print(f"[red]Invalid --since value: {since!r} (use '7d' or 'YYYY-MM-DD')[/red]")
+        raise typer.Exit(code=1)
+    if until is not None and until_dt is None:
+        console.print(f"[red]Invalid --until value: {until!r} (use 'YYYY-MM-DD')[/red]")
+        raise typer.Exit(code=1)
+
+    if decision is not None and decision not in ("allow", "deny"):
+        console.print("[red]--decision must be 'allow' or 'deny'[/red]")
+        raise typer.Exit(code=1)
+
+    # Build services without prompt (audit is read-only, no passphrase needed)
+    settings = get_settings()
+    audit = AuditLogger(settings.db_path)
+    results = audit.list_recent(
+        limit=limit,
+        agent_id=agent,
+        service=service,
+        action=action,
+        decision=decision,
+        since=since_dt,
+        until=until_dt,
+    )
+
+    if not results:
+        raise typer.Exit(code=0)
+
+    if format == "json":
+        console.print_json(data=results)
+        return
+
+    table = Table(title="Audit Log")
+    table.add_column("TIMESTAMP")
+    table.add_column("AGENT")
+    table.add_column("SERVICE")
+    table.add_column("ACTION")
+    table.add_column("DECISION")
+    table.add_column("REASON")
+    table.add_column("TTL")
+    table.add_column("VERIFICATION")
+    for row in results:
+        table.add_row(
+            row.get("timestamp", "-"),
+            row.get("agent_id", "-"),
+            row.get("service", "-"),
+            row.get("action", "-"),
+            row.get("decision", "-"),
+            row.get("reason", "-"),
+            str(row.get("ttl_seconds", "-")),
+            row.get("verification_result", "-"),
+        )
+    console.print(table)
 
 
 @_typer_app.command()
