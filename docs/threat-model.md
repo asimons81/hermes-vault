@@ -59,6 +59,12 @@ Reduce false auth failures, secret sprawl, and uncontrolled credential access in
 
 ## Residual Risks
 
+### Audit and status visibility
+
+Without a query interface, audit logs accumulated but were not actionable.
+v0.4.0 adds the audit and status commands so operators can inspect access
+history and credential health. Audit entries never contain secrets.
+
 - Local compromise of the operator account still threatens the vault
 - V1 does not yet implement full key rotation or automated backup/restore tooling
 - MiniMax verification is still configuration-dependent and not yet a fully opinionated default adapter

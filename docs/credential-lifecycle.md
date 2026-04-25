@@ -50,4 +50,19 @@
 
 - Generated SKILL.md files tell agents to stop credential freelancing
 - Verification-before-reauth is part of the required workflow
-- Generated skills are review artifacts unless explicitly installed by the operator
+### Generated skills are review artifacts unless explicitly installed by the operator
+
+## 8. Observability
+
+v0.4.0 adds visibility into credential state and access history:
+
+- hermes-vault audit queries the access log with filters by agent, service,
+  action, decision, and time range
+- hermes-vault status shows credential health: stale, invalid, or expiring
+- hermes-vault set-expiry and clear-expiry record operator-defined expiry
+  metadata on credentials
+- hermes-vault verify --all --format table or --report provides structured
+  verification output
+
+These commands do not change credential security properties. No secrets are
+ever exposed in audit, status, or verification output.

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
@@ -507,11 +509,415 @@ def delete(
 
 
 @_typer_app.command()
+def audit(
+    ctx: typer.Context,
+    agent: str | None = typer.Option(None, "--agent", help="Filter by agent ID."),
+    service: str | None = typer.Option(None, "--service", help="Filter by service name."),
+    action: str | None = typer.Option(None, "--action", help="Filter by action."),
+    decision: str | None = typer.Option(None, "--decision", help="Filter by decision (allow|deny)."),
+    since: str | None = typer.Option(None, "--since", help="Filter since timestamp. Use '7d' for 7 days ago, or 'YYYY-MM-DD' for a specific date."),
+    until: str | None = typer.Option(None, "--until", help="Filter until timestamp. Use 'YYYY-MM-DD' for a specific date."),
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+    limit: int = typer.Option(100, "--limit", help="Maximum number of entries to return."),
+) -> None:
+    """Query the audit log.
+
+    \b
+    Examples:
+      hermes-vault audit
+      hermes-vault audit --agent hermes --limit 50
+      hermes-vault audit --since 7d --format json
+      hermes-vault audit --decision deny --since 2026-03-01
+    """
+    def parse_since(value: str | None) -> datetime | None:
+        if value is None:
+            return None
+        m = re.match(r"^(\d+)d$", value)
+        if m:
+            return datetime.now(timezone.utc) - timedelta(days=int(m.group(1)))
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+            if parsed.strftime("%Y-%m-%d") != value:
+                raise ValueError()
+            return parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    def parse_until(value: str | None) -> datetime | None:
+        if value is None:
+            return None
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+            if parsed.strftime("%Y-%m-%d") != value:
+                raise ValueError()
+            return parsed.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    if limit < 1:
+        console.print("[red]--limit must be a positive integer[/red]")
+        raise typer.Exit(code=1)
+
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=1)
+
+    since_dt = parse_since(since)
+    until_dt = parse_until(until)
+
+    if since is not None and since_dt is None:
+        console.print(f"[red]Invalid --since value: {since!r} (use '7d' or 'YYYY-MM-DD')[/red]")
+        raise typer.Exit(code=1)
+    if until is not None and until_dt is None:
+        console.print(f"[red]Invalid --until value: {until!r} (use 'YYYY-MM-DD')[/red]")
+        raise typer.Exit(code=1)
+
+    if decision is not None and decision not in ("allow", "deny"):
+        console.print("[red]--decision must be 'allow' or 'deny'[/red]")
+        raise typer.Exit(code=1)
+
+    # Build services without prompt (audit is read-only, no passphrase needed)
+    settings = get_settings()
+    audit = AuditLogger(settings.db_path)
+    results = audit.list_recent(
+        limit=limit,
+        agent_id=agent,
+        service=service,
+        action=action,
+        decision=decision,
+        since=since_dt,
+        until=until_dt,
+    )
+
+    if not results:
+        raise typer.Exit(code=0)
+
+    if format == "json":
+        console.print_json(data=results)
+        return
+
+    table = Table(title="Audit Log")
+    table.add_column("TIMESTAMP")
+    table.add_column("AGENT")
+    table.add_column("SERVICE")
+    table.add_column("ACTION")
+    table.add_column("DECISION")
+    table.add_column("REASON")
+    table.add_column("TTL")
+    table.add_column("VERIFICATION")
+    for row in results:
+        table.add_row(
+            row.get("timestamp", "-"),
+            row.get("agent_id", "-"),
+            row.get("service", "-"),
+            row.get("action", "-"),
+            row.get("decision", "-"),
+            row.get("reason", "-"),
+            str(row.get("ttl_seconds", "-")),
+            row.get("verification_result", "-"),
+        )
+    console.print(table)
+
+
+@_typer_app.command("status")
+def status(
+    ctx: typer.Context,
+    target: str | None = typer.Argument(None, help="Optional credential target (service name or credential ID)."),
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
+    stale: str | None = typer.Option(None, "--stale", help="Show credentials not verified in Nd (e.g. 7d, 30d)."),
+    invalid: bool = typer.Option(False, "--invalid", help="Show credentials with invalid or expired status."),
+    expiring: str | None = typer.Option(None, "--expiring", help="Show credentials expiring within Nd (e.g. 30d, 90d)."),
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+) -> None:
+    """Show credential status and health.
+
+    Displays the status, verification timestamps, and expiry information
+    for vault credentials. Supports filtering by staleness, invalid/expired
+    status, and upcoming expiry.
+
+    \b
+    Examples:
+      hermes-vault status
+      hermes-vault status --stale 7d
+      hermes-vault status --invalid
+      hermes-vault status --expiring 30d
+      hermes-vault status openai --alias primary --format json
+    """
+    # ── Parse stale/expiring thresholds ───────────────────────────────────────
+    stale_days: int | None = None
+    if stale is not None:
+        m = re.match(r"^(\d+)d$", stale)
+        if not m:
+            console.print(f"[red]Invalid --stale value: {stale!r} (use 'Nd' format, e.g. '7d', '30d')[/red]")
+            raise typer.Exit(code=1)
+        stale_days = int(m.group(1))
+
+    expiring_days: int | None = None
+    if expiring is not None:
+        m = re.match(r"^(\d+)d$", expiring)
+        if not m:
+            console.print(f"[red]Invalid --expiring value: {expiring!r} (use 'Nd' format, e.g. '30d', '90d')[/red]")
+            raise typer.Exit(code=1)
+        expiring_days = int(m.group(1))
+
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=1)
+
+    # ── Build services ─────────────────────────────────────────────────────────
+    vault, _, _, _ = build_services(prompt=True)
+
+    # ── Resolve target ─────────────────────────────────────────────────────────
+    if target is not None:
+        try:
+            records = [vault.resolve_credential(target, alias=alias)]
+        except AmbiguousTargetError as exc:
+            console.print(f"[red]Ambiguous: {exc}[/red]")
+            console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+            raise typer.Exit(code=1)
+        except KeyError:
+            console.print(f"[red]Not found: {target}[/red]")
+            raise typer.Exit(code=1)
+    else:
+        records = vault.list_credentials()
+
+    # ── Compute staleness / expiry ─────────────────────────────────────────────
+    now = datetime.now(timezone.utc)
+    enriched: list[dict] = []
+    for rec in records:
+        last_verified = rec.last_verified_at
+        expiry = rec.expiry
+
+        # days_since_verified
+        if last_verified is not None:
+            delta = now - last_verified.replace(tzinfo=timezone.utc) if last_verified.tzinfo is None else now - last_verified
+            days_since_verified = delta.days
+        else:
+            days_since_verified = None  # Never verified = always stale
+
+        # is_stale — always computed (default 30-day threshold for display)
+        stale_threshold = stale_days if stale_days is not None else 30
+        is_stale = (days_since_verified is None) or (days_since_verified >= stale_threshold)
+
+        # days_until_expiry
+        if expiry is not None:
+            expiry_dt = expiry.replace(tzinfo=timezone.utc) if expiry.tzinfo is None else expiry
+            delta_exp = expiry_dt - now
+            days_until_expiry = delta_exp.days
+        else:
+            days_until_expiry = None
+
+        # is_expiring
+        if expiring_days is not None:
+            is_expiring = (days_until_expiry is not None) and (days_until_expiry <= expiring_days)
+        else:
+            is_expiring = False
+
+        # is_invalid
+        is_invalid = rec.status in (CredentialStatus.invalid, CredentialStatus.expired)
+
+        # ── Apply filters ──────────────────────────────────────────────────────
+        if stale_days is not None and not is_stale:
+            continue
+        if invalid and not is_invalid:
+            continue
+        if expiring_days is not None and not is_expiring:
+            continue
+
+        enriched.append({
+            "service": rec.service,
+            "alias": rec.alias,
+            "credential_type": rec.credential_type,
+            "status": rec.status.value,
+            "last_verified_at": last_verified.isoformat() if last_verified else None,
+            "expiry": expiry.isoformat() if expiry else None,
+            "is_stale": is_stale,
+            "is_expiring": is_expiring,
+            "days_since_verified": days_since_verified,
+            "days_until_expiry": days_until_expiry,
+        })
+
+    # ── Output ─────────────────────────────────────────────────────────────────
+    if not enriched:
+        return
+
+    if format == "json":
+        console.print_json(data=json.dumps(enriched, sort_keys=True))
+        return
+
+    table = Table(title="Credential Status")
+    table.add_column("SERVICE")
+    table.add_column("ALIAS")
+    table.add_column("TYPE")
+    table.add_column("STATUS")
+    table.add_column("LAST VERIFIED")
+    table.add_column("EXPIRY")
+    table.add_column("STALE")
+    table.add_column("ACTIONS")
+    for row in enriched:
+        last_verified_str = row["last_verified_at"][:19].replace("T", " ") if row["last_verified_at"] else "-"
+        expiry_str = row["expiry"][:10] if row["expiry"] else "-"
+        stale_str = "YES" if row["is_stale"] else "-"
+        table.add_row(
+            row["service"],
+            row["alias"],
+            row["credential_type"],
+            row["status"],
+            last_verified_str,
+            expiry_str,
+            stale_str,
+            "-",
+        )
+    console.print(table)
+
+
+@_typer_app.command("set-expiry")
+def set_expiry(
+    ctx: typer.Context,
+    target: str = typer.Argument(..., help="Credential target (service name or credential ID)."),
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
+    days: int | None = typer.Option(None, "--days", help="Set expiry to N days from now (must be > 0)."),
+    date: str | None = typer.Option(None, "--date", help="Set expiry to a specific date (YYYY-MM-DD, valid through end of that date)."),
+) -> None:
+    """Set the expiry datetime for a credential.
+
+    Exactly one of --days or --date must be provided.
+    --days N sets expiry to N days from now.
+    --date YYYY-MM-DD sets expiry to 23:59:59 on that date (UTC).
+
+    \b
+    Examples:
+      hermes-vault set-expiry openai --days 90
+      hermes-vault set-expiry github --alias work --date 2026-12-31
+      hermes-vault set-expiry a1b2c3d4-... --days 30
+    """
+    from hermes_vault.models import AccessLogRecord, Decision
+
+    # Validate mutual exclusion of --days and --date
+    if days is None and date is None:
+        console.print("[red]--days or --date is required[/red]")
+        raise typer.Exit(code=1)
+    if days is not None and date is not None:
+        console.print("[red]--days and --date are mutually exclusive; provide exactly one[/red]")
+        raise typer.Exit(code=1)
+    if days is not None and days <= 0:
+        console.print("[red]--days must be a positive integer[/red]")
+        raise typer.Exit(code=1)
+
+    # Compute expiry
+    if days is not None:
+        expiry = datetime.now(timezone.utc) + timedelta(days=days)
+    else:
+        # date is not None here
+        try:
+            parsed = datetime.strptime(date, "%Y-%m-%d")
+            if parsed.strftime("%Y-%m-%d") != date:
+                raise ValueError()
+            expiry = parsed.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+        except (ValueError, OverflowError):
+            console.print(f"[red]Invalid --date format: {date!r} (use YYYY-MM-DD)[/red]")
+            raise typer.Exit(code=1)
+
+    vault, policy, broker, mutations = build_services(prompt=True)
+    settings = get_settings()
+    audit = AuditLogger(settings.db_path)
+
+    # Resolve target to get canonical service name
+    try:
+        record = vault.resolve_credential(target, alias=alias)
+        normalized_service = record.service
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+        raise typer.Exit(code=1)
+    except KeyError:
+        console.print(f"[red]Not found: {target}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        result = vault.set_expiry(target, expiry, alias=alias)
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+        raise typer.Exit(code=1)
+    except KeyError as exc:
+        console.print(f"[red]Not found: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    # Audit entry
+    audit.record(AccessLogRecord(
+        agent_id=OPERATOR_AGENT_ID,
+        service=normalized_service,
+        action="set_expiry",
+        decision=Decision.allow,
+        reason=f"expiry set to {expiry.isoformat()}",
+    ))
+
+    console.print(f"Expiry set for {normalized_service}/{result.alias} → {result.expiry.isoformat()}")
+
+
+@_typer_app.command("clear-expiry")
+def clear_expiry(
+    ctx: typer.Context,
+    target: str = typer.Argument(..., help="Credential target (service name or credential ID)."),
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
+) -> None:
+    """Clear the expiry for a credential.
+
+    \b
+    Examples:
+      hermes-vault clear-expiry openai
+      hermes-vault clear-expiry github --alias work
+      hermes-vault clear-expiry a1b2c3d4-...
+    """
+    from hermes_vault.models import AccessLogRecord, Decision
+
+    vault, policy, broker, mutations = build_services(prompt=True)
+    settings = get_settings()
+    audit = AuditLogger(settings.db_path)
+
+    # Resolve target to get canonical service name
+    try:
+        record = vault.resolve_credential(target, alias=alias)
+        normalized_service = record.service
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+        raise typer.Exit(code=1)
+    except KeyError:
+        console.print(f"[red]Not found: {target}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        cleared = vault.clear_expiry(target, alias=alias)
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+        raise typer.Exit(code=1)
+    except KeyError as exc:
+        console.print(f"[red]Not found: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    # Audit entry
+    audit.record(AccessLogRecord(
+        agent_id=OPERATOR_AGENT_ID,
+        service=normalized_service,
+        action="clear_expiry",
+        decision=Decision.allow,
+        reason="expiry cleared",
+    ))
+
+    console.print(f"Expiry cleared for {normalized_service}/{record.alias}.")
+
+
+@_typer_app.command()
 def verify(
     ctx: typer.Context,
     target: str | None = typer.Argument(None, help=SELECTOR_HELP),
     alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
     all: bool = typer.Option(False, "--all", help="Verify all credentials in the vault."),
+    format: str = typer.Option("json", "--format", help="Output format: table or json."),
+    report: Path | None = typer.Option(None, "--report", help="Write JSON report to this path."),
 ) -> None:
     """Verify credential(s) against provider endpoints.
 
@@ -523,7 +929,44 @@ def verify(
       hermes-vault verify github --alias work
       hermes-vault verify a1b2c3d4-...
       hermes-vault verify --all
+      hermes-vault verify --all --format table
+      hermes-vault verify --all --report ~/verify.json
     """
+    def _table_alias_for(result) -> str:
+        metadata = getattr(result, "metadata", {})
+        if isinstance(metadata, dict):
+            alias_value = metadata.get("alias")
+            if alias_value:
+                return str(alias_value)
+        return alias or "default"
+
+    def _verification_payload(result) -> tuple[bool, str, str, str | None, str]:
+        metadata = getattr(result, "metadata", {})
+        verification = metadata.get("verification_result") if isinstance(metadata, dict) else None
+        if isinstance(verification, dict):
+            success = bool(verification.get("success", getattr(result, "allowed", False)))
+            category = str(verification.get("category", "-"))
+            reason = str(verification.get("reason", getattr(result, "reason", "-")))
+            status_code = verification.get("status_code")
+            checked_at = str(verification.get("checked_at", "-"))
+            return success, category, reason, status_code, checked_at
+
+        category_value = getattr(result, "category", "-")
+        category = category_value.value if hasattr(category_value, "value") else str(category_value)
+        checked_at_value = getattr(result, "checked_at", "-")
+        checked_at = checked_at_value.isoformat() if hasattr(checked_at_value, "isoformat") else str(checked_at_value)
+        return (
+            bool(getattr(result, "success", getattr(result, "allowed", False))),
+            category,
+            str(getattr(result, "reason", "-")),
+            getattr(result, "status_code", None),
+            checked_at,
+        )
+
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=1)
+
     vault, _, broker, _ = build_services(prompt=True)
     if all:
         targets = [(record.service, record.alias) for record in vault.list_credentials()]
@@ -549,7 +992,45 @@ def verify(
         except KeyError as exc:
             console.print(f"[red]Not found: {exc}[/red]")
             raise typer.Exit(code=1)
-    console.print_json(data=json.dumps([result.model_dump(mode="json") for result in results]))
+
+    # Determine what to print to stdout
+    output_results = [r.model_dump(mode="json") for r in results]
+
+    if format == "json":
+        console.print_json(data=json.dumps(output_results))
+    else:
+        table = Table(title="Verification Results")
+        table.add_column("SERVICE")
+        table.add_column("ALIAS")
+        table.add_column("RESULT")
+        table.add_column("CATEGORY")
+        table.add_column("REASON")
+        table.add_column("STATUS CODE")
+        table.add_column("CHECKED AT")
+        for r in results:
+            success, category, reason_text, status_code, checked_at = _verification_payload(r)
+            reason = r.reason[:40] if len(r.reason) > 40 else r.reason
+            if reason_text:
+                reason = reason_text[:40] if len(reason_text) > 40 else reason_text
+            status_code_str = str(status_code) if status_code is not None else "-"
+            result_str = "✓ valid" if success else "✗ invalid"
+            table.add_row(
+                r.service,
+                _table_alias_for(r),
+                result_str,
+                category,
+                reason,
+                status_code_str,
+                checked_at,
+            )
+        console.print(table)
+
+    # Write report file if requested
+    if report:
+        report_path = Path(report).expanduser().resolve()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(output_results, indent=2, sort_keys=True), encoding="utf-8")
+        report_path.chmod(0o600)
 
 
 @broker_app.command("get")

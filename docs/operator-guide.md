@@ -264,3 +264,41 @@ These commands accept a service name (normalized to canonical ID) and don't requ
 - `broker env <service> --agent AGENT` — materializes ephemeral env vars
 
 Service names are normalized automatically (see [Canonical Service IDs](#canonical-service-ids) above).
+
+## Audit Log Query
+
+Query the audit log to trace credential access, denials, and mutations:
+
+  hermes-vault audit
+  hermes-vault audit --agent dwight --since 7d
+  hermes-vault audit --service openai --decision deny --format json
+  hermes-vault audit --since 2026-01-01 --until 2026-03-01
+
+Use --since with a relative value (7d, 30d) or an ISO date (YYYY-MM-DD).
+Use --decision allow or --decision deny to filter by access decision.
+Use --format json for machine-readable output.
+
+## Credential Status
+
+Inspect credential health across the vault:
+
+  hermes-vault status
+  hermes-vault status --stale 7d
+  hermes-vault status --invalid
+  hermes-vault status --expiring 30d --format json
+
+Credentials with no last_verified_at are always stale.
+Credentials with no expiry set are never shown by --expiring.
+Filters can be combined: hermes-vault status --stale 7d --invalid
+
+## Expiry Metadata
+
+Set or clear expiry dates for credentials to track renewal windows:
+
+  hermes-vault set-expiry openai --alias primary --days 90
+  hermes-vault set-expiry github --alias work --date 2026-07-01
+  hermes-vault clear-expiry openai --alias primary
+
+Use --days for a relative deadline (N days from today) or --date for an
+absolute date. Both commands write audit entries. Expiry dates are
+preserved through backup and restore.

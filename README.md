@@ -113,9 +113,38 @@ hermes-vault add openai --alias primary
 hermes-vault list
 hermes-vault verify openai
 hermes-vault broker env openai --agent dwight --ttl 900
-hermes-vault update --check
-hermes-vault update
+hermes-vault audit --agent dwight --since 7d
+hermes-vault status
+hermes-vault status --stale 7d
+hermes-vault status --invalid
+hermes-vault set-expiry openai --alias primary --days 90
+hermes-vault clear-expiry openai --alias primary
+hermes-vault verify --all --format table
+hermes-vault verify --all --report ~/.hermes/hermes-vault-data/reports/verify-latest.json
 ```
+
+## What's New in 0.4.0 — Credential Observability
+
+### Audit query CLI
+hermes-vault audit with --agent, --service, --action, --decision,
+--since/--until (relative or ISO date), --format table|json, --limit.
+
+### Credential status CLI
+hermes-vault status with --stale Nd, --invalid, --expiring Nd,
+--format table|json. Credentials with no last_verified_at are always stale.
+
+### Expiry metadata commands
+hermes-vault set-expiry (--days N or --date YYYY-MM-DD) and
+hermes-vault clear-expiry. Both write audit entries. Expiry round-trips
+through backup and restore.
+
+### Verification report output
+hermes-vault verify --all now accepts --format table and --report PATH.
+Default JSON-to-stdout behavior is unchanged.
+
+### Security invariants preserved
+No secrets in audit, status, or verification output. No background
+processes. No auto-rotation. No cloud sync.
 
 ## What's New in 0.2.0
 

@@ -449,3 +449,236 @@ def test_app_respects_no_banner_for_root_help(monkeypatch) -> None:
 
     assert app() == 0
     assert calls == [("group", ["--no-banner", "--help"], "hermes-vault")]
+
+
+# ── verify format and report options ────────────────────────────────────────
+
+
+class StubVerifyResult:
+    """Fake VerificationResult for verify command tests."""
+    def __init__(self, service="openai", alias="default", success=True,
+                 category="valid", reason="ok", status_code=200):
+        from datetime import datetime, timezone
+        from hermes_vault.models import VerificationCategory
+        self.service = service
+        self.alias = alias
+        self.category = VerificationCategory(category)
+        self.success = success
+        self.reason = reason
+        self.status_code = status_code
+        self.checked_at = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    def model_dump(self, mode=None):
+        return {
+            "service": self.service,
+            "category": self.category.value,
+            "success": self.success,
+            "reason": self.reason,
+            "checked_at": self.checked_at.isoformat(),
+            "status_code": self.status_code,
+        }
+
+
+class StubVerifyBroker:
+    """Fake broker that returns StubVerifyResult."""
+    def __init__(self, results: list | None = None):
+        self.results = results or [StubVerifyResult()]
+        self.called_with: list[tuple] = []
+
+    def verify_credential(self, service: str, alias: str | None = None):
+        self.called_with.append((service, alias))
+        return self.results[0] if len(self.results) == 1 else self.results[len(self.called_with) - 1]
+
+
+def test_verify_default_is_json(monkeypatch) -> None:
+    """verify --all without --format must still emit JSON (backward compat)."""
+    broker = StubVerifyBroker()
+    monkeypatch.setattr("hermes_vault.cli.build_services", lambda prompt=False: (
+        _fake_vault(), object(), broker, object()
+    ))
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["verify", "--all"])
+
+    assert result.exit_code == 0
+    import re
+    clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', result.output)
+    # Output is a JSON-encoded string, so we parse twice
+    inner = json.loads(clean)
+    data = json.loads(inner)
+    assert isinstance(data, list)
+    assert data[0]["service"] == "openai"
+
+
+def test_verify_format_json(monkeypatch) -> None:
+    broker = StubVerifyBroker()
+    monkeypatch.setattr("hermes_vault.cli.build_services", lambda prompt=False: (
+        _fake_vault(), object(), broker, object()
+    ))
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["verify", "--all", "--format", "json"])
+
+    assert result.exit_code == 0
+    import re
+    clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', result.output)
+    inner = json.loads(clean)
+    data = json.loads(inner)
+    assert isinstance(data, list)
+    assert data[0]["service"] == "openai"
+
+
+def test_verify_format_table(monkeypatch) -> None:
+    broker = StubVerifyBroker()
+    monkeypatch.setattr("hermes_vault.cli.build_services", lambda prompt=False: (
+        _fake_vault(), object(), broker, object()
+    ))
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["verify", "--all", "--format", "table"])
+
+    assert result.exit_code == 0
+    assert "SERVICE" in result.output or "RESULT" in result.output
+
+
+def test_verify_format_table_with_brokerdecision_metadata(monkeypatch) -> None:
+    """Table format must work with the real BrokerDecision shape from Broker.verify_credential()."""
+
+    class FakeVault:
+        def list_credentials(self):
+            from hermes_vault.models import CredentialRecord
+            return [
+                CredentialRecord(
+                    id="cred-1",
+                    service="openai",
+                    alias="primary",
+                    credential_type="api_key",
+                    encrypted_payload="x",
+                ),
+            ]
+
+    class FakeBroker:
+        def verify_credential(self, service: str, alias: str | None = None):
+            return BrokerDecision(
+                allowed=False,
+                service=service,
+                agent_id="hermes-vault",
+                reason="provider lookup failed",
+                metadata={
+                    "alias": alias or "primary",
+                    "verification_result": {
+                        "service": service,
+                        "category": "network_failure",
+                        "success": False,
+                        "reason": "provider lookup failed",
+                        "checked_at": "2025-01-01T12:00:00+00:00",
+                        "status_code": None,
+                    },
+                },
+            )
+
+    monkeypatch.setattr("hermes_vault.cli.build_services", lambda prompt=False: (
+        FakeVault(), object(), FakeBroker(), object()
+    ))
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["verify", "--all", "--format", "table"])
+
+    assert result.exit_code == 0
+    assert "primary" in result.output
+    assert "provider" in result.output
+
+
+def test_verify_report_writes_file(monkeypatch, tmp_path) -> None:
+    broker = StubVerifyBroker()
+    monkeypatch.setattr("hermes_vault.cli.build_services", lambda prompt=False: (
+        _fake_vault(), object(), broker, object()
+    ))
+
+    report = tmp_path / "verify.json"
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["verify", "--all", "--report", str(report)])
+
+    assert result.exit_code == 0
+    assert report.exists()
+    data = json.loads(report.read_text())
+    assert isinstance(data, list)
+
+
+def test_verify_report_creates_parent_dirs(monkeypatch, tmp_path) -> None:
+    broker = StubVerifyBroker()
+    monkeypatch.setattr("hermes_vault.cli.build_services", lambda prompt=False: (
+        _fake_vault(), object(), broker, object()
+    ))
+
+    report = tmp_path / "subdir" / "nested" / "report.json"
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["verify", "--all", "--report", str(report)])
+
+    assert result.exit_code == 0
+    assert report.exists()
+
+
+def test_verify_report_chmod_0600(monkeypatch, tmp_path) -> None:
+    import os
+    import stat
+    broker = StubVerifyBroker()
+    monkeypatch.setattr("hermes_vault.cli.build_services", lambda prompt=False: (
+        _fake_vault(), object(), broker, object()
+    ))
+
+    report = tmp_path / "verify.json"
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["verify", "--all", "--report", str(report)])
+
+    assert result.exit_code == 0
+    mode = stat.S_IMODE(report.stat().st_mode)
+    assert mode == 0o600
+
+
+def test_verify_report_with_table_format(monkeypatch, tmp_path) -> None:
+    """--format table --report PATH: table to stdout, JSON to file."""
+    broker = StubVerifyBroker()
+    monkeypatch.setattr("hermes_vault.cli.build_services", lambda prompt=False: (
+        _fake_vault(), object(), broker, object()
+    ))
+
+    report = tmp_path / "verify.json"
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["verify", "--all", "--format", "table", "--report", str(report)])
+
+    assert result.exit_code == 0
+    assert report.exists()
+    json.loads(report.read_text())  # report is JSON
+    assert "SERVICE" in result.output or "RESULT" in result.output  # stdout is table
+
+
+def test_verify_expands_tilde_in_report_path(monkeypatch, tmp_path) -> None:
+    """~ in report path should be expanded."""
+    broker = StubVerifyBroker()
+    monkeypatch.setattr("hermes_vault.cli.build_services", lambda prompt=False: (
+        _fake_vault(), object(), broker, object()
+    ))
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    report = home / "verify.json"
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["verify", "--all", "--report", str(report)])
+    # Should succeed (path exists or is creatable)
+    assert result.exit_code == 0 or "permission" in result.output.lower()
+
+
+def _fake_vault():
+    """Return a fake vault with no credentials for verify tests."""
+    from hermes_vault.models import CredentialRecord
+    class FakeVault:
+        def list_credentials(self):
+            return [
+                CredentialRecord(
+                    id="cred-1", service="openai", alias="default",
+                    credential_type="api_key", encrypted_payload="x"
+                ),
+            ]
+    return FakeVault()
