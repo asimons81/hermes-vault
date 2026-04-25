@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.0 — Credential Observability Release
+
+### Added
+
+- **Audit query CLI** (`hermes-vault audit`) — query access logs with filters:
+  --agent, --service, --action, --decision, --since/--until (relative or ISO date),
+  --format table|json, --limit. Always ordered newest-first. Empty results exit 0.
+- **Credential status CLI** (`hermes-vault status`) — inspect credential health:
+  --stale Nd (not verified in N days), --invalid (invalid/expired status),
+  --expiring Nd (expiring within N days), --format table|json. Credentials with
+  last_verified_at=null are always stale. Target + filters work together.
+- **Expiry metadata commands** (`hermes-vault set-expiry` / `clear-expiry`) —
+  operator-controlled expiry tracking via --days N or --date YYYY-MM-DD.
+  Both write audit entries. Expiry round-trips through backup/restore.
+- **Verification report output** — `verify --all` now accepts --format table
+  and --report PATH. Default JSON-to-stdout behavior is unchanged.
+  --report writes stable JSON with parent-dir creation and chmod 0600.
+
+### Changed
+
+- Audit log gains indexes on agent_id, service, and timestamp
+  (`CREATE IF NOT EXISTS` — no migration needed).
+- Credentials table gains indexes on status, last_verified_at, and expiry
+  (`CREATE IF NOT EXISTS` — no migration needed).
+
+### Security
+
+- No secret values appear in audit log entries, status output, or verification
+  reports. encrypted_payload is never included in any JSON output.
+- No background processes, no daemon, no auto-rotation.
+
 ## 0.3.1 — MCP Hotfix Release
 
 ### Fixed
