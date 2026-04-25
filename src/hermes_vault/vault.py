@@ -62,6 +62,15 @@ class Vault:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_credentials_service_alias ON credentials(service, alias)"
             )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_credentials_status ON credentials(status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_credentials_last_verified_at ON credentials(last_verified_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_credentials_expiry ON credentials(expiry)"
+            )
             conn.commit()
         self._secure_storage_files()
 

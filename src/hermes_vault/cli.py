@@ -604,6 +604,155 @@ def audit(
     console.print(table)
 
 
+@_typer_app.command("status")
+def status(
+    ctx: typer.Context,
+    target: str | None = typer.Argument(None, help="Optional credential target (service name or credential ID)."),
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
+    stale: str | None = typer.Option(None, "--stale", help="Show credentials not verified in Nd (e.g. 7d, 30d)."),
+    invalid: bool = typer.Option(False, "--invalid", help="Show credentials with invalid or expired status."),
+    expiring: str | None = typer.Option(None, "--expiring", help="Show credentials expiring within Nd (e.g. 30d, 90d)."),
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+) -> None:
+    """Show credential status and health.
+
+    Displays the status, verification timestamps, and expiry information
+    for vault credentials. Supports filtering by staleness, invalid/expired
+    status, and upcoming expiry.
+
+    \b
+    Examples:
+      hermes-vault status
+      hermes-vault status --stale 7d
+      hermes-vault status --invalid
+      hermes-vault status --expiring 30d
+      hermes-vault status openai --alias primary --format json
+    """
+    import re
+
+    # ── Parse stale/expiring thresholds ───────────────────────────────────────
+    stale_days: int | None = None
+    if stale is not None:
+        m = re.match(r"^(\d+)d$", stale)
+        if not m:
+            console.print(f"[red]Invalid --stale value: {stale!r} (use 'Nd' format, e.g. '7d', '30d')[/red]")
+            raise typer.Exit(code=1)
+        stale_days = int(m.group(1))
+
+    expiring_days: int | None = None
+    if expiring is not None:
+        m = re.match(r"^(\d+)d$", expiring)
+        if not m:
+            console.print(f"[red]Invalid --expiring value: {expiring!r} (use 'Nd' format, e.g. '30d', '90d')[/red]")
+            raise typer.Exit(code=1)
+        expiring_days = int(m.group(1))
+
+    # ── Build services ─────────────────────────────────────────────────────────
+    vault, _, _, _ = build_services(prompt=True)
+
+    # ── Resolve target ─────────────────────────────────────────────────────────
+    if target is not None:
+        try:
+            records = [vault.resolve_credential(target, alias=alias)]
+        except AmbiguousTargetError as exc:
+            console.print(f"[red]Ambiguous: {exc}[/red]")
+            console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+            raise typer.Exit(code=1)
+        except KeyError:
+            console.print(f"[red]Not found: {target}[/red]")
+            raise typer.Exit(code=1)
+    else:
+        records = vault.list_credentials()
+
+    # ── Compute staleness / expiry ─────────────────────────────────────────────
+    now = datetime.now(timezone.utc)
+    enriched: list[dict] = []
+    for rec in records:
+        last_verified = rec.last_verified_at
+        expiry = rec.expiry
+
+        # days_since_verified
+        if last_verified is not None:
+            delta = now - last_verified.replace(tzinfo=timezone.utc) if last_verified.tzinfo is None else now - last_verified
+            days_since_verified = delta.days
+        else:
+            days_since_verified = None  # Never verified = always stale
+
+        # is_stale — always computed (default 30-day threshold for display)
+        stale_threshold = stale_days if stale_days is not None else 30
+        is_stale = (days_since_verified is None) or (days_since_verified >= stale_threshold)
+
+        # days_until_expiry
+        if expiry is not None:
+            delta_exp = expiry.replace(tzinfo=timezone.utc) if expiry.tzinfo is None else expiry - now
+            days_until_expiry = delta_exp.days
+        else:
+            days_until_expiry = None
+
+        # is_expiring
+        if expiring_days is not None:
+            is_expiring = (days_until_expiry is not None) and (days_until_expiry <= expiring_days)
+        else:
+            is_expiring = False
+
+        # is_invalid
+        is_invalid = rec.status in (CredentialStatus.invalid, CredentialStatus.expired)
+
+        # ── Apply filters ──────────────────────────────────────────────────────
+        if stale_days is not None and not is_stale:
+            continue
+        if invalid and not is_invalid:
+            continue
+        if expiring_days is not None and not is_expiring:
+            continue
+
+        enriched.append({
+            "service": rec.service,
+            "alias": rec.alias,
+            "credential_type": rec.credential_type,
+            "status": rec.status.value,
+            "last_verified_at": last_verified.isoformat() if last_verified else None,
+            "expiry": expiry.isoformat() if expiry else None,
+            "is_stale": is_stale,
+            "is_expiring": is_expiring,
+            "days_since_verified": days_since_verified,
+            "days_until_expiry": days_until_expiry,
+        })
+
+    # ── Output ─────────────────────────────────────────────────────────────────
+    if not enriched:
+        return
+
+    if format == "json":
+        console.print_json(data=json.dumps(enriched, sort_keys=True))
+        return
+
+    table = Table(title="Credential Status")
+    table.add_column("SERVICE")
+    table.add_column("ALIAS")
+    table.add_column("TYPE")
+    table.add_column("STATUS")
+    table.add_column("LAST VERIFIED")
+    table.add_column("EXPIRY")
+    table.add_column("STALE")
+    table.add_column("ACTIONS")
+    for row in enriched:
+        last_verified_str = row["last_verified_at"][:19].replace("T", " ") if row["last_verified_at"] else "-"
+        expiry_str = row["expiry"][:10] if row["expiry"] else "-"
+        stale_str = "YES" if row["is_stale"] else "-"
+        table.add_row(
+            row["service"],
+            row["alias"],
+            row["credential_type"],
+            row["status"],
+            last_verified_str,
+            expiry_str,
+            stale_str,
+            "-",
+        )
+    console.print(table)
+
+
 @_typer_app.command()
 def verify(
     ctx: typer.Context,
