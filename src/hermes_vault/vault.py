@@ -414,6 +414,66 @@ class Vault:
             )
         return self._row_to_record(rows[0])
 
+    def set_expiry(
+        self,
+        service_or_id: str,
+        expiry: datetime,
+        alias: str | None = None,
+    ) -> CredentialRecord:
+        """Set the expiry datetime for a credential.
+
+        Uses resolve_credential() for selector resolution.
+        Raises KeyError if credential not found.
+        Raises AmbiguousTargetError if service-only matches multiple credentials.
+        """
+        record = self.resolve_credential(service_or_id, alias=alias)
+        updated_at = utc_now()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE credentials
+                SET expiry = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    expiry.isoformat(),
+                    updated_at.isoformat(),
+                    record.id,
+                ),
+            )
+            conn.commit()
+        # Return the updated record
+        return self.get_credential(record.id)
+
+    def clear_expiry(
+        self,
+        service_or_id: str,
+        alias: str | None = None,
+    ) -> bool:
+        """Clear the expiry for a credential (sets expiry=NULL).
+
+        Uses resolve_credential() for selector resolution.
+        Returns True if a record was updated.
+        Raises KeyError if credential not found.
+        Raises AmbiguousTargetError if service-only matches multiple credentials.
+        """
+        record = self.resolve_credential(service_or_id, alias=alias)
+        updated_at = utc_now()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE credentials
+                SET expiry = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    updated_at.isoformat(),
+                    record.id,
+                ),
+            )
+            conn.commit()
+        return cursor.rowcount > 0
+
     def _count_by_service(self, service: str) -> int:
         """Count credentials for a normalized service name."""
         with sqlite3.connect(self.db_path) as conn:

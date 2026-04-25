@@ -753,6 +753,146 @@ def status(
     console.print(table)
 
 
+@_typer_app.command("set-expiry")
+def set_expiry(
+    ctx: typer.Context,
+    target: str = typer.Argument(..., help="Credential target (service name or credential ID)."),
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
+    days: int | None = typer.Option(None, "--days", help="Set expiry to N days from now (must be > 0)."),
+    date: str | None = typer.Option(None, "--date", help="Set expiry to a specific date (YYYY-MM-DD, valid through end of that date)."),
+) -> None:
+    """Set the expiry datetime for a credential.
+
+    Exactly one of --days or --date must be provided.
+    --days N sets expiry to N days from now.
+    --date YYYY-MM-DD sets expiry to 23:59:59 on that date (UTC).
+
+    \b
+    Examples:
+      hermes-vault set-expiry openai --days 90
+      hermes-vault set-expiry github --alias work --date 2026-12-31
+      hermes-vault set-expiry a1b2c3d4-... --days 30
+    """
+    from hermes_vault.models import AccessLogRecord, Decision
+
+    # Validate mutual exclusion of --days and --date
+    if days is None and date is None:
+        console.print("[red]--days or --date is required[/red]")
+        raise typer.Exit(code=1)
+    if days is not None and date is not None:
+        console.print("[red]--days and --date are mutually exclusive; provide exactly one[/red]")
+        raise typer.Exit(code=1)
+    if days is not None and days <= 0:
+        console.print("[red]--days must be a positive integer[/red]")
+        raise typer.Exit(code=1)
+
+    # Compute expiry
+    if days is not None:
+        expiry = datetime.now(timezone.utc) + timedelta(days=days)
+    else:
+        # date is not None here
+        try:
+            parts = date.split("-")
+            if len(parts) != 3:
+                raise ValueError()
+            year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+            expiry = datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
+        except (ValueError, OverflowError):
+            console.print(f"[red]Invalid --date format: {date!r} (use YYYY-MM-DD)[/red]")
+            raise typer.Exit(code=1)
+
+    vault, policy, broker, mutations = build_services(prompt=True)
+    settings = get_settings()
+    audit = AuditLogger(settings.db_path)
+
+    # Resolve target to get canonical service name
+    try:
+        record = vault.resolve_credential(target, alias=alias)
+        normalized_service = record.service
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+        raise typer.Exit(code=1)
+    except KeyError:
+        console.print(f"[red]Not found: {target}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        result = vault.set_expiry(target, expiry, alias=alias)
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+        raise typer.Exit(code=1)
+    except KeyError as exc:
+        console.print(f"[red]Not found: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    # Audit entry
+    audit.record(AccessLogRecord(
+        agent_id=OPERATOR_AGENT_ID,
+        service=normalized_service,
+        action="set_expiry",
+        decision=Decision.allow,
+        reason=f"expiry set to {expiry.isoformat()}",
+    ))
+
+    console.print(f"Expiry set for {normalized_service}/{result.alias} → {result.expiry.isoformat()}")
+
+
+@_typer_app.command("clear-expiry")
+def clear_expiry(
+    ctx: typer.Context,
+    target: str = typer.Argument(..., help="Credential target (service name or credential ID)."),
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
+) -> None:
+    """Clear the expiry for a credential.
+
+    \b
+    Examples:
+      hermes-vault clear-expiry openai
+      hermes-vault clear-expiry github --alias work
+      hermes-vault clear-expiry a1b2c3d4-...
+    """
+    from hermes_vault.models import AccessLogRecord, Decision
+
+    vault, policy, broker, mutations = build_services(prompt=True)
+    settings = get_settings()
+    audit = AuditLogger(settings.db_path)
+
+    # Resolve target to get canonical service name
+    try:
+        record = vault.resolve_credential(target, alias=alias)
+        normalized_service = record.service
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+        raise typer.Exit(code=1)
+    except KeyError:
+        console.print(f"[red]Not found: {target}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        cleared = vault.clear_expiry(target, alias=alias)
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+        raise typer.Exit(code=1)
+    except KeyError as exc:
+        console.print(f"[red]Not found: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    # Audit entry
+    audit.record(AccessLogRecord(
+        agent_id=OPERATOR_AGENT_ID,
+        service=normalized_service,
+        action="clear_expiry",
+        decision=Decision.allow,
+        reason="expiry cleared",
+    ))
+
+    console.print(f"Expiry cleared for {normalized_service}/{record.alias}.")
+
+
 @_typer_app.command()
 def verify(
     ctx: typer.Context,

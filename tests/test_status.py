@@ -281,3 +281,288 @@ def test_status_combined_filters(cli_runner: CliRunner, vault_with_creds_and_sta
     assert result.exit_code == 0
     # openai primary is both stale (10d) and invalid — should appear
     assert "openai" in result.output
+
+
+# ── Expiry CLI tests ──────────────────────────────────────────────────────────
+
+
+def test_vault_set_expiry_by_id(tmp_path: Path) -> None:
+    """Vault.set_expiry() sets expiry on a credential found by ID."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    rec = vault.add_credential("openai", "sk-test", "api_key")
+    from datetime import datetime, timezone, timedelta
+    expiry = datetime.now(timezone.utc) + timedelta(days=30)
+    result = vault.set_expiry(rec.id, expiry)
+    assert result.expiry is not None
+    assert result.expiry.date() == expiry.date()
+
+
+def test_vault_set_expiry_by_service(tmp_path: Path) -> None:
+    """Vault.set_expiry() resolves by service name when alias is not needed."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    rec = vault.add_credential("github", "ghp-test", "personal_access_token")
+    from datetime import datetime, timezone, timedelta
+    expiry = datetime.now(timezone.utc) + timedelta(days=60)
+    result = vault.set_expiry("github", expiry)
+    assert result.expiry is not None
+
+
+def test_vault_set_expiry_ambiguous(tmp_path: Path) -> None:
+    """Vault.set_expiry() raises AmbiguousTargetError when service has multiple credentials."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    vault.add_credential("github", "ghp-test1", "personal_access_token", alias="a")
+    vault.add_credential("github", "ghp-test2", "personal_access_token", alias="b")
+    from datetime import datetime, timezone, timedelta
+    from hermes_vault.vault import AmbiguousTargetError
+    expiry = datetime.now(timezone.utc) + timedelta(days=30)
+    with pytest.raises(AmbiguousTargetError):
+        vault.set_expiry("github", expiry)
+
+
+def test_vault_clear_expiry(tmp_path: Path) -> None:
+    """Vault.clear_expiry() clears the expiry field."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    rec = vault.add_credential("github", "ghp-test", "personal_access_token")
+    from datetime import datetime, timezone, timedelta
+    vault.set_expiry(rec.id, datetime.now(timezone.utc) + timedelta(days=30))
+    cleared = vault.clear_expiry(rec.id)
+    assert cleared is True
+    reloaded = vault.get_credential(rec.id)
+    assert reloaded.expiry is None
+
+
+def test_vault_clear_expiry_not_found(tmp_path: Path) -> None:
+    """Vault.clear_expiry() raises KeyError for unknown credential."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    from datetime import datetime, timezone, timedelta
+    expiry = datetime.now(timezone.utc) + timedelta(days=30)
+    with pytest.raises(KeyError):
+        vault.clear_expiry("nonexistent")
+
+
+def test_cli_set_expiry_days(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """set-expiry with --days sets expiry N days from now."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    vault.add_credential("openai", "sk-test", "api_key")
+
+    def fake_build_services(prompt: bool = False):
+        return vault, object(), object(), object()
+
+    from hermes_vault import cli as cli_module
+    original = cli_module.build_services
+    cli_module.build_services = fake_build_services
+    try:
+        result = cli_runner.invoke(_hermes_group, ["set-expiry", "openai", "--days", "90"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "Expiry set" in result.output
+    finally:
+        cli_module.build_services = original
+
+
+def test_cli_set_expiry_date(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """set-expiry with --date sets expiry to end of that date."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    vault.add_credential("openai", "sk-test", "api_key")
+
+    def fake_build_services(prompt: bool = False):
+        return vault, object(), object(), object()
+
+    from hermes_vault import cli as cli_module
+    original = cli_module.build_services
+    cli_module.build_services = fake_build_services
+    try:
+        result = cli_runner.invoke(_hermes_group, ["set-expiry", "openai", "--date", "2026-07-01"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "2026-07-01" in result.output
+    finally:
+        cli_module.build_services = original
+
+
+def test_cli_set_expiry_missing_flag(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """set-expiry with neither --days nor --date exits 1."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    vault.add_credential("openai", "sk-test", "api_key")
+
+    def fake_build_services(prompt: bool = False):
+        return vault, object(), object(), object()
+
+    from hermes_vault import cli as cli_module
+    original = cli_module.build_services
+    cli_module.build_services = fake_build_services
+    try:
+        result = cli_runner.invoke(_hermes_group, ["set-expiry", "openai"], catch_exceptions=False)
+        assert result.exit_code == 1
+        assert "--days or --date" in result.output
+    finally:
+        cli_module.build_services = original
+
+
+def test_cli_set_expiry_conflict(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """set-expiry with both --days and --date exits 1."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    vault.add_credential("openai", "sk-test", "api_key")
+
+    def fake_build_services(prompt: bool = False):
+        return vault, object(), object(), object()
+
+    from hermes_vault import cli as cli_module
+    original = cli_module.build_services
+    cli_module.build_services = fake_build_services
+    try:
+        result = cli_runner.invoke(_hermes_group, ["set-expiry", "openai", "--days", "90", "--date", "2026-07-01"], catch_exceptions=False)
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+    finally:
+        cli_module.build_services = original
+
+
+def test_cli_set_expiry_invalid_days(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """set-expiry with --days <= 0 exits 1."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    vault.add_credential("openai", "sk-test", "api_key")
+
+    def fake_build_services(prompt: bool = False):
+        return vault, object(), object(), object()
+
+    from hermes_vault import cli as cli_module
+    original = cli_module.build_services
+    cli_module.build_services = fake_build_services
+    try:
+        result = cli_runner.invoke(_hermes_group, ["set-expiry", "openai", "--days", "0"], catch_exceptions=False)
+        assert result.exit_code == 1
+        assert "positive integer" in result.output
+    finally:
+        cli_module.build_services = original
+
+
+def test_cli_clear_expiry(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """clear-expiry clears the expiry on a credential."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    vault.add_credential("openai", "sk-test", "api_key")
+
+    def fake_build_services(prompt: bool = False):
+        return vault, object(), object(), object()
+
+    from hermes_vault import cli as cli_module
+    original = cli_module.build_services
+    cli_module.build_services = fake_build_services
+    try:
+        result = cli_runner.invoke(_hermes_group, ["clear-expiry", "openai"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "cleared" in result.output.lower()
+    finally:
+        cli_module.build_services = original
+
+
+def test_cli_set_expiry_audit_entry(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """set-expiry creates an audit entry."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    vault.add_credential("openai", "sk-test", "api_key")
+
+    def fake_build_services(prompt: bool = False):
+        return vault, object(), object(), object()
+
+    from hermes_vault import cli as cli_module
+    original = cli_module.build_services
+    cli_module.build_services = fake_build_services
+    try:
+        result = cli_runner.invoke(_hermes_group, ["set-expiry", "openai", "--days", "30"], catch_exceptions=False)
+        assert result.exit_code == 0
+    finally:
+        cli_module.build_services = original
+
+    # Check audit log
+    from hermes_vault.audit import AuditLogger
+    settings = cli_module.get_settings()
+    audit = AuditLogger(settings.db_path)
+    entries = audit.list_recent(limit=10, action="set_expiry")
+    assert len(entries) > 0
+    assert entries[0]["action"] == "set_expiry"
+
+
+def test_backup_preserves_expiry(tmp_path: Path) -> None:
+    """export_backup/import_backup preserves expiry metadata."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    rec = vault.add_credential("openai", "sk-test", "api_key")
+    from datetime import datetime, timezone, timedelta
+    expiry = datetime.now(timezone.utc) + timedelta(days=90)
+    vault.set_expiry(rec.id, expiry)
+
+    # Export backup
+    backup = vault.export_backup()
+    assert len(backup["credentials"]) == 1
+    assert backup["credentials"][0]["expiry"] is not None
+
+    # Create a second vault and import
+    db_path2 = tmp_path / "vault2.db"
+    salt_path2 = tmp_path / "salt2.bin"
+    vault2 = Vault(db_path2, salt_path2, "test")
+    imported = vault2.import_backup(backup)
+    assert len(imported) == 1
+    assert imported[0].expiry is not None
+    assert imported[0].expiry.date() == expiry.date()
