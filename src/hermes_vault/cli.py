@@ -899,6 +899,8 @@ def verify(
     target: str | None = typer.Argument(None, help=SELECTOR_HELP),
     alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
     all: bool = typer.Option(False, "--all", help="Verify all credentials in the vault."),
+    format: str = typer.Option("json", "--format", help="Output format: table or json."),
+    report: Path | None = typer.Option(None, "--report", help="Write JSON report to this path."),
 ) -> None:
     """Verify credential(s) against provider endpoints.
 
@@ -910,6 +912,8 @@ def verify(
       hermes-vault verify github --alias work
       hermes-vault verify a1b2c3d4-...
       hermes-vault verify --all
+      hermes-vault verify --all --format table
+      hermes-vault verify --all --report ~/verify.json
     """
     vault, _, broker, _ = build_services(prompt=True)
     if all:
@@ -936,7 +940,42 @@ def verify(
         except KeyError as exc:
             console.print(f"[red]Not found: {exc}[/red]")
             raise typer.Exit(code=1)
-    console.print_json(data=json.dumps([result.model_dump(mode="json") for result in results]))
+
+    # Determine what to print to stdout
+    output_results = [r.model_dump(mode="json") for r in results]
+
+    if format == "json":
+        console.print_json(data=json.dumps(output_results))
+    else:
+        table = Table(title="Verification Results")
+        table.add_column("SERVICE")
+        table.add_column("ALIAS")
+        table.add_column("RESULT")
+        table.add_column("CATEGORY")
+        table.add_column("REASON")
+        table.add_column("STATUS CODE")
+        table.add_column("CHECKED AT")
+        for r in results:
+            reason = r.reason[:40] if len(r.reason) > 40 else r.reason
+            status_code = str(r.status_code) if r.status_code is not None else "-"
+            result_str = "✓ valid" if r.success else "✗ invalid"
+            table.add_row(
+                r.service,
+                alias or "default",
+                result_str,
+                r.category.value,
+                reason,
+                status_code,
+                r.checked_at.isoformat(),
+            )
+        console.print(table)
+
+    # Write report file if requested
+    if report:
+        report_path = Path(report).expanduser().resolve()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(output_results, indent=2), encoding="utf-8")
+        report_path.chmod(0o600)
 
 
 @broker_app.command("get")
