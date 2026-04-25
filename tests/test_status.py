@@ -413,6 +413,30 @@ def test_cli_set_expiry_date(cli_runner: CliRunner, tmp_path: Path) -> None:
         cli_module.build_services = original
 
 
+def test_cli_set_expiry_date_requires_zero_padded_yyyy_mm_dd(cli_runner: CliRunner, tmp_path: Path) -> None:
+    """set-expiry rejects non-zero-padded dates."""
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    os.environ["HERMES_VAULT_PASSPHRASE"] = "test"
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    vault = Vault(db_path, salt_path, "test")
+    vault.add_credential("openai", "sk-test", "api_key")
+
+    def fake_build_services(prompt: bool = False):
+        return vault, object(), object(), object()
+
+    from hermes_vault import cli as cli_module
+    original = cli_module.build_services
+    cli_module.build_services = fake_build_services
+    try:
+        result = cli_runner.invoke(_hermes_group, ["set-expiry", "openai", "--date", "2026-7-1"], catch_exceptions=False)
+        assert result.exit_code == 1
+        assert "YYYY-MM-DD" in result.output
+    finally:
+        cli_module.build_services = original
+
+
 def test_cli_set_expiry_missing_flag(cli_runner: CliRunner, tmp_path: Path) -> None:
     """set-expiry with neither --days nor --date exits 1."""
     db_path = tmp_path / "vault.db"

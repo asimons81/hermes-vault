@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -528,18 +529,28 @@ def audit(
       hermes-vault audit --since 7d --format json
       hermes-vault audit --decision deny --since 2026-03-01
     """
-    import re
-
-    def parse_date(value: str | None) -> datetime | None:
+    def parse_since(value: str | None) -> datetime | None:
         if value is None:
             return None
-        # Relative: "7d", "30d", etc.
         m = re.match(r"^(\d+)d$", value)
         if m:
             return datetime.now(timezone.utc) - timedelta(days=int(m.group(1)))
-        # Absolute: "YYYY-MM-DD"
         try:
-            return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+            if parsed.strftime("%Y-%m-%d") != value:
+                raise ValueError()
+            return parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    def parse_until(value: str | None) -> datetime | None:
+        if value is None:
+            return None
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+            if parsed.strftime("%Y-%m-%d") != value:
+                raise ValueError()
+            return parsed.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
         except ValueError:
             return None
 
@@ -547,8 +558,12 @@ def audit(
         console.print("[red]--limit must be a positive integer[/red]")
         raise typer.Exit(code=1)
 
-    since_dt = parse_date(since)
-    until_dt = parse_date(until)
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=1)
+
+    since_dt = parse_since(since)
+    until_dt = parse_until(until)
 
     if since is not None and since_dt is None:
         console.print(f"[red]Invalid --since value: {since!r} (use '7d' or 'YYYY-MM-DD')[/red]")
@@ -628,8 +643,6 @@ def status(
       hermes-vault status --expiring 30d
       hermes-vault status openai --alias primary --format json
     """
-    import re
-
     # ── Parse stale/expiring thresholds ───────────────────────────────────────
     stale_days: int | None = None
     if stale is not None:
@@ -646,6 +659,10 @@ def status(
             console.print(f"[red]Invalid --expiring value: {expiring!r} (use 'Nd' format, e.g. '30d', '90d')[/red]")
             raise typer.Exit(code=1)
         expiring_days = int(m.group(1))
+
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=1)
 
     # ── Build services ─────────────────────────────────────────────────────────
     vault, _, _, _ = build_services(prompt=True)
@@ -684,7 +701,8 @@ def status(
 
         # days_until_expiry
         if expiry is not None:
-            delta_exp = expiry.replace(tzinfo=timezone.utc) if expiry.tzinfo is None else expiry - now
+            expiry_dt = expiry.replace(tzinfo=timezone.utc) if expiry.tzinfo is None else expiry
+            delta_exp = expiry_dt - now
             days_until_expiry = delta_exp.days
         else:
             days_until_expiry = None
@@ -792,11 +810,10 @@ def set_expiry(
     else:
         # date is not None here
         try:
-            parts = date.split("-")
-            if len(parts) != 3:
+            parsed = datetime.strptime(date, "%Y-%m-%d")
+            if parsed.strftime("%Y-%m-%d") != date:
                 raise ValueError()
-            year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
-            expiry = datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
+            expiry = parsed.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
         except (ValueError, OverflowError):
             console.print(f"[red]Invalid --date format: {date!r} (use YYYY-MM-DD)[/red]")
             raise typer.Exit(code=1)
@@ -915,6 +932,41 @@ def verify(
       hermes-vault verify --all --format table
       hermes-vault verify --all --report ~/verify.json
     """
+    def _table_alias_for(result) -> str:
+        metadata = getattr(result, "metadata", {})
+        if isinstance(metadata, dict):
+            alias_value = metadata.get("alias")
+            if alias_value:
+                return str(alias_value)
+        return alias or "default"
+
+    def _verification_payload(result) -> tuple[bool, str, str, str | None, str]:
+        metadata = getattr(result, "metadata", {})
+        verification = metadata.get("verification_result") if isinstance(metadata, dict) else None
+        if isinstance(verification, dict):
+            success = bool(verification.get("success", getattr(result, "allowed", False)))
+            category = str(verification.get("category", "-"))
+            reason = str(verification.get("reason", getattr(result, "reason", "-")))
+            status_code = verification.get("status_code")
+            checked_at = str(verification.get("checked_at", "-"))
+            return success, category, reason, status_code, checked_at
+
+        category_value = getattr(result, "category", "-")
+        category = category_value.value if hasattr(category_value, "value") else str(category_value)
+        checked_at_value = getattr(result, "checked_at", "-")
+        checked_at = checked_at_value.isoformat() if hasattr(checked_at_value, "isoformat") else str(checked_at_value)
+        return (
+            bool(getattr(result, "success", getattr(result, "allowed", False))),
+            category,
+            str(getattr(result, "reason", "-")),
+            getattr(result, "status_code", None),
+            checked_at,
+        )
+
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=1)
+
     vault, _, broker, _ = build_services(prompt=True)
     if all:
         targets = [(record.service, record.alias) for record in vault.list_credentials()]
@@ -956,17 +1008,20 @@ def verify(
         table.add_column("STATUS CODE")
         table.add_column("CHECKED AT")
         for r in results:
+            success, category, reason_text, status_code, checked_at = _verification_payload(r)
             reason = r.reason[:40] if len(r.reason) > 40 else r.reason
-            status_code = str(r.status_code) if r.status_code is not None else "-"
-            result_str = "✓ valid" if r.success else "✗ invalid"
+            if reason_text:
+                reason = reason_text[:40] if len(reason_text) > 40 else reason_text
+            status_code_str = str(status_code) if status_code is not None else "-"
+            result_str = "✓ valid" if success else "✗ invalid"
             table.add_row(
                 r.service,
-                alias or "default",
+                _table_alias_for(r),
                 result_str,
-                r.category.value,
+                category,
                 reason,
-                status_code,
-                r.checked_at.isoformat(),
+                status_code_str,
+                checked_at,
             )
         console.print(table)
 
@@ -974,7 +1029,7 @@ def verify(
     if report:
         report_path = Path(report).expanduser().resolve()
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps(output_results, indent=2), encoding="utf-8")
+        report_path.write_text(json.dumps(output_results, indent=2, sort_keys=True), encoding="utf-8")
         report_path.chmod(0o600)
 
 

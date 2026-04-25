@@ -541,6 +541,54 @@ def test_verify_format_table(monkeypatch) -> None:
     assert "SERVICE" in result.output or "RESULT" in result.output
 
 
+def test_verify_format_table_with_brokerdecision_metadata(monkeypatch) -> None:
+    """Table format must work with the real BrokerDecision shape from Broker.verify_credential()."""
+
+    class FakeVault:
+        def list_credentials(self):
+            from hermes_vault.models import CredentialRecord
+            return [
+                CredentialRecord(
+                    id="cred-1",
+                    service="openai",
+                    alias="primary",
+                    credential_type="api_key",
+                    encrypted_payload="x",
+                ),
+            ]
+
+    class FakeBroker:
+        def verify_credential(self, service: str, alias: str | None = None):
+            return BrokerDecision(
+                allowed=False,
+                service=service,
+                agent_id="hermes-vault",
+                reason="provider lookup failed",
+                metadata={
+                    "alias": alias or "primary",
+                    "verification_result": {
+                        "service": service,
+                        "category": "network_failure",
+                        "success": False,
+                        "reason": "provider lookup failed",
+                        "checked_at": "2025-01-01T12:00:00+00:00",
+                        "status_code": None,
+                    },
+                },
+            )
+
+    monkeypatch.setattr("hermes_vault.cli.build_services", lambda prompt=False: (
+        FakeVault(), object(), FakeBroker(), object()
+    ))
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["verify", "--all", "--format", "table"])
+
+    assert result.exit_code == 0
+    assert "primary" in result.output
+    assert "provider" in result.output
+
+
 def test_verify_report_writes_file(monkeypatch, tmp_path) -> None:
     broker = StubVerifyBroker()
     monkeypatch.setattr("hermes_vault.cli.build_services", lambda prompt=False: (

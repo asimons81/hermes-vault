@@ -336,3 +336,21 @@ class TestAuditCLi:
 
         result = runner.invoke(_hermes_group, ["audit", "--since", "2026-01-01"], catch_exceptions=False)
         assert result.exit_code == 0
+
+    def test_audit_command_until_includes_entire_date(self, runner: CliRunner, tmp_path: Path, monkeypatch) -> None:
+        """--until YYYY-MM-DD should include entries later that same UTC day."""
+        audit = AuditLogger(tmp_path / "audit.db")
+        audit.initialize()
+        audit.record(_make_record(timestamp=datetime(2026, 4, 20, 18, 30, 0, tzinfo=timezone.utc)))
+        audit.record(_make_record(timestamp=datetime(2026, 4, 21, 0, 0, 0, tzinfo=timezone.utc)))
+
+        class FakeSettings:
+            db_path = audit.db_path
+
+        monkeypatch.setattr("hermes_vault.cli.get_settings", lambda: FakeSettings())
+
+        result = runner.invoke(_hermes_group, ["audit", "--until", "2026-04-20", "--format", "json"], catch_exceptions=False)
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert len(parsed) == 1
+        assert parsed[0]["timestamp"].startswith("2026-04-20T18:30:00")
