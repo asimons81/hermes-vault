@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import yaml
@@ -134,6 +136,11 @@ class PolicyEngine:
             yaml.safe_dump(self.config.model_dump(mode="json"), sort_keys=False),
             encoding="utf-8",
         )
+
+    def compute_policy_hash(self) -> str:
+        raw = self.config.model_dump(mode="json")
+        canonical = json.dumps(raw, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def get_agent_policy(self, agent_id: str) -> AgentPolicy | None:
         return self.config.agents.get(agent_id)

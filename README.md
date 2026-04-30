@@ -121,7 +121,37 @@ hermes-vault set-expiry openai --alias primary --days 90
 hermes-vault clear-expiry openai --alias primary
 hermes-vault verify --all --format table
 hermes-vault verify --all --report ~/.hermes/hermes-vault-data/reports/verify-latest.json
+hermes-vault health
+hermes-vault health --format json
+hermes-vault sync-skill --check
+hermes-vault backup --metadata-only --output ~/meta-backup.json
+hermes-vault diff --against ~/meta-backup.json
+hermes-vault rotate-master-key
 ```
+
+## What's New in 0.5.0 — Health, Governance, and Key Rotation
+
+### Vault health command
+`hermes-vault health` runs a read-only check across stale/invalid/expired credentials
+and backup age. Exit codes: 0 = healthy, 1 = warnings found. JSON and markdown output.
+
+### Master-key rotation
+`hermes-vault rotate-master-key` re-encrypts every credential under a new passphrase
+with atomic rollback. Creates an encrypted pre-rotation backup by default.
+
+### Skill sync with policy hashing
+`hermes-vault sync-skill --check` / `--write` / `--print` keeps the
+`hermes-vault-access` SKILL.md in sync with current policy. Generated skills embed
+a SHA-256 policy hash so stale detection is deterministic.
+
+### Metadata-only backup and vault diff
+`hermes-vault backup --metadata-only` exports metadata without encrypted payloads.
+`hermes-vault diff --against <path>` compares current vault against a backup.
+
+### Governance warnings
+Expiry and backup reminders appear in broker `get_ephemeral_env` decision metadata
+under `warnings[]`. Configurable via `HERMES_VAULT_EXPIRY_WARNING_DAYS` and
+`HERMES_VAULT_BACKUP_REMINDER_DAYS`. Never expose raw secrets.
 
 ## What's New in 0.4.0 — Credential Observability
 

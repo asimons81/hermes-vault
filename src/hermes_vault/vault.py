@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -496,17 +497,19 @@ class Vault:
             ).fetchone()
         return self._row_to_record(row) if row else None
 
-    def export_backup(self) -> dict:
-        """Export all credentials as a portable backup dict (encrypted payloads preserved)."""
+    def export_backup(self, *, metadata_only: bool = False) -> dict:
+        """Export all credentials as a portable backup dict.
+
+        When *metadata_only* is True encrypted payloads are excluded.
+        """
         records = self.list_credentials()
         backup_creds = []
         for rec in records:
-            backup_creds.append({
+            entry = {
                 "id": rec.id,
                 "service": rec.service,
                 "alias": rec.alias,
                 "credential_type": rec.credential_type,
-                "encrypted_payload": rec.encrypted_payload,
                 "status": rec.status.value,
                 "scopes": rec.scopes,
                 "imported_from": rec.imported_from,
@@ -515,7 +518,10 @@ class Vault:
                 "created_at": rec.created_at.isoformat(),
                 "updated_at": rec.updated_at.isoformat(),
                 "last_verified_at": rec.last_verified_at.isoformat() if rec.last_verified_at else None,
-            })
+            }
+            if not metadata_only:
+                entry["encrypted_payload"] = rec.encrypted_payload
+            backup_creds.append(entry)
         return {
             "version": "hvbackup-v1",
             "exported_at": utc_now().isoformat(),
@@ -523,11 +529,20 @@ class Vault:
         }
 
     def import_backup(self, backup: dict, replace: bool = True) -> list[CredentialRecord]:
-        """Import credentials from a backup dict. Existing records are replaced by default."""
+        """Import credentials from a backup dict. Existing records are replaced by default.
+
+        Rejects metadata-only backups (entries missing encrypted_payload).
+        """
         if backup.get("version") != "hvbackup-v1":
             raise ValueError(f"Unsupported backup version: {backup.get('version')}")
         imported = []
         for cred_data in backup.get("credentials", []):
+            if cred_data.get("encrypted_payload") is None:
+                raise ValueError(
+                    "Cannot restore a metadata-only backup. "
+                    "Metadata-only backups are for inspection/diff only. "
+                    "Use a full backup (without --metadata-only) for restore."
+                )
             # Normalize service name on import
             service = normalize(cred_data["service"])
             existing = self._find_by_service_alias(service, cred_data["alias"])
@@ -613,3 +628,73 @@ class Vault:
                 conn.commit()
             imported.append(record)
         return imported
+
+    def rotate_master_key(
+        self,
+        old_passphrase: str,
+        new_passphrase: str,
+        backup_path: Path | None = None,
+    ) -> dict[str, int]:
+        """Re-encrypt all credentials under a new master key.
+
+        Derives a new salt and new key from *new_passphrase*, then re-encrypts
+        every credential row. The operation is atomic — if any credential
+        fails, the entire rotation is rolled back.
+
+        If *backup_path* is provided, an encrypted backup of the vault is
+        written before rotation begins.
+
+        Returns a dict with ``re_encrypted`` (count) and ``failed`` (always 0
+        on success).
+
+        Raises ValueError if the old passphrase does not match the current key
+        or if any credential fails re-encryption.
+        """
+        # Verify old passphrase by trying to decrypt at least one credential
+        old_key = derive_key(old_passphrase, load_or_create_salt(self.salt_path))
+        test_records = self.list_credentials()
+        if test_records:
+            try:
+                decrypt_secret(test_records[0].encrypted_payload, old_key)
+            except Exception:
+                raise ValueError(
+                    "Old passphrase does not match this vault — rotation aborted."
+                )
+        else:
+            pass  # empty vault — old passphrase can't be verified by data
+
+        if backup_path is not None:
+            self.export_backup()
+            content = json.dumps(self.export_backup(), indent=2, sort_keys=True)
+            backup_path.write_text(content, encoding="utf-8")
+            backup_path.chmod(0o600)
+
+        new_salt = os.urandom(SALT_SIZE)
+        new_key = derive_key(new_passphrase, new_salt)
+
+        re_encrypted = 0
+        all_records = self.list_credentials()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("BEGIN EXCLUSIVE")
+            try:
+                for rec in all_records:
+                    payload_plain = decrypt_secret(rec.encrypted_payload, old_key)
+                    new_encrypted = encrypt_secret(payload_plain, new_key)
+                    conn.execute(
+                        "UPDATE credentials SET encrypted_payload = ?, updated_at = ? WHERE id = ?",
+                        (new_encrypted, utc_now().isoformat(), rec.id),
+                    )
+                    re_encrypted += 1
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+        # Atomically write new salt
+        tmp_salt = self.salt_path.with_suffix(".tmp")
+        tmp_salt.write_bytes(new_salt)
+        os.replace(tmp_salt, self.salt_path)
+        self.salt_path.chmod(0o600)
+
+        self.key = new_key
+        return {"re_encrypted": re_encrypted, "failed": 0}

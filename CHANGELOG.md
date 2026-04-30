@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.5.0 — Health, Governance, and Key Rotation Release
+
+### Added
+
+- **Vault health command** (`hermes-vault health`) — read-only health check that
+  inspects credential staleness, expiry, invalid status, and backup age in a single
+  pass. Composes existing vault status/verification/expiry logic. Outputs structured
+  JSON or markdown reports. Exit codes: 0 = healthy, 1 = warnings, 2 = error.
+- **Master-key rotation** (`hermes-vault rotate-master-key`) — derives a new master
+  key from a new passphrase and re-encrypts every credential atomically. Creates an
+  encrypted pre-rotation backup by default. Requires `--skip-backup-dangerous` to
+  bypass. Writes an audit event on success.
+- **Sync-skill command** (`hermes-vault sync-skill`) — checks or regenerates the
+  `hermes-vault-access` SKILL.md from the current policy. Skills now embed a
+  SHA-256 policy hash for deterministic stale detection. Supports `--check`,
+  `--write`, and `--print`. Exit code 0 = current, 1 = stale.
+- **Metadata-only backup** (`hermes-vault backup --metadata-only`) — exports
+  credential metadata without encrypted payloads, safe for diff/inspection.
+- **Backup with audit** (`hermes-vault backup --include-audit`) — includes audit
+  log entries in the backup file.
+- **Vault diff command** (`hermes-vault diff --against <path>`) — compares current
+  vault metadata against a backup file. Shows added, removed, and changed
+  credentials. Never exposes secrets. Accepts both full and metadata-only backups.
+- **Governance warnings** in broker `get_ephemeral_env` decisions — expiry warnings
+  when credentials are within `HERMES_VAULT_EXPIRY_WARNING_DAYS` (default 7) and
+  backup reminders when the last backup exceeds `HERMES_VAULT_BACKUP_REMINDER_DAYS`
+  (default 30). Warnings live in `metadata.warnings[]` and never contain raw secrets.
+- **Configurable thresholds** via environment variables:
+  `HERMES_VAULT_EXPIRY_WARNING_DAYS`, `HERMES_VAULT_BACKUP_REMINDER_DAYS`
+
+### Changed
+
+- `vault.export_backup()` now accepts `metadata_only` parameter to exclude
+  encrypted payloads.
+- `vault.import_backup()` rejects metadata-only backups with a clear error.
+- `SkillGenerator` now embeds a policy hash (`<!-- hv-policy-hash: ... -->`) in
+  generated skills for stale detection.
+- `PolicyEngine` gains `compute_policy_hash()` for deterministic policy hashing.
+- `AppSettings` gains `expiry_warning_days`, `backup_reminder_days`, and
+  `governance_warnings_enabled` properties from env vars.
+
+### Security
+
+- Master-key rotation is atomic: if any credential fails re-encryption, the entire
+  operation rolls back.
+- Pre-rotation encrypted backups are created by default before key rotation.
+- Metadata-only backups and diff never expose encrypted payloads or raw secrets.
+- Governance warnings never leak raw secrets — only metadata (days-until-expiry,
+  days-since-backup).
+
 ## 0.4.0 — Credential Observability Release
 
 ### Added

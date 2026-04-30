@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
-from hermes_vault.models import AgentPolicy
+from hermes_vault.models import (
+    ALL_SERVICE_ACTIONS,
+    AgentCapability,
+    AgentPolicy,
+    ServiceAction,
+)
 from hermes_vault.policy import PolicyEngine
 
 
@@ -17,6 +24,8 @@ metadata:
     tags: [security, credentials, vault, hermes]
 ---
 """
+
+POLICY_HASH_MARKER = "<!-- hv-policy-hash: {policy_hash} -->"
 
 
 BASE_BODY = """
@@ -88,15 +97,67 @@ class SkillGenerator:
         directory = self.output_dir / agent_id
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / "SKILL.md"
-        content = BASE_FRONTMATTER + BASE_BODY.format(
+        policy_hash = self.policy.compute_policy_hash()
+        body = BASE_BODY.format(
             agent_id=agent_id,
             services=", ".join(agent_policy.services) if agent_policy.services else "none",
             raw_access="allowed" if agent_policy.raw_secret_access else "disabled",
             ephemeral_only="true" if agent_policy.ephemeral_env_only else "false",
             max_ttl=agent_policy.max_ttl_seconds,
-        ).strip() + "\n"
+        ).strip()
+        content = BASE_FRONTMATTER + "\n" + POLICY_HASH_MARKER.format(policy_hash=policy_hash) + "\n\n" + body + "\n"
         target.write_text(content, encoding="utf-8")
         return target
 
     def generate_all(self) -> list[Path]:
         return [self.generate_for_agent(agent_id) for agent_id in self.policy.config.agents]
+
+    def sync_skill(
+        self,
+        agent_id: str,
+        *,
+        check: bool = False,
+        write: bool = False,
+    ) -> dict:
+        """Check or sync a skill against current policy.
+
+        Returns a dict with:
+          - 'current': bool — True if skill matches current policy hash
+          - 'agent_id': str
+          - 'policy_hash': str
+          - 'skill_hash': str | None — hash embedded in existing skill, if found
+          - 'skill_path': str | None — path to the skill file
+        """
+        directory = self.output_dir / agent_id
+        skill_path = directory / "SKILL.md"
+        current_policy_hash = self.policy.compute_policy_hash()
+
+        result = {
+            "current": True,
+            "agent_id": agent_id,
+            "policy_hash": current_policy_hash,
+            "skill_hash": None,
+            "skill_path": str(skill_path),
+        }
+
+        if not skill_path.exists():
+            result["current"] = False
+            if write:
+                self.generate_for_agent(agent_id)
+                result["current"] = True
+                result["skill_hash"] = current_policy_hash
+            return result
+
+        existing = skill_path.read_text(encoding="utf-8")
+        import re
+        m = re.search(r"<!--\s*hv-policy-hash:\s*([a-f0-9]{64})\s*-->", existing)
+        if m:
+            result["skill_hash"] = m.group(1)
+            result["current"] = m.group(1) == current_policy_hash
+
+        if write and not result["current"]:
+            self.generate_for_agent(agent_id)
+            result["current"] = True
+            result["skill_hash"] = current_policy_hash
+
+        return result

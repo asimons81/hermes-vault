@@ -32,6 +32,15 @@ class AppSettings(BaseModel):
             Path("~/.profile").expanduser(),
         ]
     )
+    expiry_warning_days: int = Field(
+        default_factory=lambda: int(os.environ.get("HERMES_VAULT_EXPIRY_WARNING_DAYS", "7"))
+    )
+    backup_reminder_days: int = Field(
+        default_factory=lambda: int(os.environ.get("HERMES_VAULT_BACKUP_REMINDER_DAYS", "30"))
+    )
+    governance_warnings_enabled: bool = Field(
+        default_factory=lambda: os.environ.get("HERMES_VAULT_GOVERNANCE_WARNINGS", "0") == "1"
+    )
 
     @property
     def db_path(self) -> Path:

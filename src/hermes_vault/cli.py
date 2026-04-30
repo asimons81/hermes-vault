@@ -18,6 +18,8 @@ from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings
 from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase
 from hermes_vault.detectors import detect_matches, guess_from_env_name
+from hermes_vault.diff import diff_backups
+from hermes_vault.health import run_health
 from hermes_vault.models import CredentialStatus
 from hermes_vault.mutations import VaultMutations, OPERATOR_AGENT_ID
 from hermes_vault.policy import PolicyEngine
@@ -1033,6 +1035,65 @@ def verify(
         report_path.chmod(0o600)
 
 
+@_typer_app.command()
+def health(
+    ctx: typer.Context,
+    format: str = typer.Option("markdown", "--format", help="Output format: markdown or json."),
+    verify_live: bool = typer.Option(False, "--verify-live", help="Run live provider verification (not implemented yet — reserved)."),
+    stale_days: int = typer.Option(30, "--stale-days", help="Flag credentials not verified within this many days."),
+    expiring_days: int = typer.Option(7, "--expiring-days", help="Flag credentials expiring within this many days."),
+    backup_days: int = typer.Option(30, "--backup-days", help="Warn if last backup exceeds this many days."),
+) -> None:
+    """Run a read-only vault health check.
+
+    Inspects credential staleness, expiry, invalid status, and backup age.
+    Does NOT call provider APIs unless --verify-live is passed.
+
+    Exit codes:
+      0 = all healthy
+      1 = warnings (stale, invalid, expiring, backup overdue)
+      2 = execution/config/runtime error
+
+    Examples:
+      hermes-vault health
+      hermes-vault health --format json
+      hermes-vault health --stale-days 7 --expiring-days 14
+    """
+    if format not in ("markdown", "json"):
+        console.print("[red]--format must be 'markdown' or 'json'[/red]")
+        raise typer.Exit(code=2)
+
+    if stale_days < 1 or expiring_days < 1 or backup_days < 1:
+        console.print("[red]Thresholds must be positive integers[/red]")
+        raise typer.Exit(code=2)
+
+    vault, _, _, _ = build_services(prompt=True)
+    settings = get_settings()
+    audit = AuditLogger(settings.db_path)
+
+    report = run_health(
+        vault,
+        audit=audit,
+        verify_live=verify_live,
+        stale_days=stale_days,
+        expiring_days=expiring_days,
+        backup_days=backup_days,
+    )
+
+    from hermes_vault.ui import banner_health, render_health_report_markdown
+    console.print(banner_health(report.healthy))
+
+    if format == "json":
+        console.print_json(data=json.dumps(report.as_dict(exclude_none=False), sort_keys=True))
+    else:
+        console.print(render_health_report_markdown(report))
+
+    if report.healthy:
+        raise typer.Exit(code=0)
+    else:
+        raise typer.Exit(code=1)
+
+
 @broker_app.command("get")
 def broker_get(
     ctx: typer.Context,
@@ -1086,12 +1147,88 @@ def broker_list(
 ) -> None:
     """List credentials available to an agent (filtered by policy).
 
-    \b
     Example:
       hermes-vault broker list --agent hermes
     """
     _, _, broker, _ = build_services(prompt=True)
     console.print_json(data=json.dumps(broker.list_available_credentials(agent)))
+
+
+@_typer_app.command("rotate-master-key")
+def rotate_master_key(
+    ctx: typer.Context,
+    skip_backup_dangerous: bool = typer.Option(False, "--skip-backup-dangerous", help="Skip the pre-rotation encrypted backup. DANGEROUS — you will not have a rollback point."),
+) -> None:
+    """Rotate the vault master key (re-encrypt all credentials).
+
+    Derives a new master key from a new passphrase, re-encrypts every
+    credential in the vault, and writes a new salt file.
+
+    By default, creates an encrypted pre-rotation backup before rotating.
+    Use --skip-backup-dangerous only if you have an existing verified backup.
+
+    Requires the old passphrase first, then the new passphrase (twice to confirm).
+
+    Example:
+      hermes-vault rotate-master-key
+    """
+    import getpass as gp_local
+
+    settings = get_settings()
+    vault, _, _, _ = build_services(prompt=True)
+    audit = AuditLogger(settings.db_path)
+
+    console.print("[bold]Master Key Rotation[/bold]")
+    console.print(f"  Vault: {settings.db_path}")
+    console.print(f"  Credentials: {len(vault.list_credentials())}")
+
+    old_passphrase = gp_local.getpass("Old vault passphrase: ")
+    if not old_passphrase:
+        console.print("[red]Old passphrase is required.[/red]")
+        raise typer.Exit(code=2)
+
+    new_pass = gp_local.getpass("New vault passphrase: ")
+    if not new_pass:
+        console.print("[red]New passphrase cannot be empty.[/red]")
+        raise typer.Exit(code=2)
+    confirm = gp_local.getpass("Confirm new passphrase: ")
+    if new_pass != confirm:
+        console.print("[red]New passphrases do not match. Rotation aborted.[/red]")
+        raise typer.Exit(code=2)
+
+    backup_path_obj = None
+    if not skip_backup_dangerous:
+        backup_stem = f"pre-rotate-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+        backup_path_obj = settings.runtime_home / f"{backup_stem}.json"
+        backup_content = json.dumps(vault.export_backup(), indent=2, sort_keys=True)
+        backup_path_obj.write_text(backup_content, encoding="utf-8")
+        backup_path_obj.chmod(0o600)
+        console.print(f"[green]Pre-rotation backup:[/green] {backup_path_obj}")
+        console.print(f"[yellow]  Keep your salt file to restore this backup.[/yellow]")
+    else:
+        console.print("[yellow]WARNING: Skipping pre-rotation backup (--skip-backup-dangerous).[/yellow]")
+        console.print("[yellow]  No rollback point will exist.[/yellow]")
+
+    try:
+        result = vault.rotate_master_key(
+            old_passphrase=old_passphrase,
+            new_passphrase=new_pass,
+            backup_path=None,  # backup already written above
+        )
+    except ValueError as exc:
+        console.print(f"[red]Rotation failed: {exc}[/red]")
+        raise typer.Exit(code=2)
+
+    audit.record(AccessLogRecord(
+        agent_id="operator",
+        service="*",
+        action="rotate_master_key",
+        decision=Decision.allow,
+        reason=f"master key rotated, {result['re_encrypted']} credential(s) re-encrypted",
+    ))
+
+    console.print(f"[green]Master key rotated successfully.[/green] {result['re_encrypted']} credential(s) re-encrypted.")
+    console.print("[yellow]Update HERMES_VAULT_PASSPHRASE to your new passphrase for future vault access.[/yellow]")
 
 
 @_typer_app.command("generate-skill")
@@ -1107,21 +1244,86 @@ def generate_skill(
     console.print_json(data=json.dumps([str(path) for path in paths]))
 
 
+@_typer_app.command("sync-skill")
+def sync_skill(
+    ctx: typer.Context,
+    check: bool = typer.Option(False, "--check", help="Exit 0 if skill is current, 1 if stale."),
+    write: bool = typer.Option(False, "--write", help="Regenerate the skill from current policy."),
+    print_result: bool = typer.Option(False, "--print", help="Print the skill to stdout."),
+    agent: str = typer.Option("hermes", "--agent", help="Agent ID to sync the skill for."),
+) -> None:
+    """Check or sync the hermes-vault-access SKILL.md against current policy.
+
+    Generated skills embed a SHA-256 hash of the policy so stale detection
+    is deterministic.
+
+    Exit codes for --check: 0 = current, 1 = stale, 2 = error.
+
+    Examples:
+      hermes-vault sync-skill --check
+      hermes-vault sync-skill --write
+      hermes-vault sync-skill --print --agent hermes
+    """
+    mode_count = sum([check, write, print_result])
+    if mode_count == 0:
+        console.print("[red]Provide one of --check, --write, or --print[/red]")
+        raise typer.Exit(code=2)
+    if mode_count > 1:
+        console.print("[red]--check, --write, and --print are mutually exclusive[/red]")
+        raise typer.Exit(code=2)
+
+    _, policy, _, _ = build_services(prompt=True)
+    settings = get_settings()
+    generator = SkillGenerator(policy=policy, output_dir=settings.generated_skills_dir)
+
+    if print_result:
+        path = generator.generate_for_agent(agent)
+        content = path.read_text(encoding="utf-8")
+        console.print(content)
+        return
+
+    result = generator.sync_skill(agent, check=check, write=write)
+    if check:
+        if result["current"]:
+            console.print(f"[green]Skill for '{agent}' is current.[/green]")
+            raise typer.Exit(code=0)
+        else:
+            stale_msg = "missing"
+            if result["skill_hash"]:
+                stale_msg = f"hash mismatch (skill: {result['skill_hash'][:12]}..., policy: {result['policy_hash'][:12]}...)"
+            console.print(f"[yellow]Skill for '{agent}' is stale ({stale_msg}).[/yellow]")
+            raise typer.Exit(code=1)
+
+    if write:
+        if result["current"]:
+            console.print(f"[green]Skill for '{agent}' is already current.[/green]")
+        else:
+            console.print(f"[green]Skill for '{agent}' regenerated from policy.[/green]")
+
+
 @_typer_app.command("backup")
 def backup_vault(
     ctx: typer.Context,
     output: Path = typer.Option(..., "--output", "-o", help="Output path for the backup file."),
+    metadata_only: bool = typer.Option(False, "--metadata-only", help="Exclude encrypted secrets; produce a metadata-only backup for diff/inspection."),
+    include_audit: bool = typer.Option(False, "--include-audit", help="Include audit log entries in the backup."),
 ) -> None:
     """Export an encrypted backup of all vault credentials to a JSON file.
 
     Backup file is chmod 600. Store it alongside your salt file.
 
-    \b
-    Example:
+    Examples:
       hermes-vault backup --output ~/vault-backup-2026-04.json
+      hermes-vault backup --metadata-only --output ~/vault-meta.json
+      hermes-vault backup --include-audit --output ~/vault-full.json
     """
     vault, _, _, _ = build_services(prompt=True)
-    backup = vault.export_backup()
+    backup = vault.export_backup(metadata_only=metadata_only)
+    if include_audit:
+        settings = get_settings()
+        audit = AuditLogger(settings.db_path)
+        entries = audit.list_recent(limit=5000)
+        backup["audit_log"] = entries
     content = json.dumps(backup, indent=2, sort_keys=True)
     output.write_text(content, encoding="utf-8")
     output.chmod(0o600)
@@ -1140,7 +1342,8 @@ def restore_vault(
     Existing credentials with the same service+alias are replaced.
     Requires --yes to confirm.
 
-    \b
+    Metadata-only backups are rejected with a clear error.
+
     Example:
       hermes-vault restore --input ~/vault-backup-2026-04.json --yes
     """
@@ -1156,8 +1359,71 @@ def restore_vault(
     if backup.get("version") != "hvbackup-v1":
         console.print(f"[red]Unsupported backup version: {backup.get('version')}[/red]")
         raise typer.Exit(code=1)
-    imported = vault.import_backup(backup)
+    try:
+        imported = vault.import_backup(backup)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
     console.print(f"[green]Restored {len(imported)} credential(s) from {input}[/green]")
+
+
+@_typer_app.command("diff")
+def diff(
+    ctx: typer.Context,
+    against: Path = typer.Option(..., "--against", help="Path to a backup file to compare against."),
+    format: str = typer.Option("json", "--format", help="Output format: json or table."),
+) -> None:
+    """Compare current vault metadata against a backup file.
+
+    Shows which credentials have been added, removed, or changed.
+    Never exposes secrets — only metadata deltas.
+
+    Accepts both full backups and metadata-only backups.
+
+    Examples:
+      hermes-vault diff --against ~/vault-backup-old.json
+      hermes-vault diff --against ~/vault-meta.json --format table
+    """
+    if format not in ("json", "table"):
+        console.print("[red]--format must be 'json' or 'table'[/red]")
+        raise typer.Exit(code=2)
+
+    try:
+        compare = json.loads(against.read_text(encoding="utf-8"))
+    except Exception as exc:
+        console.print(f"[red]Failed to read backup file: {exc}[/red]")
+        raise typer.Exit(code=2)
+
+    vault, _, _, _ = build_services(prompt=True)
+    current = vault.export_backup(metadata_only=True)
+
+    entries = diff_backups(current, compare)
+
+    if format == "json":
+        output = [e.as_dict() for e in entries]
+        console.print_json(data=json.dumps(output, sort_keys=True))
+        return
+
+    table = Table(title="Vault Diff")
+    table.add_column("KIND")
+    table.add_column("SERVICE")
+    table.add_column("ALIAS")
+    table.add_column("TYPE")
+    table.add_column("STATUS")
+    table.add_column("CHANGES")
+    for e in entries:
+        changes_str = ", ".join(
+            f"{ch['field']}: {ch['from']} → {ch['to']}" for ch in e.changes
+        ) if e.changes else "-"
+        table.add_row(
+            e.kind.upper(),
+            e.service,
+            e.alias,
+            e.credential_type or "-",
+            e.status or "-",
+            changes_str[:60] + ("..." if len(changes_str) > 60 else ""),
+        )
+    console.print(table)
 
 
 @_typer_app.command("mcp")

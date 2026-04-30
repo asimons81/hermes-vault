@@ -133,7 +133,7 @@ def _json_text(data: Any) -> str:
 
 # ── server ─────────────────────────────────────────────────────────────────────
 
-server = Server("hermes-vault", version="0.3.1")
+server = Server("hermes-vault", version="0.5.0")
 
 
 @server.list_tools()

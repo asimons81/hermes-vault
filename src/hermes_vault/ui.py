@@ -274,3 +274,58 @@ def banner_imported(count: int) -> str:
 {c('  ║       ', CYAN)}{c(f'{count} credential(s) imported', SILVER)}{c('     ║', CYAN)}
 {c('  ╚═══════════════════════════════════════╝', CYAN)}
 """
+
+def banner_health(healthy: bool) -> str:
+    col = GREEN if healthy else AMBER
+    status_text = "ALL HEALTHY" if healthy else "WARNINGS FOUND"
+    icon = "✓" if healthy else "!"
+    return f"""
+{c('  ╔═══════════════════════════════════════╗', col)}
+{c('  ║  ', col)}{cb(icon, col)}{c('  H E A L T H   R E P O R T', col)}{c('              ║', col)}
+{c('  ║       ', col)}{c(status_text, col)}{c('                         ║', col)}
+{c('  ╚═══════════════════════════════════════╝', col)}
+"""
+
+
+def render_health_report_markdown(report) -> str:
+    """Render a HealthReport as a Markdown string (no secrets)."""
+    lines = [
+        "# Hermes Vault Health",
+        f"Generated: {report.generated_at}",
+        f"Version: {report.version}",
+        "",
+        f"**Status**: {'All Healthy' if report.healthy else 'Warnings Found'}",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Total credentials | {report.total_credentials} |",
+        f"| Healthy | {report.healthy_count} |",
+        f"| Stale | {report.stale_count} |",
+        f"| Invalid | {report.invalid_count} |",
+        f"| Expired | {report.expired_count} |",
+        f"| Expiring | {report.expiring_count} |",
+        f"| Never verified | {report.never_verified_count} |",
+    ]
+    if report.days_since_last_backup is not None:
+        lines.append(f"| Days since last backup | {report.days_since_last_backup} |")
+    else:
+        lines.append("| Days since last backup | never |")
+    lines.append("")
+    lines.append(f"Stale threshold: {report.stale_threshold_days}d  "
+                  f"Expiring threshold: {report.expiring_threshold_days}d  "
+                  f"Backup threshold: {report.backup_threshold_days}d")
+    lines.append("")
+
+    if report.findings:
+        lines.append("## Findings")
+        lines.append("")
+        lines.append("| Level | Kind | Service | Alias | Detail |")
+        lines.append("|-------|------|---------|-------|--------|")
+        for f in report.findings:
+            lines.append(
+                f"| {f.level} | {f.kind} | {f.service} | {f.alias} | {f.detail} |"
+            )
+    else:
+        lines.append("No findings.")
+    lines.append("")
+    return "\n".join(lines)

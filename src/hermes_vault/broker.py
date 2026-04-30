@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from hermes_vault.audit import AuditLogger
@@ -69,6 +70,7 @@ class Broker:
             return self._deny(agent_id, canonical, "get_ephemeral_env", "credential not found in vault", ttl_seconds=effective_ttl)
         env_template = get_env_var_map(canonical)
         env = {key: value.format(secret=secret.secret) for key, value in env_template.items()}
+        warnings = self._governance_warnings(canonical, alias)
         return self._allow(
             agent_id,
             canonical,
@@ -76,7 +78,86 @@ class Broker:
             "ephemeral environment materialization approved",
             ttl_seconds=effective_ttl,
             env=env,
+            metadata={"warnings": warnings} if warnings else {},
         )
+
+    def _governance_warnings(self, service: str, alias: str | None = None) -> list[dict[str, str]]:
+        """Build structured governance warnings for a credential request."""
+        warnings: list[dict[str, str]] = []
+        now = datetime.now(timezone.utc)
+
+        # ── expiry warnings ──────────────────────────────────────────
+        expiry_warning_days = int(os.environ.get("HERMES_VAULT_EXPIRY_WARNING_DAYS", "7"))
+        record = None
+        try:
+            if alias is not None:
+                record = self.vault.resolve_credential(service, alias=alias)
+            else:
+                record = self.vault.get_credential(service)
+        except Exception:
+            record = None
+        if record and record.expiry:
+            expiry = record.expiry.replace(tzinfo=timezone.utc) if record.expiry.tzinfo is None else record.expiry
+            days_until = (expiry - now).days
+            if days_until < 0:
+                warnings.append({
+                    "kind": "credential_expired",
+                    "service": record.service,
+                    "alias": record.alias,
+                    "detail": f"credential expired {abs(days_until)} day(s) ago",
+                    "days_until_expiry": str(days_until),
+                })
+            elif days_until <= expiry_warning_days:
+                warnings.append({
+                    "kind": "credential_expiring_soon",
+                    "service": record.service,
+                    "alias": record.alias,
+                    "detail": f"credential expires in {days_until} day(s)",
+                    "days_until_expiry": str(days_until),
+                })
+
+        # ── backup reminder ──────────────────────────────────────────
+        backup_days = int(os.environ.get("HERMES_VAULT_BACKUP_REMINDER_DAYS", "30"))
+        entries = self.audit.list_recent(limit=500, action="export_backup")
+        last_backup: datetime | None = None
+        for entry in entries:
+            ts_str = entry.get("timestamp")
+            if ts_str and isinstance(ts_str, str):
+                try:
+                    last_backup = datetime.fromisoformat(ts_str)
+                    break
+                except ValueError:
+                    continue
+        if last_backup is None:
+            entries = self.audit.list_recent(limit=500, action="backup")
+            for entry in entries:
+                ts_str = entry.get("timestamp")
+                if ts_str and isinstance(ts_str, str):
+                    try:
+                        last_backup = datetime.fromisoformat(ts_str)
+                        break
+                    except ValueError:
+                        continue
+
+        if last_backup is not None:
+            days_since = (now - last_backup.replace(tzinfo=timezone.utc)).days
+            if days_since > backup_days:
+                warnings.append({
+                    "kind": "backup_overdue",
+                    "service": "*",
+                    "alias": "*",
+                    "detail": f"last backup was {days_since} day(s) ago (reminder: {backup_days}d)",
+                    "days_since_backup": str(days_since),
+                })
+        else:
+            warnings.append({
+                "kind": "no_backup",
+                "service": "*",
+                "alias": "*",
+                "detail": "no backup has been recorded",
+            })
+
+        return warnings
 
     def verify_credential(self, service: str, alias: str | None = None) -> BrokerDecision:
         service = normalize(service)
