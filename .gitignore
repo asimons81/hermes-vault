@@ -17,4 +17,5 @@ htmlcov/
 dmypy.json
 .caliber/
 typescript
+launch-video/*.mp4
 .DS_Store
