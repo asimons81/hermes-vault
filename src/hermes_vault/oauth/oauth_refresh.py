@@ -177,8 +177,8 @@ class RefreshEngine:
                 attempt.reason = f"Network failure after {self.max_retries} retries: {exc}"
                 self._log_refresh(attempt)
                 raise OAuthNetworkError(attempt.reason) from exc
-            except OAuthProviderError as exc:
-                # Provider errors are generally not retryable
+            except (OAuthProviderError, RefreshTokenExpiredError) as exc:
+                # Provider / token errors are generally not retryable
                 attempt.reason = str(exc)
                 self._log_refresh(attempt)
                 raise

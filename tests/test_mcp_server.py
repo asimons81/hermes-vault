@@ -45,6 +45,8 @@ def test_list_tools_returns_expected_tools():
         "verify_credential",
         "rotate_credential",
         "scan_for_secrets",
+        "oauth_login",
+        "oauth_refresh",
     }
     assert names == expected
 
@@ -220,6 +222,87 @@ def test_scan_denied_for_agent_without_capability(vault_with_policy, tmp_path):
     assert "Denied:" in _text(result)
 
 
+# ── oauth_login ────────────────────────────────────────────────────────────────
+
+
+def test_oauth_login_requires_agent_id():
+    result = _run_async(call_tool("oauth_login", {"provider": "google"}))
+    assert "Missing required parameter: agent_id" in _text(result)
+
+
+def test_oauth_login_requires_provider():
+    result = _run_async(call_tool("oauth_login", {"agent_id": "test-agent"}))
+    assert "Missing required parameter: provider" in _text(result)
+
+
+def test_oauth_login_denied_without_add_credential_permission(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    # restricted-agent only has get_env for openai — no add_credential
+    result = _run_async(call_tool("oauth_login", {
+        "agent_id": "restricted-agent",
+        "provider": "openai",
+    }))
+    assert "Denied:" in _text(result)
+
+
+def test_oauth_login_returns_authorization_url(vault_with_policy, tmp_path, monkeypatch):
+    """Test that oauth_login returns a valid authorization URL with PKCE params."""
+    # Monkeypatch ClientEventLoop.create_task to prevent callback server from starting in tests
+    # Instead, we just check the returned URL structure
+    import hermes_vault.mcp_server as mcp_mod
+    mcp_mod._OAUTH_CALLBACK_TIMEOUT = 1  # Short timeout for tests
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    # Provide a dummy client_id for openai (the provider doesn't require client_id, but set it anyway)
+    monkeypatch.setenv("HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID", "test-client-123")
+    monkeypatch.setenv("HERMES_VAULT_OAUTH_GOOGLE_CLIENT_SECRET", "test-secret")
+
+    result = _run_async(call_tool("oauth_login", {
+        "agent_id": "test-agent",
+        "provider": "google",
+        "alias": "test",
+        "scopes": ["openid", "email"],
+    }))
+    data = _json(result)
+    assert "authorization_url" in data
+    assert "redirect_uri" in data
+    assert "message" in data
+    assert "test" in data["message"]
+    # URL should contain PKCE params
+    url = data["authorization_url"]
+    assert "code_challenge=" in url
+    assert "code_challenge_method=S256" in url
+    assert "state=" in url
+    assert "client_id=" in url
+
+
+# ── oauth_refresh ──────────────────────────────────────────────────────────────
+
+
+def test_oauth_refresh_requires_agent_id():
+    result = _run_async(call_tool("oauth_refresh", {"service": "openai"}))
+    assert "Missing required parameter: agent_id" in _text(result)
+
+
+def test_oauth_refresh_requires_service():
+    result = _run_async(call_tool("oauth_refresh", {"agent_id": "test-agent"}))
+    assert "Missing required parameter: service" in _text(result)
+
+
+def test_oauth_refresh_returns_error_when_no_refresh_token(vault_with_policy, tmp_path):
+    """When no refresh token exists, the tool should return a clear error."""
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("oauth_refresh", {
+        "agent_id": "test-agent",
+        "service": "openai",
+        "alias": "default",
+    }))
+    text = _text(result)
+    assert "Error:" in text
+    # Should mention that re-authentication is required
+    assert "re-authentication" in text.lower() or "Use oauth_login" in text or "No refresh token" in text
+
+
 # ── fixtures ───────────────────────────────────────────────────────────────────
 
 
@@ -250,11 +333,19 @@ def vault_with_policy(tmp_path):
     vault.add_credential(service="openai", secret="sk-test-openai", credential_type="api_key", alias="primary")
     vault.add_credential(service="supabase", secret="sb-test-supabase", credential_type="api_key", alias="primary")
 
-    policy_yaml = """
+    policy_yaml = """\
 agents:
   test-agent:
     services:
       openai:
+        actions:
+          - get_credential
+          - get_env
+          - metadata
+          - rotate
+          - delete
+          - add_credential
+      google:
         actions:
           - get_credential
           - get_env
