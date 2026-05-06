@@ -100,8 +100,14 @@ All MCP tool calls require an `agent_id`. The same policy.yaml that gates CLI ac
 | `verify_credential` | Verify a credential against its provider | `can_verify(service)` |
 | `rotate_credential` | Rotate a credential to a new secret | `can_rotate(service)` |
 | `scan_for_secrets` | Scan filesystem for plaintext secrets | `capability:scan_secrets` |
+| `oauth_login` | Initiate PKCE OAuth login (returns auth URL) | `capability:add_credential` |
+| `oauth_refresh` | Refresh an OAuth access token using stored refresh token | `action:rotate` |
 
 Raw secrets are **never** transmitted over MCP. The default access pattern is `get_ephemeral_env`.
+
+### OAuth via MCP
+
+Hermes Vault can broker OAuth logins so agents never handle raw passwords. `oauth_login` returns an authorization URL and spins up a callback server -- open the URL in a browser, and tokens are stored automatically. `oauth_refresh` renews tokens proactively before expiry. See [docs/mcp-server.md](docs/mcp-server.md) for full tool schemas.
 
 ## Common Commands
 
@@ -127,7 +133,27 @@ hermes-vault sync-skill --check
 hermes-vault backup --metadata-only --output ~/meta-backup.json
 hermes-vault diff --against ~/meta-backup.json
 hermes-vault rotate-master-key
+hermes-vault oauth login google --alias work
+hermes-vault oauth refresh google --alias work
+hermes-vault oauth providers
 ```
+
+## What's New in 0.6.0 — OAuth PKCE and Token Auto-Refresh
+
+### OAuth PKCE login
+`hermes-vault oauth login <provider>` initiates a browser-based PKCE login flow. Tokens are stored in the vault automatically. Supports `--no-browser`, custom `--scope`, and `--alias`. Built-in providers: `google`, `github`, `openai`. Custom providers can be added via YAML.
+
+### Token auto-refresh engine
+`hermes-vault oauth refresh <service>` detects expired or nearly-expired access tokens (default 5-minute proactive margin) and refreshes them using stored refresh tokens. Supports `--all`, `--dry-run`, and configurable `--margin`. Exponential backoff with configurable `max_retries`.
+
+### MCP OAuth tools
+`oauth_login` and `oauth_refresh` are available as MCP tools when Hermes Vault is registered as an MCP server. Agents can initiate logins and trigger refresh without touching raw tokens.
+
+### Provider registry
+OAuth providers are configured in `~/.hermes/hermes-vault-data/oauth-providers.yaml`. The file seeds itself with baked-in defaults on first use. Add custom providers without code changes.
+
+### Security invariants preserved
+No raw tokens in logs. No browser state leaked. CSRF-protected via timing-safe state comparison. Refresh tokens are stored separately from access tokens. Atomic vault updates via SQLite transactions.
 
 ## What's New in 0.5.0 — Health, Governance, and Key Rotation
 
@@ -248,4 +274,4 @@ If you need a starting policy, copy `policy.example.yaml` into the runtime home 
 
 ## More Detail
 
-See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/credential-lifecycle.md](docs/credential-lifecycle.md), [docs/operator-guide.md](docs/operator-guide.md), [docs/migration-0.1-to-0.2.md](docs/migration-0.1-to-0.2.md), and [docs/update-workflow.md](docs/update-workflow.md).
+See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/credential-lifecycle.md](docs/credential-lifecycle.md), [docs/operator-guide.md](docs/operator-guide.md), [docs/migration-0.1-to-0.2.md](docs/migration-0.1-to-0.2.md), [docs/migration-0.5-to-0.6.md](docs/migration-0.5-to-0.6.md), and [docs/update-workflow.md](docs/update-workflow.md).

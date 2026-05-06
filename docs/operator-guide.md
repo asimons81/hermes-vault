@@ -302,3 +302,91 @@ Set or clear expiry dates for credentials to track renewal windows:
 Use --days for a relative deadline (N days from today) or --date for an
 absolute date. Both commands write audit entries. Expiry dates are
 preserved through backup and restore.
+
+## OAuth Setup and Token Lifecycle
+
+Hermes Vault supports OAuth 2.0 with PKCE for providers that support it. The flow is entirely local -- no cloud intermediary, no hosted redirect URI required.
+
+### Provider registration
+
+Providers are stored in `~/.hermes/hermes-vault-data/oauth-providers.yaml`. The file is created automatically with built-in defaults (`google`, `github`, `openai`) on first use. You can add custom providers by editing the YAML directly.
+
+A provider entry looks like this:
+
+```yaml
+providers:
+  myprovider:
+    name: "MyProvider"
+    authorization_endpoint: "https://myprovider.com/oauth/authorize"
+    token_endpoint: "https://myprovider.com/oauth/token"
+    default_scopes:
+      - "api"
+    scope_separator: " "
+    use_pkce: true
+    extra_params:
+      access_type: "offline"
+    requires_client_id: true
+    requires_client_secret: false
+```
+
+### Client credentials via environment variables
+
+Providers that require a `client_id` (or `client_secret`) read it from environment variables at runtime:
+
+```
+HERMES_VAULT_OAUTH_<PROVIDER>_CLIENT_ID
+HERMES_VAULT_OAUTH_<PROVIDER>_CLIENT_SECRET
+```
+
+For example: `HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID` and `HERMES_VAULT_OAUTH_GITHUB_CLIENT_SECRET`.
+
+### Login flow
+
+1.  `hermes-vault oauth login <provider> [--alias NAME] [--scope SCOPE ...] [--no-browser]`
+2.  The CLI generates a PKCE code_verifier + code_challenge and a CSRF state nonce.
+3.  An ephemeral callback server starts on `127.0.0.1:0` (OS-assigned port).
+4.  The browser is opened with the authorization URL (or the URL is printed if `--no-browser`).
+5.  The user completes consent in the browser.
+6.  The provider callback hits the local server with `?code=...&state=...`.
+7.  The CLI validates state with timing-safe comparison, then POSTs the code to the token endpoint.
+8.  On success, the access token is stored as `oauth_access_token` and the refresh token as `oauth_refresh_token` with alias `"refresh"`.
+9.  If the provider returns `expires_in`, an expiry timestamp is set automatically.
+
+### Token lifecycle and refresh
+
+Access tokens have a limited lifespan (typically 1 hour for Google, configurable by provider). The refresh token lives in the vault separately and is used to obtain new access tokens without browser re-authentication.
+
+Refresh commands:
+
+```bash
+# Refresh a single service
+hermes-vault oauth refresh google --alias work
+
+# Refresh all expired or nearly-expired tokens
+hermes-vault oauth refresh --all
+
+# Dry-run: see what would be refreshed without updating vault
+hermes-vault oauth refresh google --dry-run
+
+# Custom proactive margin (default: 300s = 5 minutes before expiry)
+hermes-vault oauth refresh --all --margin 600
+```
+
+The refresh engine:
+
+- Scans all `oauth_access_token` credentials for expiry.
+- A token is considered "expired" when it's past its expiry or within `margin` seconds of it.
+- POSTs to the provider's token endpoint with `grant_type=refresh_token`.
+- Retries transient network errors up to 3 times with exponential backoff (2s, 4s, 8s).
+- Updates both tokens atomically in a single SQLite transaction.
+- Records every attempt (success or failure) in the audit log.
+- Provider-side refresh token rotation is supported; the engine preserves a `rotation_counter` and optional `family_id`.
+
+### MCP OAuth tools
+
+When Hermes Vault is registered as an MCP server inside Hermes Agent, the `oauth_login` and `oauth_refresh` tools are available to agents:
+
+- `oauth_login` returns an authorization URL and starts a background callback thread. The agent opens the URL, completes consent, and tokens are stored automatically.
+- `oauth_refresh` triggers the same refresh engine described above, returning the result to the agent.
+
+Both tools require policy permissions (`add_credential` for login, service access for refresh).

@@ -1,6 +1,38 @@
 # Changelog
 
-## 0.5.0 — Health, Governance, and Key Rotation Release
+## 0.6.0 -- OAuth PKCE and Token Auto-Refresh Release
+
+### Added
+
+- **OAuth PKCE login** (`hermes-vault oauth login <provider>`) -- browser-based PKCE login flow with built-in providers (`google`, `github`, `openai`) and custom provider support via YAML. Tokens stored automatically. Supports `--alias`, `--scope`, `--no-browser`, `--port`, and `--timeout`.
+- **Token auto-refresh engine** (`hermes-vault oauth refresh <service>`) -- detects expired or near-expiry access tokens (default proactive margin 300s) and refreshes using stored refresh tokens. Supports `--all`, `--dry-run`, and configurable `--margin`. Exponential backoff with configurable `max_retries` (default 3) and `base_backoff_seconds` (default 2s).
+- **OAuth provider registry** (`hermes-vault/oauth/providers.py`) -- YAML-backed registry at `~/.hermes/hermes-vault-data/oauth-providers.yaml`. Seeds built-in defaults automatically. Reads `client_id`/`client_secret` from `HERMES_VAULT_OAUTH_<PROVIDER>_CLIENT_ID/SECRET` env vars.
+- **MCP OAuth tools** -- `oauth_login` and `oauth_refresh` exposed as MCP tools. `oauth_login` returns an authorization URL and completes the flow in a background thread. `oauth_refresh` triggers the `RefreshEngine` and returns structured results including token previews.
+- **Full OAuth package** under `src/hermes_vault/oauth/`: `pkce.py` (RFC 7636 S256), `state.py` (CSRF nonce generation/validation), `callback.py` (ephemeral HTTP server), `exchange.py` (token endpoint POST), `flow.py` (orchestrator), `oauth_refresh.py` (RefreshEngine), `errors.py` (typed exceptions), `providers.py` (registry).
+- **OAuth CLI commands** -- `hermes-vault oauth login`, `hermes-vault oauth refresh`, `hermes-vault oauth providers`.
+- **Provider-side refresh-token rotation support** -- the RefreshEngine preserves `rotation_counter` and optional `family_id` metadata when a provider returns a new refresh token.
+- **MCP integration docs** -- `docs/mcp-server.md` and `docs/mcp-integration.md` updated with OAuth tool schemas, troubleshooting, and architecture notes.
+
+### Changed
+
+- `pyproject.toml` version bumped to `0.6.0`.
+- `docs/architecture.md` updated with OAuth module descriptions and security posture.
+- `docs/operator-guide.md` updated with OAuth setup, provider registration, token lifecycle, and MCP OAuth tool usage.
+- `docs/threat-model.md` updated with OAuth-specific threats and mitigations.
+- `README.md` updated with v0.6.0 Whats New section, MCP tool table additions, and common commands.
+
+### Security
+
+- CSRF protection via timing-safe state comparison (`secrets.compare_digest`).
+- PKCE S256 required for all flows -- authorization-code interception is mitigated even without a confidential client.
+- Callback server binds to `127.0.0.1` only, suppresses HTTP access logging, and accepts exactly one request.
+- Refresh tokens stored as separate vault records (alias `"refresh"`) with metadata linking to the access token alias.
+- Atomic vault updates -- both access and refresh tokens update in a single SQLite transaction.
+- Exponential backoff on transient refresh failures prevents retry storms.
+- No raw tokens in stdout/logs except as truncated previews in MCP responses.
+- Audit log records every OAuth event (login callback, refresh attempt) without exposing secrets.
+
+## 0.5.0 -- Health, Governance, and Key Rotation Release
 
 ### Added
 

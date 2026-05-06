@@ -66,9 +66,27 @@ Hermes Vault is a local-first Python project that centralizes credential scannin
 
 - Stdio-based MCP server using the official Python MCP SDK
 - Exposes brokered capabilities as MCP tools: list_services, get_credential_metadata, get_ephemeral_env, verify_credential, rotate_credential, scan_for_secrets
-- Every tool call requires `agent_id` — policy enforcement reuses the existing broker and VaultMutations layers
+- **New in 0.6.0:** `oauth_login` initiates PKCE login and returns an authorization URL. A background thread spawns a callback server, waits for the browser redirect, exchanges the code for tokens, and stores them in the vault atomically.
+- **New in 0.6.0:** `oauth_refresh` triggers the `RefreshEngine` to proactively or on-demand refresh expired access tokens.
+- Every tool call requires `agent_id` -- policy enforcement reuses the existing broker and VaultMutations layers
 - Raw secrets are never transmitted over MCP; the default access pattern is ephemeral env materialization
 - Loads the same vault, policy, and crypto configuration as the CLI
+- OAuth tool implementations reuse the same PKCE generation, state validation, token exchange, and vault storage as the CLI `LoginFlow`
+
+### `oauth/` subsystem
+
+New in 0.6.0. The OAuth package is self-contained and does not depend on CLI code:
+
+| Module | Responsibility |
+|---|---|
+| `pkce.py` | Generates S256 code_verifier and code_challenge per RFC 7636 |
+| `state.py` | Generates cryptographically random state nonces and validates them with timing-safe `secrets.compare_digest` |
+| `callback.py` | Ephemeral `HTTPServer` on `127.0.0.1`, port 0. Handles exactly one `/callback` GET, extracts `code`, `state`, and `error`, then signals the waiting thread. Suppresses HTTP access logging. |
+| `providers.py` | YAML-backed registry of OAuth identity providers. Seeds built-in defaults (`google`, `github`, `openai`) on first use. Reads `client_id`/`client_secret` from `HERMES_VAULT_OAUTH_<PROVIDER>_CLIENT_ID/SECRET` env vars. |
+| `exchange.py` | POSTs authorization codes to the provider token endpoint and parses JSON (or URL-encoded) responses. Builds `CredentialSecret` from the token data. |
+| `flow.py` | High-level `LoginFlow` orchestrator: coordinates PKCE, callback server, browser open, state validation, token exchange, and vault storage. Sets expiry automatically if `expires_in` is returned. |
+| `oauth_refresh.py` | `RefreshEngine`: detects expired/near-expiry access tokens, POSTs `grant_type=refresh_token` to the provider, retries transient failures with exponential backoff, and updates vault atomically. Preserves refresh-token rotation metadata. Logs every attempt. |
+| `errors.py` | Typed exception hierarchy for OAuth flow failures: `OAuthTimeoutError`, `OAuthDeniedError`, `OAuthStateMismatchError`, `OAuthNetworkError`, `OAuthProviderError`, `OAuthMissingClientIdError`, `RefreshTokenMissingError`, `RefreshTokenExpiredError`. |
 
 ## Runtime Layout
 
@@ -78,6 +96,7 @@ Default runtime state lives outside the project tree at `~/.hermes/hermes-vault-
 - `policy.yaml`
 - `master_key_salt.bin`
 - `generated-skills/`
+- **`oauth-providers.yaml`** (new in 0.6.0)
 
 This keeps repository code separate from live secrets and operator state.
 
@@ -89,7 +108,15 @@ This keeps repository code separate from live secrets and operator state.
 - No secret logging in audit records
 - Broker and verifier make re-auth decisions explicit instead of speculative
 - MCP transport is a thin wrapper: all policy enforcement reuses the broker; no parallel authority
-- Raw secrets are never transmitted over MCP — only ephemeral environment materialization
+- Raw secrets are never transmitted over MCP -- only ephemeral environment materialization
+- **OAuth-specific:**
+  - CSRF protection via randomly-generated state parameter validated with timing-safe comparison
+  - PKCE mitigates authorization-code interception (even without a confidential client)
+  - Callback server binds to `127.0.0.1` only and accepts exactly one request
+  - No raw tokens in HTTP handler logs (access logging is suppressed)
+  - Refresh tokens stored under a separate record with alias `"refresh"` (not co-mingled with access tokens)
+  - Atomic vault update: both access and refresh tokens update in a single SQLite transaction
+  - Exponential backoff on transient refresh failures prevents thundering-herb against provider endpoints
 
 ## Extension Points
 
@@ -98,4 +125,6 @@ This keeps repository code separate from live secrets and operator state.
 - Extend broker env mappings in `broker.py`
 - Add policy fields in `models.py` and `policy.py`
 - Add new MCP tools in `mcp_server.py` (must require `agent_id` and route through broker)
+- **Add OAuth providers without code changes by editing `oauth-providers.yaml`**
+- Adjust refresh engine parameters (`proactive_margin_seconds`, `max_retries`, `base_backoff_seconds`) via constructor or caller
 
