@@ -7,7 +7,7 @@ LoginFlow.run() without real network or browser I/O.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -74,7 +74,7 @@ def _make_mock_mutations(record_id: str = "cred-123"):
     return _Mutations()
 
 
-# ── Fake callback server (drop in for CallbackServer) ──────────────────────────
+# ── Fake callback server (drop in for CallbackServer) ───────────────────────────
 
 
 class _FakeStateManager:
@@ -154,7 +154,7 @@ class TestPKCEInFlow:
         monkeypatch.setattr(
             "hermes_vault.oauth.flow.CallbackServer",
             lambda port, timeout: _FakeCallbackServer(
-                CallbackResult(code="auth-code-123", state="fixed-state-xyz")
+                CallbackResult(code="auth-code-123", state="test-state-abc")
             ),
         )
         monkeypatch.setattr("hermes_vault.oauth.flow.webbrowser.open", capture_browser)
@@ -193,7 +193,7 @@ class TestPKCEInFlow:
         assert "=" not in code_challenge
 
 
-# ── Callback flow integration ─────────────────────────────────────────────────
+# ── Callback flow integration ──────────────────────────────────────────────────
 
 
 class TestCallbackFlow:
@@ -392,8 +392,8 @@ class TestVaultStorage:
             mutations=mutations,
             registry=registry,
         )
-        with patch("hermes_vault.oauth.flow.StateManager.generate", return_value="test-state-abc"):
-            flow.run()
+        monkeypatch.setattr("hermes_vault.oauth.flow.StateManager", _FakeStateManager)
+        flow.run()
 
         access_call = mutations.calls[0]
         assert access_call["service"] == "testprovider"
@@ -440,8 +440,8 @@ class TestVaultStorage:
             mutations=mutations,
             registry=registry,
         )
-        with patch("hermes_vault.oauth.flow.StateManager.generate", return_value="test-state-abc"):
-            flow.run()
+        monkeypatch.setattr("hermes_vault.oauth.flow.StateManager", _FakeStateManager)
+        flow.run()
 
         assert len(mutations.calls) == 2
 
@@ -449,7 +449,7 @@ class TestVaultStorage:
         assert refresh_call["credential_type"] == "oauth_refresh_token"
         assert refresh_call["alias"] == "refresh"
         assert refresh_call["secret"] == "rtok-789"
-        assert refresh_call["scopes"] == ["openid"]
+        assert refresh_call["scopes"] == ["openid", "email"]
 
     def test_no_refresh_token_skips_refresh_storage(self, test_provider, flow_deps, monkeypatch):
         registry, vault, mutations = flow_deps
@@ -481,8 +481,8 @@ class TestVaultStorage:
             mutations=mutations,
             registry=registry,
         )
-        with patch("hermes_vault.oauth.flow.StateManager.generate", return_value="test-state-abc"):
-            flow.run()
+        monkeypatch.setattr("hermes_vault.oauth.flow.StateManager", _FakeStateManager)
+        flow.run()
 
         assert len(mutations.calls) == 1  # only access token
 
@@ -529,9 +529,9 @@ class TestVaultStorage:
             mutations=mutations,
             registry=registry,
         )
-        with patch("hermes_vault.oauth.flow.StateManager.generate", return_value="test-state-abc"):
-            with pytest.raises(OAuthProviderError) as exc_info:
-                flow.run()
+        monkeypatch.setattr("hermes_vault.oauth.flow.StateManager", _FakeStateManager)
+        with pytest.raises(OAuthProviderError) as exc_info:
+            flow.run()
         assert "Vault refused" in str(exc_info.value)
 
     def test_missing_client_id_raises(self, test_provider, flow_deps):
