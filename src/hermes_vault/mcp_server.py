@@ -483,11 +483,13 @@ def _exchange_and_store(result: Any, pending_key: str) -> None:
             logger.error("OAuth callback error for %s: %s", pending_key, result.error)
         return
 
-    # Validate state
-    if hasattr(result, "state") and result.state:
-        if not secrets.compare_digest(info["state"], result.state):
-            logger.error("State mismatch for %s — possible CSRF", pending_key)
-            return
+    # Validate state — required, not optional
+    if not hasattr(result, "state") or not result.state:
+        logger.error("No state in callback for %s — possible CSRF", pending_key)
+        return
+    if not secrets.compare_digest(info["state"], result.state):
+        logger.error("State mismatch for %s — possible CSRF", pending_key)
+        return
 
     code = result.code if hasattr(result, "code") else None
     if not code:
