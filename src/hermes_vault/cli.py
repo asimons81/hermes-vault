@@ -1490,6 +1490,71 @@ def update(
     console.print(f"[green]Hermes Vault updated successfully to {verified_version}.[/green]")
 
 
+# ── OAuth subcommands ────────────────────────────────────────────────────────────
+oauth_app = typer.Typer(help="OAuth operations.")
+_typer_app.add_typer(oauth_app, name="oauth")
+
+
+@oauth_app.command("login")
+def oauth_login(
+    ctx: typer.Context,
+    provider: str = typer.Argument(help="OAuth provider name (e.g. google, github, openai)."),
+    alias: str = typer.Option("default", "--alias", help="Vault alias for the stored credential."),
+    port: int = typer.Option(0, "--port", help="Callback server port. 0 = OS-assigned ephemeral."),
+    timeout: int = typer.Option(120, "--timeout", help="Seconds to wait for the OAuth callback before aborting."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Skip auto-opening browser; print URL instead."),
+    scopes: list[str] = typer.Option(None, "--scope", help="Override requested OAuth scopes (repeatable)."),
+) -> None:
+    """Log in via OAuth PKCE and store tokens in the vault.
+
+    \b
+    Examples:
+      hermes-vault oauth login google --alias work
+      hermes-vault oauth login github --alias personal --no-browser
+      hermes-vault oauth login google --scope openid --scope email --scope profile
+    """
+    from hermes_vault.oauth.flow import LoginFlow
+    try:
+        flow = LoginFlow(
+            provider_id=provider,
+            alias=alias,
+            port=port,
+            timeout=timeout,
+            no_browser=no_browser,
+            scopes=list(scopes or []),
+            console=console,
+        )
+        flow.run()
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+
+@oauth_app.command("providers")
+def oauth_providers(ctx: typer.Context) -> None:
+    """List registered OAuth providers."""
+    from hermes_vault.config import get_settings
+    from hermes_vault.oauth.providers import OAuthProviderRegistry
+    settings = get_settings()
+    registry = OAuthProviderRegistry(settings.runtime_home / "oauth-providers.yaml")
+    table = Table(title="OAuth Providers")
+    table.add_column("ID")
+    table.add_column("Name")
+    table.add_column("Requires Client ID")
+    table.add_column("Requires Client Secret")
+    for pid in registry.list_providers():
+        p = registry.get(pid)
+        if p is None:
+            continue
+        table.add_row(
+            p.service_id,
+            p.name,
+            "yes" if p.requires_client_id else "no",
+            "yes" if p.requires_client_secret else "no",
+        )
+    console.print(table)
+
+
 # ── App proxy ──────────────────────────────────────────────────────────────────
 # The setuptools entry point imports `app` from this module.
 # Strips deprecated --banner so neither Click nor Typer ever sees it.

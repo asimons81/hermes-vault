@@ -1,0 +1,41 @@
+providers:
+  google:
+    service_id: google
+    name: Google
+    authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth"
+    token_endpoint: "https://oauth2.googleapis.com/token"
+    default_scopes:
+      - openid
+      - email
+    scope_separator: " "
+    use_pkce: true
+    extra_params:
+      access_type: offline
+      prompt: consent
+    requires_client_id: true
+
+  github:
+    service_id: github
+    name: GitHub
+    authorization_endpoint: "https://github.com/login/oauth/authorize"
+    token_endpoint: "https://github.com/login/oauth/access_token"
+    default_scopes:
+      - repo
+      - read:org
+    scope_separator: " "
+    use_pkce: true
+    extra_params: {}
+    requires_client_id: true
+    requires_client_secret: true
+
+  openai:
+    service_id: openai
+    name: OpenAI
+    authorization_endpoint: "https://auth.openai.com/oauth/authorize"
+    token_endpoint: "https://auth.openai.com/oauth/token"
+    default_scopes:
+      - api_access
+    scope_separator: " "
+    use_pkce: true
+    extra_params: {}
+    requires_client_id: false
