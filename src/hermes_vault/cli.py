@@ -1555,6 +1555,60 @@ def oauth_providers(ctx: typer.Context) -> None:
     console.print(table)
 
 
+@oauth_app.command("refresh")
+def oauth_refresh(
+    ctx: typer.Context,
+    service: str | None = typer.Argument(None, help="Service name to refresh (e.g. google, github)."),
+    alias: str = typer.Option("default", "--alias", help="Alias of the access token to refresh."),
+    all_services: bool = typer.Option(False, "--all", help="Refresh all expired/near-expiry tokens."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be refreshed without updating the vault."),
+    margin: int = typer.Option(300, "--margin", help="Proactive refresh margin in seconds (default 300)."),
+) -> None:
+    """Refresh OAuth access tokens using stored refresh tokens.
+
+    \b
+    Examples:
+      hermes-vault oauth refresh google --alias work
+      hermes-vault oauth refresh --all
+      hermes-vault oauth refresh google --dry-run
+    """
+    vault, _, broker, _ = build_services(prompt=True)
+    from hermes_vault.oauth.oauth_refresh import RefreshEngine
+    engine = RefreshEngine(vault=vault, proactive_margin_seconds=margin)
+    if broker.audit is not None:
+        engine.set_audit(broker.audit)
+
+    if all_services:
+        results = engine.refresh_all(dry_run=dry_run)
+    elif service:
+        try:
+            result = engine.refresh(service, alias=alias, dry_run=dry_run)
+            results = [result]
+        except Exception as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+    else:
+        console.print("[red]Provide a service name or pass --all[/red]")
+        raise typer.Exit(code=1)
+
+    table = Table(title="OAuth Refresh Results" + (" (dry-run)" if dry_run else ""))
+    table.add_column("Service")
+    table.add_column("Alias")
+    table.add_column("Status")
+    table.add_column("Reason")
+    for res in results:
+        status_color = "[green]ok[/green]" if res.success else "[red]fail[/red]"
+        table.add_row(res.service, res.alias, status_color, res.reason)
+    console.print(table)
+
+    if not dry_run:
+        success_count = sum(1 for r in results if r.success)
+        if success_count:
+            console.print(f"[green]Refreshed {success_count}/{len(results)} token(s).[/green]")
+        if any(not r.success for r in results):
+            console.print("[yellow]Some refreshes failed. Check the table above.[/yellow]")
+
+
 # ── App proxy ──────────────────────────────────────────────────────────────────
 # The setuptools entry point imports `app` from this module.
 # Strips deprecated --banner so neither Click nor Typer ever sees it.
