@@ -182,7 +182,7 @@ Perform a guarded update (only for supported install methods):
 hermes-vault update
 ```
 
-Supported install methods: `pip`, `pipx`, `uv tool`. Unsupported methods (editable installs, unknown) receive exact manual instructions instead of auto-update.
+Auto-update is supported for `pipx` and `uv tool` installs. Standard `pip`/venv installs, editable installs, and unknown environments receive exact manual instructions instead of auto-update.
 
 ## Canonical Service IDs
 
