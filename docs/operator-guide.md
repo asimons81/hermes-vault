@@ -17,6 +17,23 @@ hermes-vault verify --all
 hermes-vault generate-skill --all-agents
 ```
 
+## Maintenance
+
+`hermes-vault maintain` is the v0.7.0 scheduled run for token refresh and vault hygiene. It combines proactive OAuth refresh, health checks, stale-verification checks, and backup-age warnings in one report.
+
+```bash
+hermes-vault maintain --dry-run
+hermes-vault maintain
+hermes-vault maintain --print-systemd
+```
+
+- `--dry-run` reports what would be refreshed or warned about without mutating tokens.
+- `--format json` is useful for cron, systemd timers, and log aggregation.
+- Exit code `0` means the maintenance run completed cleanly.
+- Exit code `1` means warnings or refresh failures were found.
+- Exit code `2` means invalid arguments.
+- `print-systemd` is the safer way to generate a timer/service example when you want to inspect the unit before installation.
+
 ## Policy Notes
 
 - Policy is deny by default
@@ -25,6 +42,27 @@ hermes-vault generate-skill --all-agents
 - Keep TTLs short for sub-agents
 - Use `plaintext_migration_paths` only for short-lived cutovers
 - Treat plaintext under `managed_paths` as a policy violation unless explicitly exempted
+
+## Policy Doctor
+
+`hermes-vault policy doctor` inspects `policy.yaml` before runtime failures show up.
+
+```bash
+hermes-vault policy doctor
+hermes-vault policy doctor --strict
+```
+
+It flags:
+
+- Unknown service IDs
+- Unknown actions or capabilities
+- Legacy agents that still rely on implicit all-capability grants
+- `raw_secret_access: true`
+- Long TTLs for MCP-facing agents
+- OAuth-capable agents missing `add_credential` or `rotate` for refresh
+- Stale generated skills whose policy hash no longer matches
+
+Use `--strict` in CI or pre-deploy checks when you want the command to fail on high-risk findings.
 
 ## Agent Capabilities
 
@@ -72,6 +110,13 @@ hermes-vault mcp
 
 The server uses stdio transport and reads `HERMES_VAULT_PASSPHRASE` from the environment.
 
+If you want to bind the MCP process to a known agent set, also export:
+
+```bash
+export HERMES_VAULT_MCP_ALLOWED_AGENTS='hermes,claude-desktop'
+export HERMES_VAULT_MCP_DEFAULT_AGENT='claude-desktop'
+```
+
 ### Connecting from Claude Desktop
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or the equivalent config path for your host:
@@ -92,7 +137,9 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 
 ### Agent registration for MCP
 
-Every MCP tool call requires an `agent_id`. Register agents in `policy.yaml` just like CLI sub-agents:
+If the MCP server is started without an allowed-agent binding, every tool call requires a caller-supplied `agent_id`. When `HERMES_VAULT_MCP_ALLOWED_AGENTS` is set and `HERMES_VAULT_MCP_DEFAULT_AGENT` names one of the allowed agents, the host may omit `agent_id` and the server will use that default.
+
+Register agents in `policy.yaml` just like CLI sub-agents:
 
 ```yaml
 agents:
@@ -110,12 +157,16 @@ agents:
 
 The MCP server applies the same policy checks as the CLI broker.
 
+Important: `agent_id` is caller-supplied identity unless the deployment binds the server to an allowed-agent set. Do not treat a bare `agent_id` as strong authentication.
+
 ### MCP troubleshooting
 
-- **"Missing required parameter: agent_id"** — Every MCP tool call must include `agent_id`. The host does not pass identity automatically.
-- **"Denied: agent 'X' is not defined in policy"** — Add the agent to `policy.yaml` and restart the MCP server.
-- **"Denied: action 'Y' not permitted on service 'Z'"** — Add the action to the agent's service entry in policy.
-- **Server fails to start** — Ensure `HERMES_VAULT_PASSPHRASE` is set in the environment passed to the MCP server process.
+- **"Missing required parameter: agent_id"**: The MCP server is running in unrestricted mode and the host did not supply `agent_id`, or the deployment did not configure a default agent.
+- **"Denied: agent 'X' is not defined in policy"**: Add the agent to `policy.yaml` and restart the MCP server.
+- **"Denied: agent 'X' is not allowed for this MCP server"**: Add the agent to `HERMES_VAULT_MCP_ALLOWED_AGENTS` or use one of the allowed agents.
+- **"Error: MCP default agent 'X' is not in the allowed agent set"**: Fix the env vars so the default agent is one of the allowed agents.
+- **"Denied: action 'Y' not permitted on service 'Z'"**: Add the action to the agent's service entry in policy.
+- **"Server fails to start"**: Ensure `HERMES_VAULT_PASSPHRASE` is set in the environment passed to the MCP server process.
 
 ## Update Command
 
@@ -150,6 +201,46 @@ Hermes Vault uses canonical service IDs internally.  When you `add`, `import`, o
 | `generic` | `bearer`, `token` |
 
 Custom service names (anything not in the table above) are preserved as-is.  Use lowercase for new entries.
+
+## OAuth Storage and Pairing
+
+v0.7.0 tightens the OAuth record model so refresh tokens can be paired safely across multiple aliases.
+
+- Access-token metadata is sanitized. Keep only provider-safe fields such as `token_type`, `provider`, `issued_at`, `expires_at`, and `scopes`.
+- Refresh tokens are stored separately under the deterministic alias `refresh:<alias>`.
+- Legacy records that still use alias `refresh` are still readable, but normalization rewrites them into the alias-scoped form.
+- `oauth normalize` is the migration command operators should run after upgrading older vaults.
+
+Example pairing:
+
+```bash
+hermes-vault oauth login google --alias work
+hermes-vault oauth login google --alias personal
+hermes-vault oauth normalize
+hermes-vault oauth refresh google --alias work
+hermes-vault oauth refresh google --alias personal
+```
+
+This avoids refresh-token collisions when one operator stores multiple identities for the same provider.
+
+## Backup Verification and Drill
+
+v0.7.0 adds a non-mutating recovery drill so operators can prove a backup is usable before an incident.
+
+```bash
+hermes-vault backup-verify --input ~/vault-backup.json
+hermes-vault restore --dry-run --input ~/vault-backup.json
+```
+
+The verification/drill path should confirm:
+
+- Backup format is valid
+- Salt compatibility is intact
+- The passphrase can decrypt the payload
+- Record counts match expectations
+- Audit data is present when included in the backup
+
+Keep `vault.db` and `master_key_salt.bin` together in backup procedures. A verified backup is only useful if you can restore it with the matching salt.
 
 ## Troubleshooting
 
@@ -349,7 +440,7 @@ For example: `HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID` and `HERMES_VAULT_OAUTH_GITHU
 5.  The user completes consent in the browser.
 6.  The provider callback hits the local server with `?code=...&state=...`.
 7.  The CLI validates state with timing-safe comparison, then POSTs the code to the token endpoint.
-8.  On success, the access token is stored as `oauth_access_token` and the refresh token as `oauth_refresh_token` with alias `"refresh"`.
+8.  On success, the access token is stored as `oauth_access_token` and the refresh token as `oauth_refresh_token` with alias `refresh:<alias>`.
 9.  If the provider returns `expires_in`, an expiry timestamp is set automatically.
 
 ### Token lifecycle and refresh
@@ -389,4 +480,4 @@ When Hermes Vault is registered as an MCP server inside Hermes Agent, the `oauth
 - `oauth_login` returns an authorization URL and starts a background callback thread. The agent opens the URL, completes consent, and tokens are stored automatically.
 - `oauth_refresh` triggers the same refresh engine described above, returning the result to the agent.
 
-Both tools require policy permissions (`add_credential` for login, service access for refresh).
+Both tools require policy permissions (`add_credential` for login, `rotate` for refresh).

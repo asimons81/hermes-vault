@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.7.0 -- Operational Autonomy Release
+
+### Added
+
+- **Maintenance orchestration** (`hermes-vault maintain`) -- scheduled-safe OAuth refresh, health checks, stale-verification checks, backup-age warnings, JSON/table output, dry-run mode, and systemd helper output via `--print-systemd`.
+- **Policy doctor** (`hermes-vault policy doctor`) -- read-only policy inspection for least-privilege drift, risky grants, unknown actions/capabilities, stale generated skills, and OAuth readiness gaps. Supports `--strict` for automation.
+- **OAuth normalization** (`hermes-vault oauth normalize`) -- dry-run-by-default migration for v0.6 OAuth records, including sanitized token metadata and alias-scoped refresh-token pairing.
+- **MCP allowed-agent binding** -- `HERMES_VAULT_MCP_ALLOWED_AGENTS` and `HERMES_VAULT_MCP_DEFAULT_AGENT` can bind a server instance to a known agent set when hosts omit caller identity.
+- **Backup verification and restore drill** -- `hermes-vault backup-verify --input <backup-file>` and `hermes-vault restore --dry-run --input <backup-file>` validate decryptability and recovery shape without mutating the live vault.
+- **Audit metadata** -- audit records can carry structured metadata for maintenance, backup verification, and restore drill events without exposing secrets.
+
+### Changed
+
+- OAuth refresh tokens are now stored under deterministic alias-scoped records such as `refresh:work`, with legacy `refresh` fallback during migration.
+- OAuth access-token metadata is sanitized to provider-safe fields such as provider, token type, issue/expiry timestamps, and scopes.
+- Documentation now covers v0.7.0 operator workflows, MCP binding, OAuth normalization, and recovery proof.
+- `pyproject.toml`, package `__version__`, MCP server metadata, and lockfile package metadata now report `0.7.0`.
+
+### Security
+
+- MCP binding reduces reliance on caller-supplied `agent_id` in known deployment topologies.
+- OAuth normalization removes token-bearing metadata such as raw token responses from access-token records.
+- Backup verification and dry-run restore prove encrypted backup readability before an incident while leaving the live vault unchanged.
+- Maintenance and recovery events are audited without logging raw secrets.
+
 ## 0.6.0 -- OAuth PKCE and Token Auto-Refresh Release
 
 ### Added

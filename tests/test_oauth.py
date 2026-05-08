@@ -225,9 +225,11 @@ class TestTokenResponse:
         })
         secret = tr.to_credential_secret(provider)
         assert secret.secret == "tok"
-        assert secret.metadata["refresh_token"] == "ref"
         assert secret.metadata["provider"] == "test"
-        assert secret.metadata["raw_response"]["access_token"] == "tok"
+        assert secret.metadata["token_type"] == "Bearer"
+        assert secret.metadata["scopes"] == ["openid"]
+        assert "refresh_token" not in secret.metadata
+        assert "raw_response" not in secret.metadata
 
 
 class TestParseUrlEncodedBody:

@@ -22,6 +22,7 @@ from hermes_vault.oauth.errors import (
 )
 from hermes_vault.oauth.exchange import TokenResponse
 from hermes_vault.oauth.flow import LoginFlow
+from hermes_vault.oauth.oauth_refresh import refresh_alias_for
 from hermes_vault.oauth.providers import OAuthProvider
 
 
@@ -445,11 +446,23 @@ class TestVaultStorage:
 
         assert len(mutations.calls) == 2
 
+        access_call = mutations.calls[0]
+        assert access_call["credential_type"] == "oauth_access_token"
+        assert access_call["metadata"]["provider"] == "testprovider"
+        assert access_call["metadata"]["token_type"] == "Bearer"
+        assert access_call["metadata"]["scopes"] == ["openid"]
+        assert "refresh_token" not in access_call["metadata"]
+        assert "raw_response" not in access_call["metadata"]
+        assert "issued_at" in access_call["metadata"]
+        assert "expires_at" in access_call["metadata"]
+
         refresh_call = mutations.calls[1]
         assert refresh_call["credential_type"] == "oauth_refresh_token"
-        assert refresh_call["alias"] == "refresh"
+        assert refresh_call["alias"] == refresh_alias_for("default")
         assert refresh_call["secret"] == "rtok-789"
         assert refresh_call["scopes"] == ["openid", "email"]
+        assert refresh_call["metadata"]["associated_access_token_alias"] == "default"
+        assert refresh_call["metadata"]["provider"] == "testprovider"
 
     def test_no_refresh_token_skips_refresh_storage(self, test_provider, flow_deps, monkeypatch):
         registry, vault, mutations = flow_deps
@@ -485,6 +498,42 @@ class TestVaultStorage:
         flow.run()
 
         assert len(mutations.calls) == 1  # only access token
+
+    def test_refresh_token_alias_scopes_to_access_alias(self, test_provider, flow_deps, monkeypatch):
+        registry, vault, mutations = flow_deps
+        callback_result = CallbackResult(code="auth-code-123", state="test-state-abc")
+
+        monkeypatch.setattr(
+            "hermes_vault.oauth.flow.CallbackServer",
+            lambda port, timeout: _FakeCallbackServer(callback_result),
+        )
+        monkeypatch.setattr("hermes_vault.oauth.flow.webbrowser.open", lambda url, new=2: True)
+        monkeypatch.setattr(
+            "hermes_vault.oauth.flow.TokenExchanger.exchange",
+            lambda self, code, redirect_uri, code_verifier, client_id, client_secret: TokenResponse(
+                access_token="atok",
+                token_type="Bearer",
+                expires_in=1800,
+                refresh_token="rtok-scope",
+                scope="openid",
+                raw={"access_token": "atok"},
+            ),
+        )
+
+        flow = LoginFlow(
+            provider_id="testprovider",
+            alias="work",
+            port=0,
+            timeout=1,
+            vault=vault,
+            mutations=mutations,
+            registry=registry,
+        )
+        monkeypatch.setattr("hermes_vault.oauth.flow.StateManager", _FakeStateManager)
+        flow.run()
+
+        assert len(mutations.calls) == 2
+        assert mutations.calls[1]["alias"] == refresh_alias_for("work")
 
     def test_vault_denial_raises(self, test_provider, flow_deps, monkeypatch):
         from hermes_vault.models import MutationResult

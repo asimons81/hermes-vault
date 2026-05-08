@@ -18,6 +18,46 @@ def test_vault_encrypts_and_decrypts(tmp_path: Path) -> None:
     assert secret.secret == "sk-secret-1234567890"
 
 
+def test_vault_preserves_secret_metadata_on_add_and_rotate(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    record = vault.add_credential(
+        "google",
+        "ya29.access",
+        "oauth_access_token",
+        alias="work",
+        metadata={
+            "provider": "google",
+            "token_type": "Bearer",
+            "issued_at": "2026-01-01T00:00:00+00:00",
+        },
+    )
+
+    secret = vault.get_secret(record.id)
+    assert secret is not None
+    assert secret.metadata["provider"] == "google"
+    assert secret.metadata["token_type"] == "Bearer"
+
+    rotated = vault.rotate(record.id, "ya29.rotated")
+    rotated_secret = vault.get_secret(rotated.id)
+    assert rotated_secret is not None
+    assert rotated_secret.secret == "ya29.rotated"
+    assert rotated_secret.metadata["provider"] == "google"
+    assert rotated_secret.metadata["token_type"] == "Bearer"
+    assert rotated_secret.metadata["issued_at"] == "2026-01-01T00:00:00+00:00"
+
+    replaced = vault.add_credential(
+        "google",
+        "ya29.replaced",
+        "oauth_access_token",
+        alias="work",
+        replace_existing=True,
+    )
+    replaced_secret = vault.get_secret(replaced.id)
+    assert replaced_secret is not None
+    assert replaced_secret.secret == "ya29.replaced"
+    assert replaced_secret.metadata["provider"] == "google"
+
+
 def test_vault_rotate_updates_secret(tmp_path: Path) -> None:
     vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
     vault.add_credential("github", "ghp_oldsecret123456789012345", "personal_access_token")

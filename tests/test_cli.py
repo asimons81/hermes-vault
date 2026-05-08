@@ -8,11 +8,13 @@ from click.testing import CliRunner
 
 from hermes_vault.cli import _hermes_group, app
 from hermes_vault.models import BrokerDecision, MutationResult
+from hermes_vault.vault import Vault
 
 
 class StubBroker:
     def __init__(self) -> None:
         self.called_with: list[str] = []
+        self.audit = None
 
     def verify_credential(self, service: str, alias: str | None = None) -> BrokerDecision:
         self.called_with.append(service)
@@ -107,6 +109,188 @@ def _fake_build_services(mutations: StubMutations | None = None, broker: StubBro
         return object(), object(), broker, mutations
 
     return _inner
+
+
+def test_policy_doctor_json_output(monkeypatch, tmp_path: Path) -> None:
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        """
+agents:
+  hermes:
+    services:
+      openai:
+        actions: [get_env, verify, metadata, add_credential, rotate]
+    capabilities: [list_credentials]
+    raw_secret_access: false
+    ephemeral_env_only: true
+    max_ttl_seconds: 900
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_POLICY", str(policy_path))
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["policy", "doctor", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["version"] == "policy-doctor-v1"
+    assert payload["finding_count"] == 0
+
+
+def test_policy_doctor_strict_exit_code(monkeypatch, tmp_path: Path) -> None:
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        """
+agents:
+  hermes:
+    services: [openai]
+    raw_secret_access: true
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_POLICY", str(policy_path))
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["policy", "doctor", "--strict", "--format", "json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["strict_violation"] is True
+    assert any(f["kind"] == "raw_secret_access_enabled" for f in payload["findings"])
+
+
+def test_maintain_json_output(monkeypatch) -> None:
+    monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services())
+
+    class FakeReport:
+        recommended_exit_code = 0
+
+        def as_dict(self, exclude_none: bool = True):
+            return {
+                "version": "maintain-v1",
+                "dry_run": True,
+                "refresh_summary": {"attempted": 0, "succeeded": 0, "failed": 0},
+                "health": {"healthy": True, "findings": []},
+                "audit_recorded": False,
+                "recommended_exit_code": 0,
+            }
+
+    monkeypatch.setattr("hermes_vault.maintenance.run_maintenance", lambda *args, **kwargs: FakeReport())
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["maintain", "--dry-run", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["version"] == "maintain-v1"
+    assert payload["dry_run"] is True
+
+
+def test_maintain_table_uses_recommended_exit_code(monkeypatch) -> None:
+    monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services())
+
+    class FakeReport:
+        recommended_exit_code = 1
+        refresh_summary = {"attempted": 1, "succeeded": 0, "failed": 1}
+        health = {"healthy": False, "findings": []}
+        audit_recorded = True
+        refresh_results = [
+            {
+                "service": "google",
+                "alias": "work",
+                "success": False,
+                "error_kind": "missing_refresh_token",
+                "reason": "No refresh token found",
+            }
+        ]
+
+    monkeypatch.setattr("hermes_vault.maintenance.run_maintenance", lambda *args, **kwargs: FakeReport())
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["maintain"])
+
+    assert result.exit_code == 1
+    assert "Hermes Vault Maintenance" in result.output
+    assert "Refresh Failures" in result.output
+
+
+def test_maintain_print_systemd(monkeypatch) -> None:
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["maintain", "--print-systemd"])
+
+    assert result.exit_code == 0
+    assert "hermes-vault-maintain.service" in result.output
+    assert "hermes-vault --no-banner maintain --format json" in result.output
+
+
+def test_oauth_normalize_json_output(monkeypatch) -> None:
+    monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services())
+
+    class FakeReport:
+        def as_dict(self):
+            return {
+                "version": "oauth-normalize-v1",
+                "dry_run": True,
+                "changed_count": 0,
+                "skipped_count": 0,
+                "changes": [],
+                "skips": [],
+            }
+
+    monkeypatch.setattr("hermes_vault.oauth.normalize.normalize_oauth_records", lambda *args, **kwargs: FakeReport())
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["oauth", "normalize", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["version"] == "oauth-normalize-v1"
+    assert payload["dry_run"] is True
+
+
+def test_backup_verify_json_output(monkeypatch, tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-secret", "api_key")
+    backup_path = tmp_path / "backup.json"
+    backup_path.write_text(json.dumps(vault.export_backup()), encoding="utf-8")
+
+    def fake_build_services(prompt: bool = False):
+        return vault, object(), object(), object()
+
+    monkeypatch.setattr("hermes_vault.cli.build_services", fake_build_services)
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["backup-verify", "--input", str(backup_path), "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["version"] == "backup-verification-v1"
+    assert payload["decryptable"] is True
+
+
+def test_restore_dry_run_json_output_does_not_require_yes(monkeypatch, tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("github", "ghp-secret", "personal_access_token")
+    backup_path = tmp_path / "backup.json"
+    backup_path.write_text(json.dumps(vault.export_backup()), encoding="utf-8")
+
+    def fake_build_services(prompt: bool = False):
+        return vault, object(), object(), object()
+
+    monkeypatch.setattr("hermes_vault.cli.build_services", fake_build_services)
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["restore", "--input", str(backup_path), "--dry-run", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "restore-dry-run"
+    assert payload["would_restore_count"] == 1
 
 
 # ── verify (positional target — post issue #6) ────────────────────────────

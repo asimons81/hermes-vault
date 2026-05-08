@@ -23,6 +23,7 @@ from hermes_vault.oauth.oauth_refresh import (
     RefreshEngine,
     RefreshTokenExpiredError,
     RefreshTokenMissingError,
+    refresh_alias_for,
 )
 from hermes_vault.oauth.providers import OAuthProvider, OAuthProviderRegistry
 from hermes_vault.vault import Vault
@@ -112,19 +113,39 @@ def _seed_tokens(
     vault: Vault,
     service: str,
     expiry: datetime | None = None,
+    access_alias: str = "default",
+    refresh_alias: str = "refresh",
+    refresh_secret: str = "old_refresh",
 ) -> None:
     if expiry is None:
         expiry = utc_now() - timedelta(seconds=10)
     _add_credential(
         vault, service, "old_access", "oauth_access_token",
-        alias="default", expiry=expiry,
+        alias=access_alias, expiry=expiry,
     )
     vault.add_credential(
         service=service,
-        secret="old_refresh",
+        secret=refresh_secret,
         credential_type="oauth_refresh_token",
-        alias="refresh",
+        alias=refresh_alias,
         replace_existing=True,
+    )
+
+
+def _seed_scoped_tokens(
+    vault: Vault,
+    service: str,
+    access_alias: str,
+    expiry: datetime | None = None,
+    refresh_secret: str = "old_refresh",
+) -> None:
+    _seed_tokens(
+        vault,
+        service,
+        expiry=expiry,
+        access_alias=access_alias,
+        refresh_alias=refresh_alias_for(access_alias),
+        refresh_secret=refresh_secret,
     )
 
 
@@ -244,6 +265,10 @@ class TestExpiryDetection:
 # ── Deliverable 3: Successful refresh stores new tokens ────────────────────────
 
 class TestSuccessfulRefresh:
+    def test_refresh_alias_helper_is_deterministic(self):
+        assert refresh_alias_for("default") == "refresh:default"
+        assert refresh_alias_for("work") == "refresh:work"
+
     def test_refresh_stores_new_access_and_refresh_tokens(self, tmp_vault: Vault, registry: OAuthProviderRegistry):
         engine = RefreshEngine(vault=tmp_vault, registry=registry)
         _seed_tokens(tmp_vault, "test")
@@ -270,6 +295,99 @@ class TestSuccessfulRefresh:
         secret = tmp_vault.get_secret(access_rec.id)
         assert secret is not None
         assert secret.secret == "new_access"
+        assert secret.metadata["provider"] == "test"
+        assert secret.metadata["token_type"] == "Bearer"
+        assert secret.metadata["scopes"] == ["openid", "email"]
+        assert "refresh_token" not in secret.metadata
+        assert "raw_response" not in secret.metadata
+
+    def test_refresh_prefers_alias_scoped_pair(self, tmp_vault: Vault, registry: OAuthProviderRegistry):
+        engine = RefreshEngine(vault=tmp_vault, registry=registry)
+        _seed_scoped_tokens(tmp_vault, "test", "work")
+
+        endpoint = MockTokenEndpoint(success_tokens={
+            "access_token": "new_access_work",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "new_refresh_work",
+            "scope": "openid email",
+        })
+
+        with patch("hermes_vault.oauth.oauth_refresh.requests.post", side_effect=endpoint.handler):
+            result = engine.refresh("test", alias="work")
+
+        assert result.success is True
+        assert result.alias == "work"
+        assert len(endpoint.calls) == 1
+        assert endpoint.calls[0]["data"]["refresh_token"] == "old_refresh"
+
+        scoped_refresh = tmp_vault._find_by_service_alias("test", refresh_alias_for("work"))
+        assert scoped_refresh is not None
+        scoped_secret = tmp_vault.get_secret(scoped_refresh.id)
+        assert scoped_secret is not None
+        assert scoped_secret.secret == "new_refresh_work"
+        assert scoped_secret.metadata["associated_access_token_alias"] == "work"
+        assert scoped_secret.metadata["provider"] == "test"
+        assert scoped_secret.metadata["rotation_counter"] == 1
+
+    def test_refresh_falls_back_to_legacy_refresh_alias(self, tmp_vault: Vault, registry: OAuthProviderRegistry):
+        engine = RefreshEngine(vault=tmp_vault, registry=registry)
+        _seed_tokens(tmp_vault, "test", access_alias="work")
+
+        endpoint = MockTokenEndpoint(success_tokens={
+            "access_token": "new_access_work",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        })
+
+        with patch("hermes_vault.oauth.oauth_refresh.requests.post", side_effect=endpoint.handler):
+            result = engine.refresh("test", alias="work")
+
+        assert result.success is True
+        assert len(endpoint.calls) == 1
+        assert endpoint.calls[0]["data"]["refresh_token"] == "old_refresh"
+
+    def test_refresh_handles_multiple_aliases_independently(self, tmp_vault: Vault, registry: OAuthProviderRegistry):
+        engine = RefreshEngine(vault=tmp_vault, registry=registry)
+        _seed_scoped_tokens(tmp_vault, "test", "work", refresh_secret="refresh-work")
+        _seed_scoped_tokens(tmp_vault, "test", "personal", refresh_secret="refresh-personal")
+
+        def post_side_effect(url, data=None, **kwargs):
+            refresh_token = data["refresh_token"]
+            token_suffix = "work" if refresh_token == "refresh-work" else "personal"
+            resp = MagicMock()
+            resp.ok = True
+            resp.status_code = 200
+            resp.json.return_value = {
+                "access_token": f"new_access_{token_suffix}",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "refresh_token": f"new_refresh_{token_suffix}",
+                "scope": "openid email",
+            }
+            resp.text = json.dumps(resp.json.return_value)
+            return resp
+
+        with patch("hermes_vault.oauth.oauth_refresh.requests.post", side_effect=post_side_effect):
+            work_result = engine.refresh("test", alias="work")
+            personal_result = engine.refresh("test", alias="personal")
+
+        assert work_result.success is True
+        assert personal_result.success is True
+        assert work_result.alias == "work"
+        assert personal_result.alias == "personal"
+
+        work_refresh = tmp_vault._find_by_service_alias("test", refresh_alias_for("work"))
+        personal_refresh = tmp_vault._find_by_service_alias("test", refresh_alias_for("personal"))
+        assert work_refresh is not None
+        assert personal_refresh is not None
+
+        work_secret = tmp_vault.get_secret(work_refresh.id)
+        personal_secret = tmp_vault.get_secret(personal_refresh.id)
+        assert work_secret is not None
+        assert personal_secret is not None
+        assert work_secret.secret == "new_refresh_work"
+        assert personal_secret.secret == "new_refresh_personal"
 
     def test_refresh_without_new_refresh_token_preserves_existing(self, tmp_vault: Vault, registry: OAuthProviderRegistry):
         engine = RefreshEngine(vault=tmp_vault, registry=registry)

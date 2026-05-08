@@ -88,7 +88,17 @@ Configure your MCP host (Claude Desktop, Cursor, etc.) to run:
 }
 ```
 
-All MCP tool calls require an `agent_id`. The same policy.yaml that gates CLI access also gates MCP access.
+If the MCP server is started without an allowed-agent binding, every tool call still requires a caller-supplied `agent_id`. When the server is launched with both `HERMES_VAULT_MCP_ALLOWED_AGENTS` and `HERMES_VAULT_MCP_DEFAULT_AGENT`, the host may omit `agent_id` and the server uses the configured default agent within that allowed set.
+
+Example bound launch:
+
+```bash
+export HERMES_VAULT_MCP_ALLOWED_AGENTS='hermes,claude-desktop'
+export HERMES_VAULT_MCP_DEFAULT_AGENT='claude-desktop'
+hermes-vault mcp
+```
+
+The same `policy.yaml` that gates CLI access also gates MCP access. The bound-agent env vars are a deployment guardrail, not a replacement for policy.
 
 ### MCP Tools
 
@@ -129,6 +139,13 @@ hermes-vault verify --all --format table
 hermes-vault verify --all --report ~/.hermes/hermes-vault-data/reports/verify-latest.json
 hermes-vault health
 hermes-vault health --format json
+hermes-vault maintain --dry-run
+hermes-vault maintain
+hermes-vault maintain --print-systemd
+hermes-vault policy doctor
+hermes-vault oauth normalize
+hermes-vault backup-verify --input ~/vault-backup.json
+hermes-vault restore --dry-run --input ~/vault-backup.json
 hermes-vault sync-skill --check
 hermes-vault backup --metadata-only --output ~/meta-backup.json
 hermes-vault diff --against ~/meta-backup.json
@@ -137,6 +154,26 @@ hermes-vault oauth login google --alias work
 hermes-vault oauth refresh google --alias work
 hermes-vault oauth providers
 ```
+
+## What's New in 0.7.0 - Operational Autonomy
+
+### Maintenance command
+`hermes-vault maintain` is the v0.7.0 operator entry point for scheduled-safe OAuth refresh, health checks, stale-verification checks, and backup-age warnings. `--dry-run` reports what would happen without mutating tokens. `--format json` is available for automation.
+
+### Policy doctor
+`hermes-vault policy doctor` inspects `policy.yaml` for least-privilege drift, unknown services or actions, legacy capability grants, risky `raw_secret_access` settings, stale generated skills, and OAuth readiness gaps. Use `--strict` to fail CI or scheduled checks on high-risk findings.
+
+### OAuth storage normalization
+v0.7.0 adds `hermes-vault oauth normalize` to migrate older OAuth records to sanitized metadata and alias-scoped refresh pairing. Access-token metadata keeps provider-safe fields such as `token_type`, `provider`, `issued_at`, `expires_at`, and `scopes`. Refresh tokens are stored separately under `refresh:<alias>` with the associated access-token alias recorded in metadata.
+
+### MCP agent binding
+`HERMES_VAULT_MCP_ALLOWED_AGENTS` and `HERMES_VAULT_MCP_DEFAULT_AGENT` let operators bind a running MCP server to a known agent set. In bound mode, `agent_id` can be omitted only when the default agent is configured and allowed; otherwise the host must still supply `agent_id`.
+
+### Backup verification and drill
+v0.7.0 adds `hermes-vault backup-verify --input <backup-file>` and a non-mutating restore drill (`hermes-vault restore --dry-run --input <backup-file>`) so operators can prove recovery before they need it. `maintain` can fold backup-age warnings into the same scheduled run.
+
+### Systemd helper output
+`hermes-vault maintain --print-systemd` emits a safe service/timer example for recurring maintenance without forcing the CLI to install units automatically.
 
 ## What's New in 0.6.0 — OAuth PKCE and Token Auto-Refresh
 
@@ -274,4 +311,4 @@ If you need a starting policy, copy `policy.example.yaml` into the runtime home 
 
 ## More Detail
 
-See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/credential-lifecycle.md](docs/credential-lifecycle.md), [docs/operator-guide.md](docs/operator-guide.md), [docs/migration-0.1-to-0.2.md](docs/migration-0.1-to-0.2.md), [docs/migration-0.5-to-0.6.md](docs/migration-0.5-to-0.6.md), and [docs/update-workflow.md](docs/update-workflow.md).
+See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/credential-lifecycle.md](docs/credential-lifecycle.md), [docs/operator-guide.md](docs/operator-guide.md), [docs/migration-0.1-to-0.2.md](docs/migration-0.1-to-0.2.md), [docs/migration-0.5-to-0.6.md](docs/migration-0.5-to-0.6.md), [docs/migration-0.6-to-0.7.md](docs/migration-0.6-to-0.7.md), and [docs/update-workflow.md](docs/update-workflow.md).

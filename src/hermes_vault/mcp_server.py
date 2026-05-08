@@ -1,8 +1,8 @@
 """MCP server transport for Hermes Vault.
 
 Exposes brokered vault capabilities as MCP tools over stdio.
-All tool calls require an ``agent_id`` so that policy v2 enforcement
-works unchanged.
+Tool calls use caller-supplied ``agent_id`` unless the server is bound
+to an allowed-agent set with a default fallback.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import secrets
 import threading
 import time
 import urllib.parse
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -29,12 +30,12 @@ from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings
 from hermes_vault.crypto import resolve_passphrase
-from hermes_vault.models import CredentialSecret, CredentialStatus, ServiceAction
+from hermes_vault.models import AccessLogRecord, CredentialSecret, CredentialStatus, Decision, ServiceAction
 from hermes_vault.mutations import OPERATOR_AGENT_ID, VaultMutations
 from hermes_vault.oauth.callback import CallbackServer
 from hermes_vault.oauth.errors import OAuthProviderError
 from hermes_vault.oauth.exchange import TokenExchanger
-from hermes_vault.oauth.oauth_refresh import RefreshEngine
+from hermes_vault.oauth.oauth_refresh import RefreshEngine, refresh_alias_for
 from hermes_vault.oauth.providers import OAuthProviderRegistry
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.scanner import Scanner
@@ -50,77 +51,75 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "list_services": {
         "type": "object",
         "properties": {
-            "agent_id": {"type": "string", "description": "Agent identity for policy enforcement"},
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
             "filter": {"type": "string", "description": "Optional substring filter on service names"},
         },
-        "required": ["agent_id"],
     },
     "get_credential_metadata": {
         "type": "object",
         "properties": {
-            "agent_id": {"type": "string", "description": "Agent identity for policy enforcement"},
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
             "service": {"type": "string", "description": "Service name or credential ID"},
             "alias": {"type": "string", "description": "Optional alias for disambiguation"},
         },
-        "required": ["agent_id", "service"],
+        "required": ["service"],
     },
     "get_ephemeral_env": {
         "type": "object",
         "properties": {
-            "agent_id": {"type": "string", "description": "Agent identity for policy enforcement"},
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
             "service": {"type": "string", "description": "Service name or credential ID"},
             "alias": {"type": "string", "description": "Optional alias for disambiguation"},
             "ttl_seconds": {"type": "integer", "description": "Optional TTL in seconds (subject to policy ceiling)"},
         },
-        "required": ["agent_id", "service"],
+        "required": ["service"],
     },
     "verify_credential": {
         "type": "object",
         "properties": {
-            "agent_id": {"type": "string", "description": "Agent identity for policy enforcement"},
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
             "service": {"type": "string", "description": "Service name or credential ID"},
             "alias": {"type": "string", "description": "Optional alias for disambiguation"},
         },
-        "required": ["agent_id", "service"],
+        "required": ["service"],
     },
     "rotate_credential": {
         "type": "object",
         "properties": {
-            "agent_id": {"type": "string", "description": "Agent identity for policy enforcement"},
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
             "service": {"type": "string", "description": "Service name or credential ID"},
             "alias": {"type": "string", "description": "Optional alias for disambiguation"},
             "new_secret": {"type": "string", "description": "New secret value"},
         },
-        "required": ["agent_id", "service", "new_secret"],
+        "required": ["service", "new_secret"],
     },
     "scan_for_secrets": {
         "type": "object",
         "properties": {
-            "agent_id": {"type": "string", "description": "Agent identity for policy enforcement"},
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
             "path": {"type": "string", "description": "Optional path to scan (defaults to ~/.hermes)"},
         },
-        "required": ["agent_id"],
     },
     "oauth_login": {
         "type": "object",
         "properties": {
-            "agent_id": {"type": "string", "description": "Agent identity for policy enforcement"},
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
             "provider_id": {"type": "string", "description": "OAuth provider ID (e.g. google, github)"},
             "alias": {"type": "string", "description": "Credential alias (default: default)"},
             "scopes": {"type": "array", "items": {"type": "string"}, "description": "Optional OAuth scopes"},
             "port": {"type": "integer", "description": "Callback server port (0 = auto-assigned)"},
         },
-        "required": ["agent_id", "provider_id"],
+        "required": ["provider_id"],
     },
     "oauth_refresh": {
         "type": "object",
         "properties": {
-            "agent_id": {"type": "string", "description": "Agent identity for policy enforcement"},
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
             "service": {"type": "string", "description": "Service name or credential ID"},
             "alias": {"type": "string", "description": "Optional alias for disambiguation"},
             "dry_run": {"type": "boolean", "description": "Simulate without updating vault"},
         },
-        "required": ["agent_id", "service"],
+        "required": ["service"],
     },
 }
 
@@ -153,12 +152,6 @@ def _get_broker() -> Broker:
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
-def _require_agent_id(arguments: dict[str, Any]) -> str:
-    agent_id = arguments.get("agent_id")
-    if not agent_id:
-        raise ValueError("Missing required parameter: agent_id")
-    return agent_id
-
 
 def _json_text(data: Any) -> str:
     return json.dumps(data, indent=2, default=str)
@@ -176,6 +169,117 @@ def _generate_state() -> str:
     return secrets.token_urlsafe(32)
 
 
+@dataclass(frozen=True)
+class MCPBindingContext:
+    requested_agent_id: str | None
+    effective_agent_id: str | None
+    binding_mode: str
+    allowed_agents: tuple[str, ...]
+    default_agent: str | None
+
+
+def _normalize_agent_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _record_binding_denial(
+    settings: Any,
+    tool_name: str,
+    requested_agent_id: str | None,
+    reason: str,
+) -> None:
+    audit = AuditLogger(settings.db_path)
+    allowed_agents = tuple(settings.mcp_allowed_agents or ())
+    default_agent = settings.mcp_default_agent
+    binding_mode = "bound" if allowed_agents else "unrestricted"
+    audit.record(
+        AccessLogRecord(
+            agent_id=requested_agent_id or default_agent or "mcp-unbound",
+            service="*",
+            action=f"mcp_bind:{tool_name}",
+            decision=Decision.deny,
+            reason=reason,
+            metadata={
+                "tool_name": tool_name,
+                "requested_agent_id": requested_agent_id,
+                "effective_agent_id": default_agent if requested_agent_id is None else None,
+                "mcp_binding_mode": binding_mode,
+                "mcp_allowed_agents": list(allowed_agents),
+                "mcp_default_agent": default_agent,
+                "policy_decision": "not_evaluated",
+            },
+        )
+    )
+
+
+def _resolve_mcp_binding(
+    settings: Any,
+    arguments: dict[str, Any],
+    tool_name: str,
+) -> MCPBindingContext:
+    requested_agent_id = _normalize_agent_id(arguments.get("agent_id"))
+    allowed_agents = tuple(settings.mcp_allowed_agents or ())
+    default_agent = _normalize_agent_id(settings.mcp_default_agent)
+
+    if not allowed_agents:
+        if requested_agent_id is None:
+            raise ValueError("Missing required parameter: agent_id")
+        return MCPBindingContext(
+            requested_agent_id=requested_agent_id,
+            effective_agent_id=requested_agent_id,
+            binding_mode="unrestricted",
+            allowed_agents=allowed_agents,
+            default_agent=default_agent,
+        )
+
+    if requested_agent_id is not None:
+        if requested_agent_id not in allowed_agents:
+            reason = f"Denied: agent '{requested_agent_id}' is not allowed for this MCP server"
+            _record_binding_denial(settings, tool_name, requested_agent_id, reason)
+            raise ValueError(reason)
+        return MCPBindingContext(
+            requested_agent_id=requested_agent_id,
+            effective_agent_id=requested_agent_id,
+            binding_mode="bound",
+            allowed_agents=allowed_agents,
+            default_agent=default_agent,
+        )
+
+    if default_agent is not None:
+        if default_agent not in allowed_agents:
+            reason = f"Error: MCP default agent '{default_agent}' is not in the allowed agent set"
+            _record_binding_denial(settings, tool_name, requested_agent_id, reason)
+            raise ValueError(reason)
+        return MCPBindingContext(
+            requested_agent_id=None,
+            effective_agent_id=default_agent,
+            binding_mode="default_fallback",
+            allowed_agents=allowed_agents,
+            default_agent=default_agent,
+        )
+
+    reason = "Missing required parameter: agent_id"
+    _record_binding_denial(settings, tool_name, requested_agent_id, reason)
+    raise ValueError(reason)
+
+
+def _preflight_tool_arguments(name: str, arguments: dict[str, Any]) -> str | None:
+    if name in {"get_credential_metadata", "get_ephemeral_env", "verify_credential", "rotate_credential"}:
+        if _normalize_agent_id(arguments.get("service")) is None:
+            return "Missing required parameter: service"
+    if name == "oauth_login":
+        provider = _normalize_agent_id(arguments.get("provider_id") or arguments.get("provider"))
+        if provider is None:
+            return "Missing required parameter: provider"
+    if name == "oauth_refresh":
+        if _normalize_agent_id(arguments.get("service")) is None:
+            return "Missing required parameter: service"
+    return None
+
+
 # ── OAuth state holder (per-process, not thread-safe across multiple concurrent logins) ─────────
 
 _pending_oauth: dict[str, dict[str, Any]] = {}
@@ -183,7 +287,7 @@ _pending_oauth: dict[str, dict[str, Any]] = {}
 
 # ── server ─────────────────────────────────────────────────────────────────────
 
-server = Server("hermes-vault", version="0.6.0")
+server = Server("hermes-vault", version="0.7.0")
 
 
 @server.list_tools()
@@ -234,16 +338,22 @@ async def list_tools() -> list[Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: Any) -> list[TextContent]:
-    # Fast-fail on missing agent_id before expensive vault init
-    if name in _TOOL_SCHEMAS and "agent_id" in _TOOL_SCHEMAS[name].get("required", []):
-        if not arguments.get("agent_id"):
-            return [TextContent(type="text", text="Error: Missing required parameter: agent_id")]
+    arguments = arguments or {}
+    preflight_error = _preflight_tool_arguments(name, arguments)
+    if preflight_error is not None:
+        return [TextContent(type="text", text=f"Error: {preflight_error}")]
+
+    settings = get_settings()
+    try:
+        binding = _resolve_mcp_binding(settings, arguments, name)
+    except ValueError as exc:
+        return [TextContent(type="text", text=f"Error: {exc}")]
 
     broker = _get_broker()
 
     try:
         if name == "list_services":
-            agent_id = _require_agent_id(arguments)
+            agent_id = binding.effective_agent_id or ""
             filter_str = arguments.get("filter")
             services = broker.list_available_credentials(agent_id)
             if filter_str:
@@ -251,7 +361,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return [TextContent(type="text", text=_json_text(services))]
 
         if name == "get_credential_metadata":
-            agent_id = _require_agent_id(arguments)
+            agent_id = binding.effective_agent_id or ""
             service = arguments["service"]
             alias = arguments.get("alias")
             result = broker.get_metadata(agent_id, service, alias)
@@ -265,7 +375,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return [TextContent(type="text", text=_json_text(payload))]
 
         if name == "get_ephemeral_env":
-            agent_id = _require_agent_id(arguments)
+            agent_id = binding.effective_agent_id or ""
             service = arguments["service"]
             alias = arguments.get("alias")
             ttl = arguments.get("ttl_seconds")
@@ -283,7 +393,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             }))]
 
         if name == "verify_credential":
-            agent_id = _require_agent_id(arguments)
+            agent_id = binding.effective_agent_id or ""
             service = arguments["service"]
             alias = arguments.get("alias")
             allowed, reason = broker.policy.can(agent_id, service, ServiceAction.verify)
@@ -297,7 +407,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             }))]
 
         if name == "rotate_credential":
-            agent_id = _require_agent_id(arguments)
+            agent_id = binding.effective_agent_id or ""
             service = arguments["service"]
             alias = arguments.get("alias")
             new_secret = arguments["new_secret"]
@@ -311,7 +421,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             }))]
 
         if name == "scan_for_secrets":
-            agent_id = _require_agent_id(arguments)
+            agent_id = binding.effective_agent_id or ""
             path = arguments.get("path")
             paths = [path] if path else None
             result = broker.scan_secrets(agent_id, paths)
@@ -324,11 +434,11 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 
         # ── OAuth: initiate PKCE login ───────────────────────────────────────
         if name == "oauth_login":
-            return _handle_oauth_login(arguments, broker)
+            return _handle_oauth_login(arguments, broker, binding.effective_agent_id or "")
 
         # ── OAuth: refresh token ─────────────────────────────────────────────
         if name == "oauth_refresh":
-            return _handle_oauth_refresh(arguments, broker)
+            return _handle_oauth_refresh(arguments, broker, binding.effective_agent_id or "")
 
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
@@ -341,7 +451,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 
 # ── OAuth tool implementations ───────────────────────────────────────────────
 
-def _handle_oauth_login(arguments: dict[str, Any], broker: Broker) -> list[TextContent]:
+def _handle_oauth_login(arguments: dict[str, Any], broker: Broker, agent_id: str) -> list[TextContent]:
     """Handle the oauth_login MCP tool call.
 
     1. Look up provider in registry
@@ -350,7 +460,6 @@ def _handle_oauth_login(arguments: dict[str, Any], broker: Broker) -> list[TextC
     4. Return auth URL to the caller immediately
     5. Callback handler auto-exchanges code and stores tokens
     """
-    agent_id = _require_agent_id(arguments)
     # Accept both "provider" and "provider_id" for backwards-compat with tests
     provider_id = (arguments.get("provider_id") or arguments.get("provider") or "").strip().lower()
     alias = arguments.get("alias", "default") or "default"
@@ -525,6 +634,7 @@ def _exchange_and_store(result: Any, pending_key: str) -> None:
             credential_type="oauth_access_token",
             alias=info["alias"],
             scopes=info["scopes"],
+            metadata=credential_secret.metadata,
             replace_existing=True,
         )
         if not add_result.allowed:
@@ -538,7 +648,7 @@ def _exchange_and_store(result: Any, pending_key: str) -> None:
             expiry = datetime.now(timezone.utc) + timedelta(seconds=token_response.expires_in)
             broker.vault.set_expiry(record.id, expiry)
 
-        # Store refresh token separately at alias "refresh"
+        # Store refresh token separately at an alias-scoped refresh record.
         if token_response.refresh_token:
             refresh_secret = CredentialSecret(
                 secret=token_response.refresh_token,
@@ -552,8 +662,9 @@ def _exchange_and_store(result: Any, pending_key: str) -> None:
                 service=provider.service_id,
                 secret=refresh_secret.secret,
                 credential_type="oauth_refresh_token",
-                alias="refresh",
+                alias=refresh_alias_for(info["alias"]),
                 scopes=info["scopes"],
+                metadata=refresh_secret.metadata,
                 replace_existing=True,
             )
 
@@ -562,9 +673,8 @@ def _exchange_and_store(result: Any, pending_key: str) -> None:
         logger.exception("Storing OAuth tokens failed for %s", pending_key)
 
 
-def _handle_oauth_refresh(arguments: dict[str, Any], broker: Broker) -> list[TextContent]:
+def _handle_oauth_refresh(arguments: dict[str, Any], broker: Broker, agent_id: str) -> list[TextContent]:
     """Handle the oauth_refresh MCP tool call."""
-    agent_id = _require_agent_id(arguments)
     service = arguments.get("service", "").strip().lower()
     alias = arguments.get("alias") or "default"
     dry_run = bool(arguments.get("dry_run", False))
@@ -572,8 +682,8 @@ def _handle_oauth_refresh(arguments: dict[str, Any], broker: Broker) -> list[Tex
     if not service:
         return [TextContent(type="text", text="Error: Missing required parameter: service")]
 
-    # Check policy — agent must be allowed to access this service
-    allowed, reason = broker.policy.can_access_service(agent_id, service)
+    # Refresh mutates stored OAuth tokens, so it requires rotate permission.
+    allowed, reason = broker.policy.can(agent_id, service, ServiceAction.rotate)
     if not allowed:
         return [TextContent(type="text", text=f"Denied: {reason}")]
 

@@ -20,7 +20,7 @@ from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase
 from hermes_vault.detectors import detect_matches, guess_from_env_name
 from hermes_vault.diff import diff_backups
 from hermes_vault.health import run_health
-from hermes_vault.models import CredentialStatus
+from hermes_vault.models import AccessLogRecord, CredentialStatus, Decision
 from hermes_vault.mutations import VaultMutations, OPERATOR_AGENT_ID
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.scanner import Scanner
@@ -65,6 +65,8 @@ _typer_app = typer.Typer(
 )
 broker_app = typer.Typer(help="Broker operations.")
 _typer_app.add_typer(broker_app, name="broker")
+policy_app = typer.Typer(help="Policy diagnostics and maintenance.")
+_typer_app.add_typer(policy_app, name="policy")
 console = Console()
 
 
@@ -1094,6 +1096,183 @@ def health(
         raise typer.Exit(code=1)
 
 
+@_typer_app.command("maintain")
+def maintain(
+    ctx: typer.Context,
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Refresh dry-run; report what would happen without token updates."),
+    print_systemd: bool = typer.Option(False, "--print-systemd", help="Print a user systemd timer/unit for scheduled maintenance."),
+    margin: int = typer.Option(300, "--margin", help="Proactive OAuth refresh margin in seconds."),
+    stale_days: int = typer.Option(30, "--stale-days", help="Flag credentials not verified within this many days."),
+    expiring_days: int = typer.Option(7, "--expiring-days", help="Flag credentials expiring within this many days."),
+    backup_days: int = typer.Option(30, "--backup-days", help="Warn if last backup exceeds this many days."),
+) -> None:
+    """Run scheduled-safe OAuth refresh and vault health maintenance.
+
+    Exit codes:
+      0 = all clear
+      1 = completed with warnings or refresh failures
+      2 = invalid arguments
+    """
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=2)
+    if margin < 0 or stale_days < 1 or expiring_days < 1 or backup_days < 1:
+        console.print("[red]Thresholds must be positive integers; --margin may be 0 or greater[/red]")
+        raise typer.Exit(code=2)
+    if print_systemd:
+        console.print(_render_maintain_systemd_unit())
+        raise typer.Exit(code=0)
+
+    vault, _, broker, _ = build_services(prompt=True)
+    from hermes_vault.maintenance import run_maintenance
+
+    report = run_maintenance(
+        vault,
+        audit=broker.audit,
+        dry_run=dry_run,
+        margin=margin,
+        stale_days=stale_days,
+        expiring_days=expiring_days,
+        backup_days=backup_days,
+    )
+
+    if format == "json":
+        console.print_json(data=report.as_dict(exclude_none=False))
+        raise typer.Exit(code=report.recommended_exit_code)
+
+    table = Table(title="Hermes Vault Maintenance" + (" (dry-run)" if dry_run else ""))
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("OAuth refresh attempted", str(report.refresh_summary.get("attempted", 0)))
+    table.add_row("OAuth refresh succeeded", str(report.refresh_summary.get("succeeded", 0)))
+    table.add_row("OAuth refresh failed", str(report.refresh_summary.get("failed", 0)))
+    table.add_row("Health", "healthy" if report.health.get("healthy") else "warnings")
+    table.add_row("Audit recorded", "yes" if report.audit_recorded else "no")
+    table.add_row("Exit code", str(report.recommended_exit_code))
+    console.print(table)
+
+    failures = [result for result in report.refresh_results if not result.get("success")]
+    if failures:
+        failure_table = Table(title="Refresh Failures")
+        failure_table.add_column("Service")
+        failure_table.add_column("Alias")
+        failure_table.add_column("Kind")
+        failure_table.add_column("Reason")
+        for failure in failures:
+            failure_table.add_row(
+                str(failure.get("service", "-")),
+                str(failure.get("alias", "-")),
+                str(failure.get("error_kind", "unknown")),
+                str(failure.get("reason", "-")),
+            )
+        console.print(failure_table)
+
+    health_findings = report.health.get("findings", [])
+    if health_findings:
+        health_table = Table(title="Health Findings")
+        health_table.add_column("Level")
+        health_table.add_column("Kind")
+        health_table.add_column("Service")
+        health_table.add_column("Alias")
+        health_table.add_column("Detail")
+        for finding in health_findings:
+            health_table.add_row(
+                str(finding.get("level", "-")),
+                str(finding.get("kind", "-")),
+                str(finding.get("service", "-")),
+                str(finding.get("alias", "-")),
+                str(finding.get("detail", "-")),
+            )
+        console.print(health_table)
+
+    raise typer.Exit(code=report.recommended_exit_code)
+
+
+def _render_maintain_systemd_unit() -> str:
+    command = "hermes-vault --no-banner maintain --format json"
+    return f"""# Save as ~/.config/systemd/user/hermes-vault-maintain.service
+[Unit]
+Description=Hermes Vault scheduled maintenance
+
+[Service]
+Type=oneshot
+ExecStart={command}
+
+# Save as ~/.config/systemd/user/hermes-vault-maintain.timer
+[Unit]
+Description=Run Hermes Vault maintenance every 15 minutes
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+
+
+@policy_app.command("doctor")
+def policy_doctor(
+    ctx: typer.Context,
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+    strict: bool = typer.Option(False, "--strict", help="Exit non-zero when high-risk findings are present."),
+) -> None:
+    """Inspect policy.yaml for least-privilege and OAuth readiness issues.
+
+    This command is read-only. It does not call build_services() and does not
+    write default policy files.
+
+    Exit codes:
+      0 = diagnostics completed
+      1 = --strict and high-risk findings found
+      2 = invalid arguments
+    """
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=2)
+
+    settings = get_settings()
+    from hermes_vault.policy_doctor import run_policy_doctor
+
+    report = run_policy_doctor(
+        settings.effective_policy_path,
+        generated_skills_dir=settings.generated_skills_dir,
+        strict=strict,
+    )
+
+    if format == "json":
+        console.print_json(data=report.as_dict(exclude_none=False))
+    else:
+        table = Table(title="Hermes Vault Policy Doctor")
+        table.add_column("Severity")
+        table.add_column("Kind")
+        table.add_column("Agent")
+        table.add_column("Service")
+        table.add_column("Detail")
+        table.add_column("Suggestion")
+        for finding in report.findings:
+            table.add_row(
+                finding.severity.value,
+                finding.kind,
+                finding.agent_id or "-",
+                finding.service or "-",
+                finding.detail,
+                finding.suggestion or "-",
+            )
+        console.print(table)
+        summary_color = "red" if report.strict_violation else "green"
+        console.print(
+            f"[{summary_color}]Findings: {report.finding_count}; "
+            f"strict violations: {report.strict_violation_count}[/{summary_color}]"
+        )
+
+    if report.strict_violation:
+        raise typer.Exit(code=1)
+    raise typer.Exit(code=0)
+
+
 @broker_app.command("get")
 def broker_get(
     ctx: typer.Context,
@@ -1336,6 +1515,8 @@ def restore_vault(
     ctx: typer.Context,
     input: Path = typer.Option(..., "--input", "-i", help="Path to a vault backup file."),
     yes: bool = typer.Option(False, "--yes", help="Confirm restoration without prompting."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Validate restore without mutating the live vault."),
+    format: str = typer.Option("table", "--format", help="Output format for --dry-run: table or json."),
 ) -> None:
     """Restore vault credentials from a backup file.
 
@@ -1347,6 +1528,29 @@ def restore_vault(
     Example:
       hermes-vault restore --input ~/vault-backup-2026-04.json --yes
     """
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=2)
+
+    if dry_run:
+        vault, _, _, _ = build_services(prompt=True)
+        from hermes_vault.backup import restore_dry_run
+
+        report = restore_dry_run(input, vault)
+        _print_backup_report(report, format=format)
+        audit = AuditLogger(get_settings().db_path)
+        audit.record(
+            AccessLogRecord(
+                agent_id=OPERATOR_AGENT_ID,
+                service="*",
+                action="restore_dry_run",
+                decision=Decision.allow if report.decryptable else Decision.deny,
+                reason=f"restore dry-run for {input}: {'ok' if report.decryptable else '; '.join(report.findings)}",
+                metadata=report.as_dict(exclude_none=False),
+            )
+        )
+        raise typer.Exit(code=0 if report.decryptable else 1)
+
     if not yes:
         console.print("[red]Restoration requires --yes flag.[/red]")
         raise typer.Exit(code=1)
@@ -1365,6 +1569,55 @@ def restore_vault(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
     console.print(f"[green]Restored {len(imported)} credential(s) from {input}[/green]")
+
+
+@_typer_app.command("backup-verify")
+def backup_verify(
+    ctx: typer.Context,
+    input: Path = typer.Option(..., "--input", "-i", help="Path to a vault backup file."),
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+) -> None:
+    """Verify a backup file without restoring it."""
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=2)
+
+    vault, _, _, _ = build_services(prompt=True)
+    from hermes_vault.backup import verify_backup_file
+
+    report = verify_backup_file(input, vault)
+    _print_backup_report(report, format=format)
+    audit = AuditLogger(get_settings().db_path)
+    audit.record(
+        AccessLogRecord(
+            agent_id=OPERATOR_AGENT_ID,
+            service="*",
+            action="backup_verify",
+            decision=Decision.allow if report.decryptable else Decision.deny,
+            reason=f"backup verify for {input}: {'ok' if report.decryptable else '; '.join(report.findings)}",
+            metadata=report.as_dict(exclude_none=False),
+        )
+    )
+    raise typer.Exit(code=0 if report.decryptable else 1)
+
+
+def _print_backup_report(report, *, format: str) -> None:
+    if format == "json":
+        console.print_json(data=report.as_dict(exclude_none=False))
+        return
+
+    table = Table(title="Backup Verification")
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("Mode", report.mode)
+    table.add_row("Backup version", report.backup_version or "-")
+    table.add_row("Credentials", str(report.credential_count))
+    table.add_row("Decryptable", "yes" if report.decryptable else "no")
+    table.add_row("Would restore", str(report.would_restore_count))
+    table.add_row("Audit included", "yes" if report.audit_included else "no")
+    console.print(table)
+    for finding in report.findings:
+        console.print(f"[red]{finding}[/red]")
 
 
 @_typer_app.command("diff")
@@ -1607,6 +1860,59 @@ def oauth_refresh(
             console.print(f"[green]Refreshed {success_count}/{len(results)} token(s).[/green]")
         if any(not r.success for r in results):
             console.print("[yellow]Some refreshes failed. Check the table above.[/yellow]")
+
+
+@oauth_app.command("normalize")
+def oauth_normalize(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(True, "--dry-run/--write", help="Preview changes by default; use --write to rewrite safe records."),
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+) -> None:
+    """Normalize OAuth token records to the v0.7.0 storage shape.
+
+    Removes redundant token-bearing metadata and migrates legacy refresh-token
+    alias `refresh` to alias-scoped `refresh:<access-alias>` when unambiguous.
+    """
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=2)
+
+    vault, _, _, _ = build_services(prompt=True)
+    from hermes_vault.oauth.normalize import normalize_oauth_records
+
+    report = normalize_oauth_records(vault, dry_run=dry_run)
+
+    if format == "json":
+        console.print_json(data=report.as_dict())
+        return
+
+    table = Table(title="OAuth Normalize" + (" (dry-run)" if dry_run else ""))
+    table.add_column("Action")
+    table.add_column("Service")
+    table.add_column("Alias")
+    table.add_column("Type")
+    table.add_column("Detail")
+    for change in report.changes:
+        table.add_row(
+            change.action,
+            change.service,
+            change.alias,
+            change.credential_type,
+            change.detail,
+        )
+    for skip in report.skips:
+        table.add_row(
+            skip.action,
+            skip.service,
+            skip.alias,
+            skip.credential_type,
+            skip.detail,
+        )
+    console.print(table)
+    console.print(
+        f"[green]Changes: {report.changed_count}; skips: {report.skipped_count}; "
+        f"mode: {'dry-run' if dry_run else 'write'}[/green]"
+    )
 
 
 # ── App proxy ──────────────────────────────────────────────────────────────────

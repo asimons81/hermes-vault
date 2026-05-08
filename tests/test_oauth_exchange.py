@@ -6,6 +6,7 @@ hitting real OAuth token endpoints.
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -223,3 +224,29 @@ class TestParseUrlEncodedBody:
     def test_multi_value(self):
         result = _parse_url_encoded_body("scope=read&scope=write")
         assert result["scope"] == "read write"
+
+
+class TestTokenResponseMetadata:
+    def test_to_credential_secret_sanitizes_metadata(self, test_provider):
+        response = TokenResponse.from_json(
+            {
+                "access_token": "tok",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "refresh_token": "ref",
+                "scope": "openid email",
+                "raw_field": "ignored",
+            }
+        )
+
+        secret = response.to_credential_secret(test_provider)
+
+        assert secret.secret == "tok"
+        assert secret.metadata["provider"] == "testprovider"
+        assert secret.metadata["token_type"] == "Bearer"
+        assert secret.metadata["scopes"] == ["openid", "email"]
+        assert "refresh_token" not in secret.metadata
+        assert "raw_response" not in secret.metadata
+        assert "raw_field" not in secret.metadata
+        datetime.fromisoformat(secret.metadata["issued_at"])
+        datetime.fromisoformat(secret.metadata["expires_at"])

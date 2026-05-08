@@ -64,6 +64,7 @@ class VaultMutations:
         imported_from: str | None = None,
         scopes: list[str] | None = None,
         replace_existing: bool = False,
+        metadata: dict | None = None,
     ) -> MutationResult:
         """Add a credential with policy check and audit."""
         service = normalize(service)
@@ -94,6 +95,7 @@ class VaultMutations:
                 alias=alias,
                 imported_from=imported_from,
                 scopes=scopes,
+                metadata=metadata,
                 replace_existing=replace_existing,
             )
         except Exception as exc:

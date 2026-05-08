@@ -25,10 +25,14 @@ class AuditLogger:
                     decision TEXT NOT NULL,
                     reason TEXT NOT NULL,
                     ttl_seconds INTEGER,
-                    verification_result TEXT
+                    verification_result TEXT,
+                    metadata_json TEXT
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(access_logs)")}
+            if "metadata_json" not in columns:
+                conn.execute("ALTER TABLE access_logs ADD COLUMN metadata_json TEXT")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_access_logs_agent_id ON access_logs(agent_id)"
             )
@@ -48,8 +52,8 @@ class AuditLogger:
             conn.execute(
                 """
                 INSERT INTO access_logs (
-                    id, timestamp, agent_id, service, action, decision, reason, ttl_seconds, verification_result
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, timestamp, agent_id, service, action, decision, reason, ttl_seconds, verification_result, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -61,6 +65,7 @@ class AuditLogger:
                     record.reason,
                     record.ttl_seconds,
                     record.verification_result.value if record.verification_result else None,
+                    json.dumps(record.metadata, sort_keys=True) if record.metadata else "{}",
                 ),
             )
             conn.commit()
@@ -105,7 +110,20 @@ class AuditLogger:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+        results: list[dict[str, object]] = []
+        for row in rows:
+            item = dict(row)
+            metadata_raw = item.get("metadata_json")
+            if isinstance(metadata_raw, str) and metadata_raw:
+                try:
+                    item["metadata"] = json.loads(metadata_raw)
+                except json.JSONDecodeError:
+                    item["metadata"] = {"raw": metadata_raw}
+            else:
+                item["metadata"] = {}
+            item.pop("metadata_json", None)
+            results.append(item)
+        return results
 
     def export_jsonl(self, path: Path, limit: int = 100) -> None:
         entries = self.list_recent(limit=limit)

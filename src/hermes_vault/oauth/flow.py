@@ -26,6 +26,7 @@ from hermes_vault.oauth.errors import (
 from hermes_vault.oauth.exchange import TokenExchanger
 from hermes_vault.oauth.pkce import PKCEGenerator
 from hermes_vault.oauth.providers import OAuthProviderRegistry
+from hermes_vault.oauth.oauth_refresh import refresh_alias_for
 from hermes_vault.oauth.state import StateManager
 from hermes_vault.vault import Vault
 
@@ -194,6 +195,7 @@ class LoginFlow:
                 credential_type="oauth_access_token",
                 alias=self.alias,
                 scopes=requested_scopes,
+                metadata=credential_secret.metadata,
                 replace_existing=True,
             )
 
@@ -210,7 +212,7 @@ class LoginFlow:
             expiry = datetime.now(timezone.utc) + timedelta(seconds=token_response.expires_in)
             self.vault.set_expiry(record.id, expiry)
 
-        # Store refresh token separately at alias "refresh"
+        # Store refresh token separately at an alias-scoped refresh record
         if token_response.refresh_token:
             refresh_secret = CredentialSecret(
                 secret=token_response.refresh_token,
@@ -224,8 +226,9 @@ class LoginFlow:
                 service=provider.service_id,
                 secret=refresh_secret.secret,
                 credential_type="oauth_refresh_token",
-                alias="refresh",
+                alias=refresh_alias_for(self.alias),
                 scopes=requested_scopes,
+                metadata=refresh_secret.metadata,
                 replace_existing=True,
             )
 

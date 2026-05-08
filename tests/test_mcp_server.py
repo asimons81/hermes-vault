@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from mcp.types import TextContent
 
+from hermes_vault.audit import AuditLogger
 from hermes_vault.mcp_server import call_tool, list_tools, server
 from hermes_vault.models import CredentialStatus
 
@@ -30,6 +31,17 @@ def _text(content: list[TextContent]) -> str:
 
 def _json(content: list[TextContent]) -> Any:
     return json.loads(_text(content))
+
+
+@pytest.fixture(autouse=True)
+def reset_mcp_server_state():
+    import hermes_vault.mcp_server as mcp_mod
+
+    mcp_mod._broker = None
+    mcp_mod._pending_oauth.clear()
+    yield
+    mcp_mod._broker = None
+    mcp_mod._pending_oauth.clear()
 
 
 # ── server metadata ────────────────────────────────────────────────────────────
@@ -75,6 +87,53 @@ def test_list_services_respects_filter(vault_with_policy, tmp_path):
     data = _json(result)
     assert len(data) == 1
     assert data[0]["service"] == "openai"
+
+
+def test_list_services_works_without_binding_env(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("list_services", {"agent_id": "test-agent"}))
+    data = _json(result)
+    services = {d["service"] for d in data}
+    assert "openai" in services
+    assert "supabase" in services
+
+
+def test_list_services_uses_default_agent_when_agent_id_missing(vault_with_policy, tmp_path, monkeypatch):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    monkeypatch.setenv("HERMES_VAULT_MCP_ALLOWED_AGENTS", "test-agent")
+    monkeypatch.setenv("HERMES_VAULT_MCP_DEFAULT_AGENT", "test-agent")
+    result = _run_async(call_tool("list_services", {}))
+    data = _json(result)
+    services = {d["service"] for d in data}
+    assert "openai" in services
+    assert "supabase" in services
+
+
+def test_list_services_denies_agent_outside_binding_set(vault_with_policy, tmp_path, monkeypatch):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    monkeypatch.setenv("HERMES_VAULT_MCP_ALLOWED_AGENTS", "test-agent")
+    result = _run_async(call_tool("list_services", {"agent_id": "intruder"}))
+    text = _text(result)
+    assert "not allowed for this MCP server" in text
+
+    audit = AuditLogger(tmp_path / "vault.db")
+    entries = audit.list_recent(limit=10)
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["action"] == "mcp_bind:list_services"
+    assert entry["decision"] == "deny"
+    assert entry["metadata"]["requested_agent_id"] == "intruder"
+    assert entry["metadata"]["mcp_allowed_agents"] == ["test-agent"]
+    assert entry["metadata"]["policy_decision"] == "not_evaluated"
+
+
+def test_oauth_refresh_uses_default_agent_when_agent_id_missing(vault_with_policy, tmp_path, monkeypatch):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    monkeypatch.setenv("HERMES_VAULT_MCP_ALLOWED_AGENTS", "test-agent")
+    monkeypatch.setenv("HERMES_VAULT_MCP_DEFAULT_AGENT", "test-agent")
+    result = _run_async(call_tool("oauth_refresh", {"service": "openai", "alias": "default"}))
+    text = _text(result)
+    assert "No refresh token" in text or "Use oauth_login" in text or "re-authentication" in text.lower()
 
 
 # ── get_credential_metadata ────────────────────────────────────────────────────
@@ -289,6 +348,17 @@ def test_oauth_refresh_requires_service():
     assert "Missing required parameter: service" in _text(result)
 
 
+def test_oauth_refresh_requires_rotate_permission(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("oauth_refresh", {
+        "agent_id": "restricted-agent",
+        "service": "openai",
+        "alias": "default",
+    }))
+
+    assert "Denied:" in _text(result)
+
+
 def test_oauth_refresh_returns_error_when_no_refresh_token(vault_with_policy, tmp_path):
     """When no refresh token exists, the tool should return a clear error."""
     os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
@@ -380,5 +450,11 @@ agents:
     yield broker
 
     # Cleanup
-    for key in ("HERMES_VAULT_HOME", "HERMES_VAULT_PASSPHRASE", "HERMES_VAULT_POLICY"):
+    for key in (
+        "HERMES_VAULT_HOME",
+        "HERMES_VAULT_PASSPHRASE",
+        "HERMES_VAULT_POLICY",
+        "HERMES_VAULT_MCP_ALLOWED_AGENTS",
+        "HERMES_VAULT_MCP_DEFAULT_AGENT",
+    ):
         os.environ.pop(key, None)

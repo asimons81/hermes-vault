@@ -3,7 +3,22 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+def _parse_csv_env(name: str) -> list[str]:
+    raw = os.environ.get(name, "")
+    if not raw.strip():
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _parse_optional_env(name: str) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None
 
 
 class AppSettings(BaseModel):
@@ -41,6 +56,12 @@ class AppSettings(BaseModel):
     governance_warnings_enabled: bool = Field(
         default_factory=lambda: os.environ.get("HERMES_VAULT_GOVERNANCE_WARNINGS", "0") == "1"
     )
+    mcp_allowed_agents: list[str] = Field(
+        default_factory=lambda: _parse_csv_env("HERMES_VAULT_MCP_ALLOWED_AGENTS")
+    )
+    mcp_default_agent: str | None = Field(
+        default_factory=lambda: _parse_optional_env("HERMES_VAULT_MCP_DEFAULT_AGENT")
+    )
 
     @property
     def db_path(self) -> Path:
@@ -61,6 +82,19 @@ class AppSettings(BaseModel):
     @property
     def generated_skills_dir(self) -> Path:
         return self.runtime_home / "generated-skills"
+
+    @property
+    def mcp_binding_enabled(self) -> bool:
+        return bool(self.mcp_allowed_agents)
+
+    @model_validator(mode="after")
+    def _validate_mcp_binding(self) -> "AppSettings":
+        if self.mcp_allowed_agents and self.mcp_default_agent:
+            if self.mcp_default_agent not in self.mcp_allowed_agents:
+                raise ValueError(
+                    "HERMES_VAULT_MCP_DEFAULT_AGENT must be one of HERMES_VAULT_MCP_ALLOWED_AGENTS"
+                )
+        return self
 
     def ensure_runtime_layout(self) -> None:
         self.runtime_home.mkdir(parents=True, exist_ok=True)

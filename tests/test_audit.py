@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,6 +36,64 @@ def _make_record(
 
 
 class TestAuditLoggerListRecent:
+    def test_initialize_migrates_metadata_column(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "audit.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE access_logs (
+                    id TEXT PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    service TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    ttl_seconds INTEGER,
+                    verification_result TEXT
+                )
+                """
+            )
+            conn.commit()
+
+        audit = AuditLogger(db_path)
+        audit.initialize()
+
+        with sqlite3.connect(db_path) as conn:
+            columns = [row[1] for row in conn.execute("PRAGMA table_info(access_logs)")]
+
+        assert "metadata_json" in columns
+
+    def test_metadata_round_trip(self, tmp_path: Path) -> None:
+        audit = AuditLogger(tmp_path / "audit.db")
+        audit.initialize()
+        audit.record(
+            _make_record(
+                agent_id="intruder",
+                service="*",
+                action="mcp_bind:list_services",
+                decision=Decision.deny,
+                verification_result=None,
+            ).model_copy(
+                update={
+                    "metadata": {
+                        "requested_agent_id": "intruder",
+                        "mcp_binding_mode": "bound",
+                        "mcp_allowed_agents": ["test-agent"],
+                        "mcp_default_agent": "test-agent",
+                        "policy_decision": "not_evaluated",
+                    }
+                }
+            )
+        )
+
+        results = audit.list_recent(limit=10)
+
+        assert len(results) == 1
+        assert results[0]["metadata"]["requested_agent_id"] == "intruder"
+        assert results[0]["metadata"]["mcp_allowed_agents"] == ["test-agent"]
+        assert results[0]["metadata"]["policy_decision"] == "not_evaluated"
+
     def test_no_filters_returns_all(self, tmp_path: Path) -> None:
         audit = AuditLogger(tmp_path / "audit.db")
         audit.initialize()

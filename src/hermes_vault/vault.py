@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from typing import Any
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -101,6 +102,7 @@ class Vault:
         imported_from: str | None = None,
         scopes: list[str] | None = None,
         replace_existing: bool = False,
+        metadata: dict[str, Any] | None = None,
     ) -> CredentialRecord:
         service = normalize(service)
         existing = self._find_by_service_alias(service, alias)
@@ -108,7 +110,10 @@ class Vault:
             raise DuplicateCredentialError(
                 f"Credential for service '{service}' and alias '{alias}' already exists."
             )
-        payload = CredentialSecret(secret=secret).model_dump_json()
+        payload = CredentialSecret(
+            secret=secret,
+            metadata=self._resolve_secret_metadata(existing.id if existing else None, metadata),
+        ).model_dump_json()
         encrypted_payload = encrypt_secret(payload, self.key)
         record = existing.model_copy(update={
             "credential_type": credential_type,
@@ -287,11 +292,15 @@ class Vault:
         new_secret: str,
         imported_from: str | None = None,
         alias: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> CredentialRecord:
         current = self.resolve_credential(service_or_id, alias=alias)
         if not current:
             raise KeyError(f"Credential '{service_or_id}' not found")
-        payload = CredentialSecret(secret=new_secret).model_dump_json()
+        payload = CredentialSecret(
+            secret=new_secret,
+            metadata=self._resolve_secret_metadata(current.id, metadata),
+        ).model_dump_json()
         encrypted_payload = encrypt_secret(payload, self.key)
         current.encrypted_payload = encrypted_payload
         current.imported_from = imported_from or current.imported_from
@@ -496,6 +505,31 @@ class Vault:
                 (service, alias),
             ).fetchone()
         return self._row_to_record(row) if row else None
+
+    def _resolve_secret_metadata(
+        self,
+        credential_id: str | None,
+        metadata: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Return merged secret metadata for a credential write.
+
+        Existing metadata is preserved when no explicit metadata override is
+        supplied. When a credential is being replaced, this keeps non-secret
+        fields intact unless the caller intentionally overrides them.
+        """
+        current_metadata: dict[str, Any] = {}
+        if credential_id is not None:
+            try:
+                current_secret = self.get_secret(credential_id)
+            except Exception:
+                current_secret = None
+            if current_secret and isinstance(current_secret.metadata, dict):
+                current_metadata = dict(current_secret.metadata)
+        if metadata is None:
+            return current_metadata
+        merged = dict(current_metadata)
+        merged.update(metadata)
+        return merged
 
     def export_backup(self, *, metadata_only: bool = False) -> dict:
         """Export all credentials as a portable backup dict.

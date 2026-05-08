@@ -84,6 +84,7 @@ class AccessLogRecord(BaseModel):
     reason: str
     ttl_seconds: int | None = None
     verification_result: VerificationCategory | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class VerificationResult(BaseModel):

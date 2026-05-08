@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import requests
 
-from hermes_vault.models import CredentialSecret
+from hermes_vault.models import CredentialSecret, utc_now
 from hermes_vault.oauth.errors import OAuthNetworkError, OAuthProviderError
 from hermes_vault.oauth.providers import OAuthProvider
 
@@ -42,15 +43,22 @@ class TokenResponse:
         )
 
     def to_credential_secret(self, provider: OAuthProvider) -> CredentialSecret:
-        """Build a CredentialSecret from this token response."""
+        """Build a CredentialSecret from this token response.
+
+        The stored metadata is intentionally sanitized: it never includes the
+        refresh token or the raw provider response payload.
+        """
+        issued_at = utc_now()
         metadata: dict[str, Any] = {
-            "refresh_token": self.refresh_token,
             "token_type": self.token_type,
-            "raw_response": self.raw,
             "provider": provider.service_id,
+            "issued_at": issued_at.isoformat(),
         }
-        if self.scope is not None:
-            metadata["scope"] = self.scope
+        if self.expires_in is not None:
+            metadata["expires_at"] = (issued_at + timedelta(seconds=self.expires_in)).isoformat()
+        scopes = _parse_scope_list(self.scope)
+        if scopes:
+            metadata["scopes"] = scopes
         return CredentialSecret(secret=self.access_token, metadata=metadata)
 
 
@@ -135,3 +143,9 @@ def _parse_url_encoded_body(text: str) -> dict[str, str]:
     from urllib.parse import parse_qs
     result = parse_qs(text.strip())
     return {k: v[0] if len(v) == 1 else " ".join(v) for k, v in result.items()}
+
+
+def _parse_scope_list(scope: str | None) -> list[str]:
+    if not scope:
+        return []
+    return [item for item in (part.strip() for part in scope.split(" ")) if item]

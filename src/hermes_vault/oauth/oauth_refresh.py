@@ -37,6 +37,11 @@ class RefreshTokenExpiredError(RuntimeError):
     """Raised when the refresh token itself has been revoked or expired."""
 
 
+def refresh_alias_for(access_alias: str) -> str:
+    """Return the deterministic refresh-token alias for an access-token alias."""
+    return f"refresh:{access_alias}"
+
+
 @dataclass
 class RefreshAttempt:
     """Result of a single refresh attempt."""
@@ -143,7 +148,7 @@ class RefreshEngine:
         service = normalize(service)
 
         access_rec = self._resolve_access_token(service, alias)
-        refresh_rec = self._resolve_refresh_token(service)
+        refresh_rec = self._resolve_refresh_token(service, alias)
         if refresh_rec is None:
             raise RefreshTokenMissingError(
                 f"No refresh token found for service '{service}'. Re-authentication required."
@@ -244,9 +249,28 @@ class RefreshEngine:
             )
         return rec
 
-    def _resolve_refresh_token(self, service: str) -> CredentialRecord | None:
-        """Fetch the paired refresh token by the ``refresh`` alias convention."""
-        return self.vault._find_by_service_alias(service, "refresh")
+    def _resolve_refresh_token(self, service: str, alias: str) -> CredentialRecord | None:
+        """Fetch the paired refresh token for a service/access-alias pair.
+
+        Prefer the alias-scoped refresh record (``refresh:<alias>``). Fall back
+        to the legacy ``refresh`` alias only when it is the only usable record.
+        """
+        scoped_alias = refresh_alias_for(alias)
+        scoped = self.vault._find_by_service_alias(service, scoped_alias)
+        if scoped is not None:
+            return scoped
+
+        legacy = self.vault._find_by_service_alias(service, "refresh")
+        if legacy is None:
+            return None
+
+        legacy_secret = self.vault.get_secret(legacy.id)
+        legacy_metadata = legacy_secret.metadata if legacy_secret is not None else {}
+        if isinstance(legacy_metadata, dict):
+            associated_alias = legacy_metadata.get("associated_access_token_alias")
+            if associated_alias is not None and associated_alias != alias:
+                return None
+        return legacy
 
     def _get_provider(self, service: str) -> OAuthProvider:
         if self.registry is None:
@@ -371,9 +395,10 @@ class RefreshEngine:
 
         # Build new refresh token secret if rotated
         new_refresh_encrypted: str | None = None
-        if attempt.new_refresh_token and attempt.new_refresh_token != refresh_rec.id:
+        old_refresh_secret = self.vault.get_secret(refresh_rec.id)
+        current_refresh_value = old_refresh_secret.secret if old_refresh_secret is not None else None
+        if attempt.new_refresh_token and attempt.new_refresh_token != current_refresh_value:
             # Provider rotated the refresh token — preserve and increment counter
-            old_refresh_secret = self.vault.get_secret(refresh_rec.id)
             rotation_counter = 1
             family_id: str | None = None
             if old_refresh_secret and isinstance(old_refresh_secret.metadata, dict):
@@ -382,11 +407,19 @@ class RefreshEngine:
                     rotation_counter = old_counter + 1
                 family_id = old_refresh_secret.metadata.get("family_id")
 
-            refresh_meta: dict[str, Any] = {
-                "associated_access_token_alias": access_rec.alias,
-                "provider": provider.service_id,
-                "rotation_counter": rotation_counter,
-            }
+            refresh_metadata: dict[str, Any] = {}
+            if old_refresh_secret and isinstance(old_refresh_secret.metadata, dict):
+                refresh_metadata.update(old_refresh_secret.metadata)
+            refresh_metadata.update(
+                {
+                    "associated_access_token_alias": access_rec.alias,
+                    "provider": provider.service_id,
+                    "rotation_counter": rotation_counter,
+                }
+            )
+            refresh_metadata.pop("refresh_token", None)
+            refresh_metadata.pop("raw_response", None)
+            refresh_meta: dict[str, Any] = dict(refresh_metadata)
             if family_id is not None:
                 refresh_meta["family_id"] = family_id
 
