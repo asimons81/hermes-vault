@@ -37,6 +37,98 @@ hermes-vault import --from-env ~/.hermes/.env --map DATABASE_URL=postgres:connec
 
 `NEXT_PUBLIC_*` public config stays skipped. Broad DB URLs, passwords, app secrets, JWT secrets, and session secrets also stay skipped unless explicitly mapped. With `--redact-source`, Hermes Vault comments only successfully imported lines and reports how many skipped lines were left unchanged. `--dry-run --redact-source` does not modify the source file.
 
+## From `.env` to a real agent workflow
+
+If you start with a normal `.env`, this is the real path from “we have some secrets on disk” to “Hermes is using them safely”:
+
+1. Scan for plaintext secrets
+
+   ```bash
+   hermes-vault scan --path ~/.hermes
+   ```
+
+2. Preview the import before anything changes
+
+   ```bash
+   hermes-vault import --from-env ~/.hermes/.env --dry-run
+   ```
+
+3. Import the approved entries into the vault
+
+   ```bash
+   hermes-vault import --from-env ~/.hermes/.env
+   ```
+
+4. Generate the agent skill contract
+
+   ```bash
+   hermes-vault generate-skill --all-agents
+   ```
+
+5. Review the generated skill
+
+   - Generated skills are written under `~/.hermes/hermes-vault-data/generated-skills/<agent>/SKILL.md`
+   - The skill embeds a policy hash, so drift is detectable
+   - Treat it as a review artifact until you explicitly install it into the live Hermes skill directory
+
+6. Wire Hermes to the vault runtime
+
+   - `HERMES_VAULT_HOME=~/.hermes/hermes-vault-data`
+   - `HERMES_VAULT_POLICY=~/.hermes/hermes-vault-data/policy.yaml`
+   - If Hermes is loading the vault through MCP, add `hermes-vault` to `~/.hermes/config.yaml` under `mcp_servers`
+
+What happens next is the important bit, and this is where the setup stops being abstract:
+
+- `policy.yaml` decides which agent can access which services
+- the vault runtime home holds the encrypted database and generated skill artifacts
+- the skill tells the agent how to behave around credentials
+- broker calls hand out ephemeral env vars instead of spraying raw secrets around
+
+So no, this isn't some vague `config.yml` hand wave. It's a concrete runtime path, real policy, and a credential broker doing the work.
+
+## Why this is better
+
+This setup gives you a few hard wins:
+
+- **Fewer plaintext copies**
+  - Secrets don't sit around in random files forever
+  - Imported values get centralized into one vault
+
+- **Tighter access**
+  - An agent can be allowed `github` without also getting `google`
+  - Access is scoped by service and policy, not vibes
+
+- **Short-lived exposure**
+  - Agents get ephemeral env vars instead of raw secret dumps
+  - TTLs keep the blast radius smaller
+
+- **Cleaner rotation**
+  - Update one vault entry instead of hunting down stale copies
+  - Revoke a credential once, stop it everywhere
+
+- **Less auth bullshit**
+  - The skill tells the agent to verify before claiming re-auth
+  - No more guessing because some stale `.env` copy got left behind
+
+## Concrete examples
+
+- **GitHub**
+  - Give the agent access to `github`
+  - It gets brokered env for the task, not your whole shell state
+  - Good for repo ops, PR work, and automation without spraying tokens everywhere
+
+- **OpenAI**
+  - Allow the coding agent to use `openai`
+  - Keep it out of workspace or infrastructure creds
+  - One model key, one policy entry, no cross-contamination
+
+- **Google**
+  - Let a workspace agent use `google`
+  - Keep that credential separate from the rest of the stack
+  - Rotate or revoke it without touching unrelated services
+
+The point isn't “more files.” The point is one canonical secret source, one policy file, and one contract that tells the agent how to use them safely.
+
 ## Maintenance
 
 `hermes-vault maintain` is the v0.7.0 scheduled run for token refresh and vault hygiene. It combines proactive OAuth refresh, health checks, stale-verification checks, and backup-age warnings in one report.
@@ -53,6 +145,34 @@ hermes-vault maintain --print-systemd
 - Exit code `1` means warnings or refresh failures were found.
 - Exit code `2` means invalid arguments.
 - `print-systemd` is the safer way to generate a timer/service example when you want to inspect the unit before installation.
+
+## Dashboard
+
+`hermes-vault dashboard` starts the local Hermes Vault Console.
+
+```bash
+hermes-vault dashboard
+hermes-vault dashboard --no-open
+hermes-vault dashboard --port 8765
+```
+
+The dashboard binds to `127.0.0.1`, generates a random tokenized launch URL, and serves packaged static assets from the installed Python package. Use the printed URL from the current launch; old URLs expire when the process exits.
+
+The console is for daily operator inspection: health, credential inventory, policy findings, audit activity, MCP binding status, backup posture, and safe operational actions. It is not a hosted vault or a policy editor.
+
+Safe v0.8.0 actions include:
+
+- Run health
+- Run policy doctor
+- Verify one credential or all credentials
+- Refresh OAuth tokens
+- Run maintenance dry-run or maintenance
+- Verify a backup file
+- Run restore dry-run
+
+Unsafe or out-of-scope actions stay in the CLI and require the existing explicit flags or workflows. The dashboard does not expose raw secrets, encrypted payloads, credential editing, policy editing, cloud sync, remote access, raw restore, credential deletion, master-key rotation, or plaintext export.
+
+Release visual QA should cover desktop and mobile widths, the first-run vault-door intro, bundled brand asset loading, text overflow, and control overlap before publishing a dashboard build.
 
 ## Policy Notes
 
