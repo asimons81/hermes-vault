@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2 -- Env Import Idempotency Follow-up
+
+### Changed
+
+- Repeated `.env` imports now compare the incoming secret against the stored `(service, alias)` pair first, report `Already imported` when unchanged, and update in place when the secret changed.
+
 ## 0.7.1 -- Env Import UX Hotfix
 
 ### Added
