@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.1 -- Env Import UX Hotfix
+
+### Added
+
+- `hermes-vault import --from-env` now supports `--dry-run` previews that show importable and skipped env vars without opening or mutating the vault.
+- `--map ENV_NAME=service:credential_type` can be repeated to explicitly import custom names, DB URLs, passwords, or app secrets when the operator chooses to map them.
+- Common AI/dev env hints now cover OpenRouter, FAL, Replicate, ElevenLabs, Resend, Tavily, Brave Search, Cloudflare, Vercel, Hugging Face, Groq, xAI, Gemini, Google API keys, Perplexity, and SerpAPI.
+
+### Changed
+
+- Unknown env vars are reported as skipped with clear reasons and `--map` hints instead of silently disappearing.
+- Safe suffix inference imports `*_API_KEY`, `*_TOKEN`, `*_AUTH_TOKEN`, and `*_ACCESS_TOKEN` names as service-specific credentials.
+- `--redact-source` now reports how many skipped env lines were left unchanged and still redacts only successfully imported lines.
+
+### Security
+
+- Public client config such as `NEXT_PUBLIC_*`, broad DB URLs, passwords, JWT/session/app secrets, and unknown names remain conservative skips unless explicitly mapped.
+
 ## 0.7.0 -- Operational Autonomy Release
 
 ### Added

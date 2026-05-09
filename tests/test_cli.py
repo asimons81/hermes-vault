@@ -598,6 +598,178 @@ def test_import_requires_source(monkeypatch) -> None:
     assert "--from-env" in result.output or "--from-file" in result.output
 
 
+def test_import_from_env_reports_skipped_unknowns(monkeypatch, tmp_path: Path) -> None:
+    mutations = StubMutations()
+    monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services(mutations=mutations))
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=fake-openai\nUNKNOWN_NAME=fake\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path)])
+
+    assert result.exit_code == 0
+    assert "Imported 1 credential" in result.output
+    assert "skipped 1 env var" in result.output
+    assert "Skipped" in result.output
+    assert "UNKNOWN_NAME" in result.output
+    assert mutations.calls[0][1]["service"] == "openai"
+
+
+def test_import_from_env_known_hint_imports_openrouter_and_fal(monkeypatch, tmp_path: Path) -> None:
+    mutations = StubMutations()
+    monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services(mutations=mutations))
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENROUTER_API_KEY=fake-openrouter\nFAL_KEY=fake-fal\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path)])
+
+    assert result.exit_code == 0
+    assert "Imported 2 credential" in result.output
+    calls = [call for _action, call in mutations.calls]
+    assert [(call["service"], call["credential_type"], call["alias"]) for call in calls] == [
+        ("openrouter", "api_key", "openrouter_api_key"),
+        ("fal", "api_key", "fal_key"),
+    ]
+
+
+def test_import_from_env_dry_run_does_not_build_services_or_mutate(monkeypatch, tmp_path: Path) -> None:
+    def fail_build(prompt: bool = False):
+        raise AssertionError("build_services must not be called for dry-run")
+
+    monkeypatch.setattr("hermes_vault.cli.build_services", fail_build)
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENROUTER_API_KEY=fake-openrouter\nUNKNOWN_NAME=fake\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path), "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "Would import" in result.output
+    assert "Dry run: 1 credential" in result.output
+    assert "Skipped" in result.output
+
+
+def test_import_from_env_map_override_imports_custom_name(monkeypatch, tmp_path: Path) -> None:
+    mutations = StubMutations()
+    monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services(mutations=mutations))
+    env_path = tmp_path / ".env"
+    env_path.write_text("WEIRD_SECRET=fake-custom\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        [
+            "import",
+            "--from-env",
+            str(env_path),
+            "--map",
+            "WEIRD_SECRET=custom-service:api_key",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert len(mutations.calls) == 1
+    call = mutations.calls[0][1]
+    assert call["service"] == "custom-service"
+    assert call["credential_type"] == "api_key"
+    assert call["alias"] == "weird_secret"
+
+
+def test_import_from_env_redact_source_only_imported_lines(monkeypatch, tmp_path: Path) -> None:
+    mutations = StubMutations()
+    monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services(mutations=mutations))
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=fake-openai\nUNKNOWN_NAME=fake\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path), "--redact-source"])
+
+    assert result.exit_code == 0
+    text = env_path.read_text(encoding="utf-8")
+    assert "# REDACTED by hermes-vault import: OPENAI_API_KEY=fake-openai" in text
+    assert "UNKNOWN_NAME=fake" in text
+    assert "# REDACTED by hermes-vault import: UNKNOWN_NAME" not in text
+    assert "1 skipped line" in result.output
+
+
+def test_import_from_env_dry_run_redact_source_leaves_file_unchanged(monkeypatch, tmp_path: Path) -> None:
+    def fail_build(prompt: bool = False):
+        raise AssertionError("build_services must not be called for dry-run")
+
+    monkeypatch.setattr("hermes_vault.cli.build_services", fail_build)
+    env_path = tmp_path / ".env"
+    original = "OPENAI_API_KEY=fake-openai\nUNKNOWN_NAME=fake\n"
+    env_path.write_text(original, encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path), "--dry-run", "--redact-source"])
+
+    assert result.exit_code == 0
+    assert env_path.read_text(encoding="utf-8") == original
+    assert "not redacted" in result.output
+
+
+def test_import_from_env_next_public_skipped(monkeypatch, tmp_path: Path) -> None:
+    def fail_build(prompt: bool = False):
+        raise AssertionError("build_services must not be called when every env var is skipped")
+
+    monkeypatch.setattr("hermes_vault.cli.build_services", fail_build)
+    env_path = tmp_path / ".env"
+    env_path.write_text("NEXT_PUBLIC_API_KEY=public\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path)])
+
+    assert result.exit_code == 0
+    assert "Imported 0 credential" in result.output
+    assert "public" in result.output
+
+
+def test_import_from_env_broad_secret_skipped_without_map(monkeypatch, tmp_path: Path) -> None:
+    def fail_build(prompt: bool = False):
+        raise AssertionError("build_services must not be called when every env var is skipped")
+
+    monkeypatch.setattr("hermes_vault.cli.build_services", fail_build)
+    env_path = tmp_path / ".env"
+    env_path.write_text("DATABASE_URL=postgres://fake\nAPP_PASSWORD=fake\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path)])
+
+    assert result.exit_code == 0
+    assert "Imported 0 credential" in result.output
+    assert "--map" in result.output
+
+
+def test_import_from_env_invalid_map_exits_1(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services())
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=fake\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path), "--map", "BAD"])
+
+    assert result.exit_code == 1
+    assert "Invalid --map" in result.output
+
+
+def test_import_from_env_no_importable_candidates_does_not_prompt(monkeypatch, tmp_path: Path) -> None:
+    def fail_build(prompt: bool = False):
+        raise AssertionError("build_services must not be called when there are no importable candidates")
+
+    monkeypatch.setattr("hermes_vault.cli.build_services", fail_build)
+    env_path = tmp_path / ".env"
+    env_path.write_text("UNKNOWN_NAME=fake\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path)])
+
+    assert result.exit_code == 0
+    assert "Imported 0 credential" in result.output
+    assert "UNKNOWN_NAME" in result.output
+
+
 # ── banner tests (unchanged) ──────────────────────────────────────────────
 
 

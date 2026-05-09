@@ -17,7 +17,7 @@ from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings
 from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase
-from hermes_vault.detectors import detect_matches, guess_from_env_name
+from hermes_vault.detectors import EnvImportDecision, classify_env_name, detect_matches, parse_env_map
 from hermes_vault.diff import diff_backups
 from hermes_vault.health import run_health
 from hermes_vault.models import AccessLogRecord, CredentialStatus, Decision
@@ -251,6 +251,8 @@ def import_credentials(
     from_env: Path | None = typer.Option(None, "--from-env", help="Import from a .env file (KEY=value format)."),
     from_file: Path | None = typer.Option(None, "--from-file", help="Import from a JSON file (auto-detects secrets)."),
     redact_source: bool = typer.Option(False, "--redact-source", help="Comment out imported lines in the source file after successful import."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview imports and skips without mutating the vault or source file."),
+    env_map: list[str] | None = typer.Option(None, "--map", help="Explicit mapping ENV_NAME=service:credential_type. Repeatable."),
 ) -> None:
     """Import credentials from env files or JSON.
 
@@ -258,13 +260,33 @@ def import_credentials(
 
     \b
     Examples:
-      hermes-vault import --from-env ~/.hermes/.env
-      hermes-vault import --from-file secrets.json --redact-source
+      hermes-vault import --from-env ~/.hermes/.env --dry-run
+      hermes-vault import --from-env ~/.hermes/.env --map CUSTOM_KEY=custom-service:api_key
+      hermes-vault import --from-env ~/.hermes/.env --redact-source
+      hermes-vault import --from-file secrets.json
     """
     if not from_env and not from_file:
         console.print("[red]Provide --from-env or --from-file[/red]")
         raise typer.Exit(code=1)
-    vault, _, _, mutations = build_services(prompt=True)
+    if from_env and from_file:
+        console.print("[red]Provide only one source: --from-env or --from-file[/red]")
+        raise typer.Exit(code=1)
+    if from_file and env_map:
+        console.print("[red]--map only applies to --from-env imports[/red]")
+        raise typer.Exit(code=1)
+    if from_file and dry_run:
+        console.print("[red]--dry-run is only supported for --from-env imports in this release[/red]")
+        raise typer.Exit(code=1)
+
+    overrides: dict[str, tuple[str, str]] = {}
+    for mapping in env_map or []:
+        try:
+            env_name, service, credential_type = parse_env_map(mapping)
+        except ValueError as exc:
+            console.print(f"[red]Invalid --map value: {exc}[/red]")
+            raise typer.Exit(code=1) from exc
+        overrides[env_name] = (service, credential_type)
+
     imported_names: list[str] = []
     source = from_env or from_file
     assert source is not None
@@ -273,62 +295,102 @@ def import_credentials(
     imported_lines: set[int] = set()
 
     if from_env:
+        env_entries: list[tuple[int, str, str, EnvImportDecision]] = []
+        skipped_entries: list[tuple[int, str, str]] = []
         for i, line in enumerate(lines):
             stripped = line.lstrip()
             if not stripped or stripped.startswith("#") or "=" not in line:
                 continue
             name, value = line.split("=", 1)
-            guessed = guess_from_env_name(name.strip())
-            if not guessed:
-                continue
-            service, credential_type = guessed
-            result = mutations.add_credential(
-                agent_id=OPERATOR_AGENT_ID,
-                service=service,
-                secret=value.strip().strip("'\""),
-                credential_type=credential_type,
-                alias=name.strip().lower(),
-                imported_from=str(source),
+            env_name = name.strip()
+            decision = classify_env_name(env_name, overrides)
+            if decision.action == "import" and decision.service and decision.credential_type:
+                env_entries.append((i, env_name, value.strip().strip("'\""), decision))
+            else:
+                skipped_entries.append((i, env_name, decision.reason))
+
+        if dry_run:
+            for line_no, env_name, _value, decision in env_entries:
+                console.print(
+                    f"[cyan]Would import[/cyan] line {line_no + 1}: {env_name} -> "
+                    f"{decision.service}:{decision.credential_type} ({decision.source})"
+                )
+            console.print(
+                f"[green]Dry run: {len(env_entries)} credential(s) would be imported; "
+                f"{len(skipped_entries)} env var(s) skipped.[/green]"
             )
-            if not result.allowed:
-                console.print(f"[red]Denied importing '{name.strip()}': {result.reason}[/red]")
-                raise typer.Exit(code=1)
-            imported_names.append(name.strip())
-            imported_lines.add(i)
-    else:
-        parsed = json.loads(original_content)
-        for key, value in parsed.items():
-            if not isinstance(value, str):
-                continue
-            matches = detect_matches(value)
-            if not matches:
-                continue
-            detector, secret = matches[0]
-            result = mutations.add_credential(
-                agent_id=OPERATOR_AGENT_ID,
-                service=detector.service,
-                secret=secret,
-                credential_type=detector.credential_type,
-                alias=key.lower(),
-                imported_from=str(source),
+        elif env_entries:
+            _, _, _, mutations = build_services(prompt=True)
+            for i, name, secret, decision in env_entries:
+                result = mutations.add_credential(
+                    agent_id=OPERATOR_AGENT_ID,
+                    service=decision.service,
+                    secret=secret,
+                    credential_type=decision.credential_type,
+                    alias=name.lower(),
+                    imported_from=str(source),
+                )
+                if not result.allowed:
+                    console.print(f"[red]Denied importing '{name}': {result.reason}[/red]")
+                    raise typer.Exit(code=1)
+                imported_names.append(name)
+                imported_lines.add(i)
+            console.print(
+                f"[green]Imported {len(imported_names)} credential(s); "
+                f"skipped {len(skipped_entries)} env var(s).[/green]"
             )
-            if not result.allowed:
-                console.print(f"[red]Denied importing '{key}': {result.reason}[/red]")
-                raise typer.Exit(code=1)
-            imported_names.append(key)
+        else:
+            console.print(f"[yellow]Imported 0 credential(s); skipped {len(skipped_entries)} env var(s).[/yellow]")
+
+        for line_no, env_name, reason in skipped_entries:
+            console.print(f"[yellow]Skipped[/yellow] line {line_no + 1}: {env_name} -- {reason}")
+
+        if redact_source and dry_run:
+            console.print("[yellow]Dry run: source file was not redacted.[/yellow]")
+        elif redact_source and imported_lines:
+            redacted_lines = []
+            for i, line in enumerate(lines):
+                if i in imported_lines:
+                    redacted_lines.append(f"# REDACTED by hermes-vault import: {line}")
+                else:
+                    redacted_lines.append(line)
+            source.write_text("\n".join(redacted_lines) + "\n", encoding="utf-8")
+            source.chmod(0o600)
+            console.print(
+                f"[green]Source file redacted: {source}[/green] "
+                f"({len(imported_lines)} imported line(s) commented out; "
+                f"{len(skipped_entries)} skipped line(s) left unchanged)"
+            )
+        elif redact_source:
+            console.print(f"[yellow]No imported env lines to redact; {len(skipped_entries)} skipped line(s) left unchanged.[/yellow]")
+        elif not dry_run:
+            console.print("Review plaintext source removal separately.")
+        return
+
+    _, _, _, mutations = build_services(prompt=True)
+    parsed = json.loads(original_content)
+    for key, value in parsed.items():
+        if not isinstance(value, str):
+            continue
+        matches = detect_matches(value)
+        if not matches:
+            continue
+        detector, secret = matches[0]
+        result = mutations.add_credential(
+            agent_id=OPERATOR_AGENT_ID,
+            service=detector.service,
+            secret=secret,
+            credential_type=detector.credential_type,
+            alias=key.lower(),
+            imported_from=str(source),
+        )
+        if not result.allowed:
+            console.print(f"[red]Denied importing '{key}': {result.reason}[/red]")
+            raise typer.Exit(code=1)
+        imported_names.append(key)
 
     console.print(f"[green]Imported {len(imported_names)} credential(s).[/green]")
-    if redact_source and imported_lines and from_env:
-        redacted_lines = []
-        for i, line in enumerate(lines):
-            if i in imported_lines:
-                redacted_lines.append(f"# REDACTED by hermes-vault import: {line}")
-            else:
-                redacted_lines.append(line)
-        source.write_text("\n".join(redacted_lines) + "\n", encoding="utf-8")
-        source.chmod(0o600)
-        console.print(f"[green]Source file redacted: {source}[/green] ({len(imported_lines)} line(s) commented out)")
-    elif redact_source and from_file:
+    if redact_source:
         console.print("[yellow]--redact-source only applies to --from-env files.[/yellow]")
     else:
         console.print("Review plaintext source removal separately.")

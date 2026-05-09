@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-vault"
-version = "0.7.0"
+version = "0.7.1"
 description = "Hermes-native local-first credential broker, scanner, and encrypted vault."
 readme = "README.md"
 requires-python = ">=3.11"

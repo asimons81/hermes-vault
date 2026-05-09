@@ -57,12 +57,32 @@ hermes-vault update
 export HERMES_VAULT_PASSPHRASE='choose-a-strong-local-passphrase'
 hermes-vault --help
 hermes-vault scan --path ~/.hermes
+hermes-vault import --from-env ~/.hermes/.env --dry-run
 hermes-vault import --from-env ~/.hermes/.env
 hermes-vault verify --all
 hermes-vault generate-skill --all-agents
 ```
 
 Default runtime state lives in `~/.hermes/hermes-vault-data`.
+
+## Importing `.env` Files
+
+Preview first:
+
+```bash
+hermes-vault import --from-env .env --dry-run
+```
+
+The env importer reports both importable names and skipped names. Known hints and safe suffixes are imported automatically: `*_API_KEY`, `*_TOKEN`, `*_AUTH_TOKEN`, and `*_ACCESS_TOKEN`. Public config such as `NEXT_PUBLIC_*`, broad DB URLs, passwords, JWT/session/app secrets, and unknown names stay skipped unless you explicitly map them.
+
+Use repeatable `--map` overrides when a skipped key is intentional:
+
+```bash
+hermes-vault import --from-env .env --map CUSTOM_VENDOR_TOKEN=custom-vendor:personal_access_token
+hermes-vault import --from-env .env --map DATABASE_URL=postgres:connection_url
+```
+
+When `--redact-source` is used, only successfully imported env lines are commented out. Skipped lines remain unchanged and are counted in the summary. `--dry-run --redact-source` never changes the source file.
 
 ## MCP Server
 
@@ -124,7 +144,9 @@ Hermes Vault can broker OAuth logins so agents never handle raw passwords. `oaut
 ```bash
 hermes-vault scan
 hermes-vault update --check
+hermes-vault import --from-env ~/.hermes/.env --dry-run
 hermes-vault import --from-env ~/.hermes/.env
+hermes-vault import --from-env ~/.hermes/.env --map CUSTOM_VENDOR_TOKEN=custom-vendor:personal_access_token
 hermes-vault add openai --alias primary
 hermes-vault list
 hermes-vault verify openai

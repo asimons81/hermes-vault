@@ -12,10 +12,30 @@
 
 ```bash
 hermes-vault scan --path ~/.hermes
+hermes-vault import --from-env ~/.hermes/.env --dry-run
 hermes-vault import --from-env ~/.hermes/.env
 hermes-vault verify --all
 hermes-vault generate-skill --all-agents
 ```
+
+### Env import preview and mapping
+
+Always preview large `.env` imports before mutating the vault:
+
+```bash
+hermes-vault import --from-env ~/.hermes/.env --dry-run
+```
+
+The preview lists importable env vars and skipped env vars without opening or writing the vault. Known service hints plus safe suffixes (`*_API_KEY`, `*_TOKEN`, `*_AUTH_TOKEN`, `*_ACCESS_TOKEN`) are imported automatically. Unknown names are skipped with a reason and a `--map` hint.
+
+Use repeatable maps for intentional custom names or conservative skips:
+
+```bash
+hermes-vault import --from-env ~/.hermes/.env --map CUSTOM_VENDOR_TOKEN=custom-vendor:personal_access_token
+hermes-vault import --from-env ~/.hermes/.env --map DATABASE_URL=postgres:connection_url
+```
+
+`NEXT_PUBLIC_*` public config stays skipped. Broad DB URLs, passwords, app secrets, JWT secrets, and session secrets also stay skipped unless explicitly mapped. With `--redact-source`, Hermes Vault comments only successfully imported lines and reports how many skipped lines were left unchanged. `--dry-run --redact-source` does not modify the source file.
 
 ## Maintenance
 
