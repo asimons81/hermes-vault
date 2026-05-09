@@ -609,10 +609,37 @@ def test_import_from_env_reports_skipped_unknowns(monkeypatch, tmp_path: Path) -
 
     assert result.exit_code == 0
     assert "Imported 1 credential" in result.output
-    assert "skipped 1 env var" in result.output
+    assert "skipped 1 env" in result.output
     assert "Skipped" in result.output
     assert "UNKNOWN_NAME" in result.output
     assert mutations.calls[0][1]["service"] == "openai"
+
+
+def test_import_from_env_is_idempotent_and_updates_existing(monkeypatch, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    env_path = tmp_path / ".env"
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(home))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+    env_path.write_text("OPENAI_API_KEY=sk-aaaaaaaaaaaaaaaaaaaa\n", encoding="utf-8")
+
+    runner = CliRunner()
+    first = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path)])
+    assert first.exit_code == 0
+    assert "Imported 1 credential" in first.output
+
+    second = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path)])
+    assert second.exit_code == 0
+    assert "Already imported" in second.output
+
+    env_path.write_text("OPENAI_API_KEY=sk-bbbbbbbbbbbbbbbbbbbb\n", encoding="utf-8")
+    third = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path)])
+    assert third.exit_code == 0
+    assert "Updated" in third.output
+
+    vault = Vault(home / "vault.db", home / "master_key_salt.bin", "test-passphrase")
+    secret = vault.get_secret("openai")
+    assert secret is not None
+    assert secret.secret == "sk-bbbbbbbbbbbbbbbbbbbb"
 
 
 def test_import_from_env_known_hint_imports_openrouter_and_fal(monkeypatch, tmp_path: Path) -> None:

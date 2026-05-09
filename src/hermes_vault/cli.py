@@ -320,23 +320,58 @@ def import_credentials(
                 f"{len(skipped_entries)} env var(s) skipped.[/green]"
             )
         elif env_entries:
-            _, _, _, mutations = build_services(prompt=True)
+            vault, _, _, mutations = build_services(prompt=True)
+            redacted_lines: set[int] = set()
+            updated_entries: list[str] = []
             for i, name, secret, decision in env_entries:
+                alias = name.lower()
+                existing_secret = None
+                try:
+                    existing_record = vault.resolve_credential(decision.service, alias=alias)
+                    current_secret = vault.get_secret(existing_record.id)
+                    if current_secret is not None:
+                        existing_secret = current_secret.secret
+                except KeyError:
+                    existing_record = None
+                except Exception:
+                    existing_record = None
+
+                if existing_record is not None and existing_secret == secret:
+                    console.print(
+                        f"[cyan]Already imported[/cyan] line {i + 1}: {name} -> "
+                        f"{decision.service}:{decision.credential_type} (unchanged)"
+                    )
+                    redacted_lines.add(i)
+                    continue
+
                 result = mutations.add_credential(
                     agent_id=OPERATOR_AGENT_ID,
                     service=decision.service,
                     secret=secret,
                     credential_type=decision.credential_type,
-                    alias=name.lower(),
+                    alias=alias,
                     imported_from=str(source),
+                    replace_existing=existing_record is not None,
                 )
                 if not result.allowed:
                     console.print(f"[red]Denied importing '{name}': {result.reason}[/red]")
                     raise typer.Exit(code=1)
                 imported_names.append(name)
-                imported_lines.add(i)
+                if existing_record is not None:
+                    updated_entries.append(name)
+                    console.print(
+                        f"[green]Updated[/green] line {i + 1}: {name} -> "
+                        f"{decision.service}:{decision.credential_type} ({decision.source})"
+                    )
+                else:
+                    console.print(
+                        f"[green]Imported[/green] line {i + 1}: {name} -> "
+                        f"{decision.service}:{decision.credential_type} ({decision.source})"
+                    )
+                redacted_lines.add(i)
             console.print(
                 f"[green]Imported {len(imported_names)} credential(s); "
+                f"updated {len(updated_entries)} existing credential(s); "
                 f"skipped {len(skipped_entries)} env var(s).[/green]"
             )
         else:
@@ -347,28 +382,35 @@ def import_credentials(
 
         if redact_source and dry_run:
             console.print("[yellow]Dry run: source file was not redacted.[/yellow]")
-        elif redact_source and imported_lines:
-            redacted_lines = []
-            for i, line in enumerate(lines):
-                if i in imported_lines:
-                    redacted_lines.append(f"# REDACTED by hermes-vault import: {line}")
-                else:
-                    redacted_lines.append(line)
-            source.write_text("\n".join(redacted_lines) + "\n", encoding="utf-8")
-            source.chmod(0o600)
-            console.print(
-                f"[green]Source file redacted: {source}[/green] "
-                f"({len(imported_lines)} imported line(s) commented out; "
-                f"{len(skipped_entries)} skipped line(s) left unchanged)"
-            )
+        elif redact_source and from_env and not dry_run:
+            if env_entries and ('redacted_lines' in locals()) and redacted_lines:
+                redacted_source_lines = []
+                for i, line in enumerate(lines):
+                    if i in redacted_lines:
+                        redacted_source_lines.append(f"# REDACTED by hermes-vault import: {line}")
+                    else:
+                        redacted_source_lines.append(line)
+                source.write_text("\n".join(redacted_source_lines) + "\n", encoding="utf-8")
+                source.chmod(0o600)
+                console.print(
+                    f"[green]Source file redacted: {source}[/green] "
+                    f"({len(redacted_lines)} imported line(s) commented out; "
+                    f"{len(skipped_entries)} skipped line(s) left unchanged)"
+                )
+            elif redact_source:
+                console.print(
+                    f"[yellow]No imported env lines to redact; {len(skipped_entries)} skipped line(s) left unchanged.[/yellow]"
+                )
         elif redact_source:
-            console.print(f"[yellow]No imported env lines to redact; {len(skipped_entries)} skipped line(s) left unchanged.[/yellow]")
+            console.print(f"[yellow]--redact-source only applies to --from-env files.[/yellow]")
         elif not dry_run:
             console.print("Review plaintext source removal separately.")
         return
 
-    _, _, _, mutations = build_services(prompt=True)
+    vault, _, _, mutations = build_services(prompt=True)
     parsed = json.loads(original_content)
+    imported_count = 0
+    updated_count = 0
     for key, value in parsed.items():
         if not isinstance(value, str):
             continue
@@ -376,20 +418,51 @@ def import_credentials(
         if not matches:
             continue
         detector, secret = matches[0]
+        alias = key.lower()
+        existing_secret = None
+        try:
+            existing_record = vault.resolve_credential(detector.service, alias=alias)
+            current_secret = vault.get_secret(existing_record.id)
+            if current_secret is not None:
+                existing_secret = current_secret.secret
+        except KeyError:
+            existing_record = None
+        except Exception:
+            existing_record = None
+
+        if existing_record is not None and existing_secret == secret:
+            console.print(
+                f"[cyan]Already imported[/cyan] key '{key}' -> "
+                f"{detector.service}:{detector.credential_type} (unchanged)"
+            )
+            continue
+
         result = mutations.add_credential(
             agent_id=OPERATOR_AGENT_ID,
             service=detector.service,
             secret=secret,
             credential_type=detector.credential_type,
-            alias=key.lower(),
+            alias=alias,
             imported_from=str(source),
+            replace_existing=existing_record is not None,
         )
         if not result.allowed:
             console.print(f"[red]Denied importing '{key}': {result.reason}[/red]")
             raise typer.Exit(code=1)
-        imported_names.append(key)
+        if existing_record is not None:
+            updated_count += 1
+            console.print(
+                f"[green]Updated[/green] key '{key}' -> {detector.service}:{detector.credential_type}"
+            )
+        else:
+            imported_count += 1
+            console.print(
+                f"[green]Imported[/green] key '{key}' -> {detector.service}:{detector.credential_type}"
+            )
 
-    console.print(f"[green]Imported {len(imported_names)} credential(s).[/green]")
+    console.print(
+        f"[green]Imported {imported_count} credential(s); updated {updated_count} existing credential(s).[/green]"
+    )
     if redact_source:
         console.print("[yellow]--redact-source only applies to --from-env files.[/yellow]")
     else:
