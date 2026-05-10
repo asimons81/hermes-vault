@@ -4,7 +4,7 @@
 
 1. Install the package.
 2. Set `HERMES_VAULT_PASSPHRASE`.
-3. Run `hermes-vault list` once to initialize the runtime layout and default policy.
+3. Run `hermes-vault list` once to initialize the vault layout and default policy.
 4. Edit `~/.hermes/hermes-vault-data/policy.yaml` for the real agent allowlists.
 5. Back up both `vault.db` and `master_key_salt.bin` together. Losing the salt makes the vault unreadable.
 
@@ -26,9 +26,9 @@ Always preview large `.env` imports before mutating the vault:
 hermes-vault import --from-env ~/.hermes/.env --dry-run
 ```
 
-The preview lists importable env vars and skipped env vars without opening or writing the vault. Known service hints plus safe suffixes (`*_API_KEY`, `*_TOKEN`, `*_AUTH_TOKEN`, `*_ACCESS_TOKEN`) are imported automatically. Unknown names are skipped with a reason and a `--map` hint.
+The preview lists importable and skipped env vars without opening or writing the vault. Known service hints and safe suffixes (`*_API_KEY`, `*_TOKEN`, `*_AUTH_TOKEN`, `*_ACCESS_TOKEN`) are imported automatically. Unknown names are skipped with a reason and a `--map` hint.
 
-Use repeatable maps for intentional custom names or conservative skips:
+Use `--map` for intentional custom names:
 
 ```bash
 hermes-vault import --from-env ~/.hermes/.env --map CUSTOM_VENDOR_TOKEN=custom-vendor:personal_access_token
@@ -82,33 +82,33 @@ What happens next is the important bit, and this is where the setup stops being 
 - `policy.yaml` decides which agent can access which services
 - the vault runtime home holds the encrypted database and generated skill artifacts
 - the skill tells the agent how to behave around credentials
-- broker calls hand out ephemeral env vars instead of spraying raw secrets around
+- broker calls hand out ephemeral env vars instead of raw secrets
 
-So no, this isn't some vague `config.yml` hand wave. It's a concrete runtime path, real policy, and a credential broker doing the work.
+This is the concrete runtime path, not a vague `config.yml` hand wave.
 
 ## Why this is better
 
 This setup gives you a few hard wins:
 
-- **Fewer plaintext copies**
-  - Secrets don't sit around in random files forever
-  - Imported values get centralized into one vault
+- **Less plaintext sprawl**
+  - Secrets stop living in random files
+  - Imported values land in one vault
 
-- **Tighter access**
-  - An agent can be allowed `github` without also getting `google`
-  - Access is scoped by service and policy, not vibes
+- **Scoped access**
+  - An agent can get `github` without also getting `google`
+  - Access is service-bound, not vibes-bound
 
 - **Short-lived exposure**
   - Agents get ephemeral env vars instead of raw secret dumps
-  - TTLs keep the blast radius smaller
+  - TTLs keep the blast radius small
 
-- **Cleaner rotation**
+- **Easy rotation**
   - Update one vault entry instead of hunting down stale copies
-  - Revoke a credential once, stop it everywhere
+  - Revoke once, stop it everywhere
 
-- **Less auth bullshit**
+- **Fewer auth headaches**
   - The skill tells the agent to verify before claiming re-auth
-  - No more guessing because some stale `.env` copy got left behind
+  - No guessing because some stale `.env` copy got left behind
 
 ## Concrete examples
 
@@ -131,13 +131,13 @@ The point isn't “more files.” The point is one canonical secret source, one 
 
 ## Multiple Profiles
 
-If you run more than one kind of agent, don't jam everything into a single catch-all profile. Split them by job:
+If you run multiple agents, don't jam everything into one catch-all profile. Split by job:
 
 - **default**, the fallback profile, keep it boring and low-privilege
 - **coder**, the profile that can build, test, and hit the services needed to ship code
 - **auditor**, the profile that can inspect, verify, and scan, but shouldn't need broad mutation rights
 
-These aren't special magic modes. They're just separate agent IDs with separate policy entries and separate generated skill contracts. That matters because it keeps permissions obvious instead of turning into one giant permission blob.
+These aren't special modes. They're separate agent IDs with separate policy entries and generated skill contracts. That keeps permission boundaries obvious.
 
 A simple shape looks like this:
 
@@ -177,30 +177,30 @@ agents:
     raw_secret_access: false
 ```
 
-Use the narrowest profile that still gets the job done. If an auditor profile can read enough to verify a thing, don't hand it mutation rights just because it's convenient. If the coder profile only needs `github` and `openai`, don't give it every other service in the vault like you're stocking a kitchen drawer with knives.
+Use the narrowest profile that still gets the job done. If an auditor can verify the thing, don't hand it mutation rights just because it's convenient. If the coder only needs `github` and `openai`, don't give it every other service in the vault.
 
 ## MCP Server Option
 
-The MCP server is useful, but it shouldn't be the default mental model for everything.
+MCP is useful, but it isn't the default path for everything.
 
 ### Use MCP when
 
 - You want Hermes to request credentials from inside the agent loop
-- You want tool discovery and credential access to feel native to the agent
-- You want the agent to use the same policy gate without shell glue around every call
+- You want tool discovery and credential access to feel native
+- You want the same policy gate without shell glue around every call
 
 ### Stick with the CLI when
 
 - You're doing setup, imports, backups, recovery, or one-off admin work
-- You want the simplest possible path with the fewest moving parts
-- You don't need Hermes itself to broker the credential request in real time
+- You want the fewest moving parts
+- You don't need Hermes to broker the request in real time
 
 ### Pros
 
 - **Tighter agent integration**
-  - Hermes can call the vault directly instead of bouncing through ad hoc shell steps
+  - Hermes can call the vault directly instead of bouncing through shell steps
 - **Cleaner ergonomics**
-  - Tool discovery is automatic, and the agent can ask for exactly what it needs
+  - Tool discovery is automatic, and the agent asks for exactly what it needs
 - **Good for bounded automation**
   - If the work lives inside Hermes, MCP is usually the straightest path
 
@@ -209,11 +209,11 @@ The MCP server is useful, but it shouldn't be the default mental model for every
 - **More moving parts**
   - You now care about `~/.hermes/config.yaml`, MCP startup, and connection state
 - **`agent_id` is not strong auth by itself**
-  - It only becomes a meaningful guardrail when the server is bound to an allowed-agent set
+  - It only becomes meaningful when the server is bound to an allowed-agent set
 - **Bigger debug surface**
-  - If the server won't start or the connection drops, the agent loses the path entirely
+  - If the server won't start or the connection drops, the agent loses the path
 - **Overkill for basic admin work**
-  - If you're just importing a `.env` or doing a restore drill, the CLI is simpler and easier to reason about
+  - If you're importing a `.env` or doing a restore drill, the CLI is simpler
 
 Bottom line: use MCP when you want Hermes to operate as an in-loop client of the vault. Use the CLI when you want the boring, explicit path that is easier to audit and harder to screw up.
 
@@ -294,7 +294,7 @@ Use `--strict` in CI or pre-deploy checks when you want the command to fail on h
 
 ## Agent Capabilities
 
-Some actions are not scoped to a single service.  These are controlled by the
+Some actions aren't service-scoped. They are controlled by the
 `capabilities` field on each agent in `policy.yaml`.
 
 | Capability | Controls |
@@ -304,13 +304,10 @@ Some actions are not scoped to a single service.  These are controlled by the
 | `export_backup` | `backup` — export an encrypted backup of the vault |
 | `import_credentials` | `import` — add credentials from env files or JSON |
 
-**Backward compatibility:** if an agent has no `capabilities` field (or an
-empty list), all capabilities are implicitly granted.  This preserves existing
-policies without modification.
+**Backward compatibility:** If an agent has no `capabilities` field, all capabilities are implicitly granted for backward compatibility.
 
 When `capabilities` is explicitly set, only the listed capabilities are allowed.
-For example, an agent with `capabilities: [list_credentials]` can enumerate
-credentials but cannot run scans or exports.
+For example, an agent with `capabilities: [list_credentials]` can enumerate credentials but cannot run scans or exports.
 
 ### Example — restrict capabilities
 
@@ -328,7 +325,7 @@ plaintext secrets, but cannot export backups or import new credentials.
 
 ## MCP Setup
 
-Hermes Vault can expose the broker through the Model Context Protocol (MCP) so that compatible hosts (Claude Desktop, Cursor, etc.) can request credentials programmatically.
+Hermes Vault can expose the broker through the Model Context Protocol (MCP) so that compatible hosts like Claude Desktop and Cursor can request credentials programmatically.
 
 ### Running the MCP server
 
@@ -703,7 +700,7 @@ The refresh engine:
 
 ### MCP OAuth tools
 
-When Hermes Vault is registered as an MCP server inside Hermes Agent, the `oauth_login` and `oauth_refresh` tools are available to agents:
+When Hermes Vault is registered as an MCP server inside Hermes Agent, agents can use `oauth_login` and `oauth_refresh`:
 
 - `oauth_login` returns an authorization URL and starts a background callback thread. The agent opens the URL, completes consent, and tokens are stored automatically.
 - `oauth_refresh` triggers the same refresh engine described above, returning the result to the agent.
