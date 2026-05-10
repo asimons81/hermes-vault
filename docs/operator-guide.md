@@ -129,6 +129,94 @@ This setup gives you a few hard wins:
 
 The point isn't “more files.” The point is one canonical secret source, one policy file, and one contract that tells the agent how to use them safely.
 
+## Multiple Profiles
+
+If you run more than one kind of agent, don't jam everything into a single catch-all profile. Split them by job:
+
+- **default**, the fallback profile, keep it boring and low-privilege
+- **coder**, the profile that can build, test, and hit the services needed to ship code
+- **auditor**, the profile that can inspect, verify, and scan, but shouldn't need broad mutation rights
+
+These aren't special magic modes. They're just separate agent IDs with separate policy entries and separate generated skill contracts. That matters because it keeps permissions obvious instead of turning into one giant permission blob.
+
+A simple shape looks like this:
+
+```yaml
+agents:
+  default:
+    services:
+      github:
+        actions: [metadata, verify]
+    capabilities: [list_credentials]
+    max_ttl_seconds: 300
+    ephemeral_env_only: true
+    raw_secret_access: false
+
+  coder:
+    services:
+      github:
+        actions: [metadata, get_env, verify]
+      openai:
+        actions: [get_env]
+      google:
+        actions: [get_env]
+    capabilities: [list_credentials, import_credentials]
+    max_ttl_seconds: 900
+    ephemeral_env_only: true
+    raw_secret_access: false
+
+  auditor:
+    services:
+      github:
+        actions: [metadata, verify]
+      google:
+        actions: [metadata, verify]
+    capabilities: [list_credentials, scan_secrets]
+    max_ttl_seconds: 300
+    ephemeral_env_only: true
+    raw_secret_access: false
+```
+
+Use the narrowest profile that still gets the job done. If an auditor profile can read enough to verify a thing, don't hand it mutation rights just because it's convenient. If the coder profile only needs `github` and `openai`, don't give it every other service in the vault like you're stocking a kitchen drawer with knives.
+
+## MCP Server Option
+
+The MCP server is useful, but it shouldn't be the default mental model for everything.
+
+### Use MCP when
+
+- You want Hermes to request credentials from inside the agent loop
+- You want tool discovery and credential access to feel native to the agent
+- You want the agent to use the same policy gate without shell glue around every call
+
+### Stick with the CLI when
+
+- You're doing setup, imports, backups, recovery, or one-off admin work
+- You want the simplest possible path with the fewest moving parts
+- You don't need Hermes itself to broker the credential request in real time
+
+### Pros
+
+- **Tighter agent integration**
+  - Hermes can call the vault directly instead of bouncing through ad hoc shell steps
+- **Cleaner ergonomics**
+  - Tool discovery is automatic, and the agent can ask for exactly what it needs
+- **Good for bounded automation**
+  - If the work lives inside Hermes, MCP is usually the straightest path
+
+### Cons
+
+- **More moving parts**
+  - You now care about `~/.hermes/config.yaml`, MCP startup, and connection state
+- **`agent_id` is not strong auth by itself**
+  - It only becomes a meaningful guardrail when the server is bound to an allowed-agent set
+- **Bigger debug surface**
+  - If the server won't start or the connection drops, the agent loses the path entirely
+- **Overkill for basic admin work**
+  - If you're just importing a `.env` or doing a restore drill, the CLI is simpler and easier to reason about
+
+Bottom line: use MCP when you want Hermes to operate as an in-loop client of the vault. Use the CLI when you want the boring, explicit path that is easier to audit and harder to screw up.
+
 ## Maintenance
 
 `hermes-vault maintain` is the v0.7.0 scheduled run for token refresh and vault hygiene. It combines proactive OAuth refresh, health checks, stale-verification checks, and backup-age warnings in one report.
