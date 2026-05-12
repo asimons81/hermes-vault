@@ -55,16 +55,20 @@ hermes-vault update
 ## Quick Start
 
 ```bash
+export HERMES_VAULT_HOME=~/.hermes/hermes-vault-data
 export HERMES_VAULT_PASSPHRASE='choose-a-strong-local-passphrase'
 hermes-vault --help
+hermes-vault list
 hermes-vault scan --path ~/.hermes
 hermes-vault import --from-env ~/.hermes/.env --dry-run
 hermes-vault import --from-env ~/.hermes/.env
 hermes-vault verify --all
+hermes-vault policy doctor
 hermes-vault generate-skill --all-agents
+hermes-vault dashboard --no-open
 ```
 
-Default runtime state lives in `~/.hermes/hermes-vault-data`.
+Default runtime state lives in `~/.hermes/hermes-vault-data`. The first `list`, `scan`, or import command initializes the runtime layout and default policy if they don't exist yet. Preview imports and recovery operations before mutating the vault.
 
 ## Importing `.env` Files
 
@@ -85,18 +89,37 @@ hermes-vault import --from-env .env --map DATABASE_URL=postgres:connection_url
 
 When `--redact-source` is used, only successfully imported env lines are commented out. Skipped lines remain unchanged and are counted in the summary. `--dry-run --redact-source` never changes the source file.
 
-## Dashboard
+## Hermes Vault Console
 
-Start the local Hermes Vault Console:
+Hermes Vault Console is the v0.8.0 local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, recovery posture, and safe operations without turning the browser into a secret viewer.
+
+Launch it from the same machine that owns the vault:
 
 ```bash
 hermes-vault dashboard
 hermes-vault dashboard --no-open
+hermes-vault dashboard --port 8765
+hermes-vault dashboard --ttl-seconds 3600
 ```
 
-The dashboard binds to `127.0.0.1` and prints a random tokenized URL for the current process. It shows vault health, credential inventory, policy findings, audit activity, MCP binding status, and recovery posture.
+Use `--no-open` for headless or remote terminal sessions, then open the printed URL from a local browser that can reach `127.0.0.1` on that machine.
 
-Dashboard actions are intentionally narrow: run health and policy doctor, verify credentials, refresh OAuth tokens, run maintenance, verify backups, and run restore dry-runs. It does not reveal raw secrets, expose encrypted payloads, edit credentials or policy, run destructive restore, sync to cloud, or bind remotely.
+The console runs locally on `127.0.0.1` with token-guarded access. The launch command prints a process-local tokenized URL, and API calls need that token until the TTL expires or the process stops. The browser UI is served from packaged static assets under `hermes_vault/dashboard_static/`; packaged installs need those assets present in the wheel or source distribution. API responses redact raw secret and token material, so browser clients receive metadata and bounded action results rather than credential payloads. Keep treating the browser session as local operator access, not as a remote admin surface.
+
+Dashboard views include Health, Credential Inventory, Policy Findings, Audit Activity, MCP Binding Status, Recovery Posture, and Operations Panel. Together they answer the questions an agent operator needs before handing credentials to autonomous systems: is the vault healthy, are credentials stale or invalid, is policy least-privilege, is MCP bound to the expected agents, can backups be verified, and what would maintenance do next?
+
+Dashboard actions stay inside a conservative safety boundary. The console can run health checks, policy doctor, credential verification, OAuth refresh dry-run, maintenance dry-run, backup verification, and restore dry-runs. Live token refresh, live maintenance mutation, credential editing, policy editing, destructive restore, cloud sync, raw encrypted payload display, and remote binding stay out of the console.
+
+![Hermes Vault Console overview](docs/assets/v0.8.0-dashboard/dashboard-overview.png)
+
+Screenshot set captured with a temporary demo vault and fake/demo credentials only:
+
+- [Health view](docs/assets/v0.8.0-dashboard/dashboard-health.png)
+- [Credential Inventory view](docs/assets/v0.8.0-dashboard/dashboard-credential-inventory.png)
+- [Audit Activity view](docs/assets/v0.8.0-dashboard/dashboard-audit-activity.png)
+- [MCP Binding Status view](docs/assets/v0.8.0-dashboard/dashboard-mcp-status.png)
+- [Recovery Posture view](docs/assets/v0.8.0-dashboard/dashboard-recovery-posture.png)
+- [Operations Panel view](docs/assets/v0.8.0-dashboard/dashboard-operations.png)
 
 ## MCP Server
 
@@ -147,11 +170,11 @@ The same `policy.yaml` that gates CLI access also gates MCP access. The bound-ag
 | `oauth_login` | Initiate PKCE OAuth login (returns auth URL) | `capability:add_credential` |
 | `oauth_refresh` | Refresh an OAuth access token using stored refresh token | `action:rotate` |
 
-Raw secrets are **never** transmitted over MCP. The default access pattern is `get_ephemeral_env`.
+MCP access is brokered through policy-gated tools. Prefer `get_ephemeral_env` for TTL-bounded environment materialization instead of direct raw-secret handling.
 
 ### OAuth via MCP
 
-Hermes Vault can broker OAuth logins so agents never handle raw passwords. `oauth_login` returns an authorization URL and spins up a callback server -- open the URL in a browser, and tokens are stored automatically. `oauth_refresh` renews tokens proactively before expiry. See [docs/mcp-server.md](docs/mcp-server.md) for full tool schemas.
+Hermes Vault can broker OAuth logins so agents avoid raw-password handling. `oauth_login` returns an authorization URL and spins up a callback server -- open the URL in a browser, and tokens are stored automatically. `oauth_refresh` renews tokens proactively before expiry. See [docs/mcp-server.md](docs/mcp-server.md) for full tool schemas.
 
 ## Common Commands
 
@@ -194,14 +217,14 @@ hermes-vault oauth providers
 
 ## What's New in 0.8.0 - Hermes Vault Console
 
-### Local dashboard
-`hermes-vault dashboard` serves the Hermes Vault Console from packaged assets on `127.0.0.1` with a random launch token. It gives operators one local view for health, inventory, policy findings, audit activity, MCP binding, operations, and recovery posture.
+### Local operator console
+`hermes-vault dashboard` serves Hermes Vault Console from packaged assets on `127.0.0.1` with token-guarded access. It adds a local browser surface for Health, Credential Inventory, Policy Findings, Audit Activity, MCP Binding Status, Recovery Posture, and Operations Panel. The wheel and sdist need the `hermes_vault/dashboard_static/` package data for installed dashboard launches.
 
 ### Safe action boundary
-The console only calls existing safe service-layer workflows: health, policy doctor, verification, OAuth refresh, maintenance, backup verification, and restore dry-run. Raw secret display, encrypted payload display, credential or policy editing, destructive restore, cloud sync, and remote binding stay out of the dashboard.
+The console uses existing service-layer workflows for visibility and guarded operator actions: health, policy doctor, credential verification, OAuth refresh dry-run, maintenance dry-run, backup verification, and restore dry-run. Live OAuth refresh and live maintenance stay in the CLI. Raw secret display, raw token display, encrypted payload display, credential or policy editing, destructive restore, cloud sync, and remote binding stay out of the dashboard.
 
-### Brand and visual QA
-The release includes bundled brand assets for the console experience. Before release, visual QA should check desktop and mobile widths, the first-run vault-door intro, asset loading, text overflow, and control overlap.
+### Redaction and README screenshots
+Dashboard responses serialize credential metadata and bounded action output, not raw secret/token material or encrypted payloads. The release documentation includes demo screenshots under `docs/assets/v0.8.0-dashboard/`, captured from a temporary demo vault with fake/demo credentials only.
 
 ## What's New in 0.7.0 - Operational Autonomy
 
@@ -223,7 +246,7 @@ v0.7.0 adds `hermes-vault backup-verify --input <backup-file>` and a non-mutatin
 ### Systemd helper output
 `hermes-vault maintain --print-systemd` emits a safe service/timer example for recurring maintenance without forcing the CLI to install units automatically.
 
-## What's New in 0.6.0 — OAuth PKCE and Token Auto-Refresh
+## What's New in 0.6.0 - OAuth PKCE and Token Auto-Refresh
 
 ### OAuth PKCE login
 `hermes-vault oauth login <provider>` initiates a browser-based PKCE login flow. Tokens are stored in the vault automatically. Supports `--no-browser`, custom `--scope`, and `--alias`. Built-in providers: `google`, `github`, `openai`. Custom providers can be added via YAML.
@@ -238,9 +261,9 @@ v0.7.0 adds `hermes-vault backup-verify --input <backup-file>` and a non-mutatin
 OAuth providers are configured in `~/.hermes/hermes-vault-data/oauth-providers.yaml`. The file seeds itself with baked-in defaults on first use. Add custom providers without code changes.
 
 ### Security invariants preserved
-No raw tokens in logs. No browser state leaked. CSRF-protected via timing-safe state comparison. Refresh tokens are stored separately from access tokens. Atomic vault updates via SQLite transactions.
+The flow avoids raw token logging, keeps browser state local to the login process, uses timing-safe CSRF state comparison, stores refresh tokens separately from access tokens, and updates vault records through SQLite transactions.
 
-## What's New in 0.5.0 — Health, Governance, and Key Rotation
+## What's New in 0.5.0 - Health, Governance, and Key Rotation
 
 ### Vault health command
 `hermes-vault health` runs a read-only check across stale/invalid/expired credentials
@@ -262,9 +285,9 @@ a SHA-256 policy hash so stale detection is deterministic.
 ### Governance warnings
 Expiry and backup reminders appear in broker `get_ephemeral_env` decision metadata
 under `warnings[]`. Configurable via `HERMES_VAULT_EXPIRY_WARNING_DAYS` and
-`HERMES_VAULT_BACKUP_REMINDER_DAYS`. Never expose raw secrets.
+`HERMES_VAULT_BACKUP_REMINDER_DAYS`. Warnings contain metadata only, not raw secrets.
 
-## What's New in 0.4.0 — Credential Observability
+## What's New in 0.4.0 - Credential Observability
 
 ### Audit query CLI
 hermes-vault audit with --agent, --service, --action, --decision,
@@ -297,9 +320,9 @@ All service names are normalized to canonical IDs automatically. `open_ai`, `ope
 
 Commands that target a credential accept three forms:
 
-- **credential ID** (UUID) — always exact
-- **service + `--alias`** — always exact
-- **service only** — works only when exactly one credential exists for that service
+- **credential ID** (UUID): exact credential match
+- **service + `--alias`**: exact service and alias match
+- **service only**: works only when exactly one credential exists for that service
 
 If you have multiple credentials for the same service (e.g. `github` with aliases `work` and `personal`), the CLI fails with an `Ambiguous` error and asks for `--alias` or the credential ID.
 
@@ -338,7 +361,7 @@ If `capabilities` is omitted from an agent's policy, all capabilities are implic
 
 ### Centralized Mutation Paths
 
-All write/destructive operations (add, rotate, delete, metadata) flow through `VaultMutations` — a centralized, policy-checked, audited mutation layer. The operator CLI path skips policy checks but still produces audit entries.
+All write/destructive operations (add, rotate, delete, metadata) flow through `VaultMutations`, a centralized, policy-checked, audited mutation layer. The operator CLI path skips policy checks but still produces audit entries.
 
 ## Configuration
 

@@ -15,10 +15,10 @@ The dashboard is intentionally not a hosted vault, password manager, or policy e
 - Access guard: random launch URL token
 - UI: bundled web app served from package assets
 - First-run feel: premium vault-door intro, then fast daily console
-- Safe actions only: health, policy doctor, verify, OAuth refresh, backup verify, restore dry-run, maintenance dry-run/run
+- Safe actions only: health, policy doctor, verify, OAuth refresh dry-run, backup verify, restore dry-run, maintenance dry-run
 - Brand assets are bundled release assets, not remote dependencies or runtime generation
 
-No raw secret reveal, remote binding, cloud sync, credential editing, policy editing, or destructive recovery in v0.8.0.
+Out of scope for v0.8.0: raw secret reveal, remote binding, cloud sync, credential editing, policy editing, and destructive recovery.
 
 ## Implementation Milestones
 
@@ -76,8 +76,8 @@ No raw secret reveal, remote binding, cloud sync, credential editing, policy edi
 
 - `hermes-vault dashboard --no-open` prints a tokenized local URL and serves the console.
 - API calls without a valid token return 401.
-- Credential responses never include `encrypted_payload` or raw secret values.
-- Safe actions work through existing service-layer functions.
+- Credential responses redact `encrypted_payload` and raw secret values.
+- Safe actions work through existing service-layer functions with OAuth refresh and maintenance forced to dry-run-only from the dashboard.
 - The first-run vault-door animation is skippable by time and does not block normal operation.
 - The package includes all dashboard assets.
 - Visual QA covers desktop and mobile widths, confirms asset loading, and checks for text/control overlap.

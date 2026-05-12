@@ -6,18 +6,24 @@
 
 - **Local dashboard** (`hermes-vault dashboard`) -- token-guarded Hermes Vault Console served from packaged assets on `127.0.0.1`.
 - **Dashboard views** -- operator surfaces for health, credential inventory, policy findings, audit activity, MCP binding, operations, and recovery posture.
-- **Safe dashboard actions** -- health, policy doctor, credential verification, OAuth refresh, maintenance, backup verification, and restore dry-run through existing service-layer workflows.
+- **Safe dashboard actions** -- health, policy doctor, credential verification, OAuth refresh dry-run, maintenance dry-run, backup verification, and restore dry-run through existing service-layer workflows.
 - **Brand assets** -- bundled console brand media for the vault-door intro and local dashboard experience.
+
+### Changed
+
+- OAuth refresh and maintenance are dry-run-only from the dashboard in v0.8.0. Live execution remains available through the CLI.
+- Dashboard static assets are packaged as Python package data so installed wheel and source distributions can serve the console without remote assets.
 
 ### Security
 
-- Dashboard URLs use an ephemeral launch token and localhost binding.
-- Dashboard responses must not include raw secrets or encrypted payloads.
+- Dashboard URLs use a per-process launch token and localhost binding.
+- Dashboard JSON serializes credential metadata only and redacts raw secret, raw OAuth token, provider token response, and encrypted payload material from browser-facing responses.
 - Credential editing, policy editing, destructive restore, cloud sync, remote binding, plaintext export, and master-key rotation remain outside the dashboard surface.
 
 ### Release QA
 
-- Visual smoke checks should cover desktop and mobile widths, the first-run intro, bundled asset loading, text overflow, and control overlap.
+- Desktop and mobile visual smoke checks cover the packaged dashboard, first-run intro path, bundled asset loading, text overflow, and control overlap.
+- Package QA verifies the wheel and sdist include `hermes_vault/dashboard_static/` assets.
 
 ## 0.7.2 -- Env Import Idempotency Follow-up
 

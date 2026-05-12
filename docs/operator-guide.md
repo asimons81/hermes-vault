@@ -236,19 +236,26 @@ hermes-vault maintain --print-systemd
 
 ## Dashboard
 
-`hermes-vault dashboard` starts the local Hermes Vault Console.
+`hermes-vault dashboard` starts the local Hermes Vault Console. Use it for daily operator visibility and bounded checks. Use the CLI for setup, imports, backups, policy edits, credential mutation, destructive recovery, release work, and any operation where you want an explicit command transcript.
 
 ```bash
 hermes-vault dashboard
 hermes-vault dashboard --no-open
 hermes-vault dashboard --port 8765
+hermes-vault dashboard --ttl-seconds 3600
 ```
 
-The dashboard binds to `127.0.0.1`, generates a random tokenized launch URL, and serves packaged static assets from the installed Python package. Use the printed URL from the current launch; old URLs expire when the process exits.
+Launch behavior:
 
-The console is for daily operator inspection: health, credential inventory, policy findings, audit activity, MCP binding status, backup posture, and safe operational actions. It is not a hosted vault or a policy editor.
+1. The server binds to `127.0.0.1` by default. v0.8.0 rejects non-local dashboard hosts.
+2. A random session token is generated for that process and printed in the launch URL.
+3. API requests need either the launch URL token or the same token passed through the standard bearer authorization header.
+4. The token expires after the configured TTL and also dies when the process exits.
+5. The UI is served from static assets packaged with the installed Python package. If the dashboard opens but assets are missing, verify the wheel or editable install includes `hermes_vault/dashboard_static/`.
 
-Safe v0.8.0 actions include:
+The console is for health, credential inventory, policy findings, audit activity, MCP binding status, operations, and recovery posture. It is not a hosted vault, raw-secret viewer, policy editor, or remote admin plane.
+
+Safe v0.8.0 dashboard actions include:
 
 - Run health
 - Run policy doctor
@@ -258,9 +265,64 @@ Safe v0.8.0 actions include:
 - Verify a backup file
 - Run restore dry-run
 
-Unsafe or out-of-scope actions stay in the CLI and require the existing explicit flags or workflows. The v0.8.0 dashboard forces OAuth refresh and maintenance to dry-run-only even if a client posts `dry_run=false`; live OAuth refresh and live maintenance remain CLI-only. The dashboard does not expose raw secrets, encrypted payloads, credential editing, policy editing, cloud sync, remote access, raw restore, credential deletion, master-key rotation, or plaintext export.
+The dashboard forces OAuth refresh and maintenance to dry-run-only even if a client posts `dry_run=false`. Live OAuth refresh and live maintenance remain CLI-only:
+
+```bash
+hermes-vault oauth refresh google --alias work
+hermes-vault maintain
+```
+
+The dashboard responses redact raw secret and token material, and they do not expose encrypted payloads. Credential editing, policy editing, cloud sync, remote access, destructive restore, credential deletion, master-key rotation, and plaintext export stay out of the v0.8.0 dashboard surface.
+
+### Reading dashboard health and status
+
+Treat the dashboard as a triage surface, then confirm anything sensitive through the CLI before mutating state.
+
+- **Healthy/ok** means the command completed and found no high-risk finding in that view.
+- **Warning/stale/expiring** means an operator should inspect age, expiry, or backup posture before a scheduled run.
+- **Invalid/denied/error** means don't rotate, delete, refresh, or re-auth on instinct. Check the exact reason, policy entry, audit trail, and provider reachability first.
+- **Empty vault** can be normal on a new runtime, but confirm `HERMES_VAULT_HOME`, passphrase source, and policy path before importing credentials.
+- **MCP binding status** describes the local MCP process configuration. It doesn't replace `policy.yaml`, and a caller-supplied `agent_id` isn't strong identity by itself.
+
+### Handling policy findings
+
+Run policy doctor from the dashboard for a quick view. Use the CLI when applying changes:
+
+```bash
+hermes-vault policy doctor
+hermes-vault policy doctor --strict
+```
+
+Review each finding before editing `policy.yaml`. Long TTLs, `raw_secret_access: true`, stale generated skills, and OAuth refresh permission gaps can all be intentional in narrow cases, but they should be written down and reviewed. Regenerate and review skills after policy changes:
+
+```bash
+hermes-vault generate-skill --all-agents
+```
+
+### Checks before sensitive credential operations
+
+Before live refresh, rotation, deletion, import with source redaction, restore, or master-key work:
+
+1. Confirm the runtime home and policy path are the intended ones.
+2. Run a dry-run or read-only command first where available.
+3. Check the audit log for recent failures or unexpected access.
+4. Verify the target selector is unambiguous, especially when a service has multiple aliases.
+5. Confirm the latest backup includes both `vault.db` and `master_key_salt.bin`.
+6. Prefer provider verification and scope review before telling an agent to re-auth.
 
 Release visual QA should cover desktop and mobile widths, the first-run vault-door intro, bundled brand asset loading, text overflow, and control overlap before publishing a dashboard build.
+
+### Recovery posture basics
+
+Recovery is boring by design: keep the encrypted database and salt together, prove backups before an incident, and use dry-runs before restore.
+
+```bash
+hermes-vault backup --output ~/vault-backup.json
+hermes-vault backup-verify --input ~/vault-backup.json
+hermes-vault restore --dry-run --input ~/vault-backup.json
+```
+
+A backup that can't decrypt with the current passphrase and matching `master_key_salt.bin` isn't useful. Don't generate a new salt for an existing vault database; restore the matching salt from backup instead.
 
 ## Policy Notes
 
@@ -299,17 +361,17 @@ Some actions aren't service-scoped. They are controlled by the
 
 | Capability | Controls |
 |---|---|
-| `list_credentials` | `broker list` — enumerate credentials the agent may access |
-| `scan_secrets` | `scan` — scan the filesystem for plaintext secrets |
-| `export_backup` | `backup` — export an encrypted backup of the vault |
-| `import_credentials` | `import` — add credentials from env files or JSON |
+| `list_credentials` | `broker list`, enumerate credentials the agent may access |
+| `scan_secrets` | `scan`, scan the filesystem for plaintext secrets |
+| `export_backup` | `backup`, export an encrypted backup of the vault |
+| `import_credentials` | `import`, add credentials from env files or JSON |
 
 **Backward compatibility:** If an agent has no `capabilities` field, all capabilities are implicitly granted for backward compatibility.
 
 When `capabilities` is explicitly set, only the listed capabilities are allowed.
 For example, an agent with `capabilities: [list_credentials]` can enumerate credentials but cannot run scans or exports.
 
-### Example — restrict capabilities
+### Example: restrict capabilities
 
 ```yaml
 agents:
@@ -421,8 +483,8 @@ Hermes Vault uses canonical service IDs internally.  When you `add`, `import`, o
 | `google` | `gmail`, `google_docs`, `google_drive`, `google_oauth` |
 | `minimax` | `mini_max`, `mini-max` |
 | `supabase` | `supa`, `supabase_db` |
-| `telegram` | — |
-| `netlify` | — |
+| `telegram` | None |
+| `netlify` | None |
 | `generic` | `bearer`, `token` |
 
 Custom service names (anything not in the table above) are preserved as-is.  Use lowercase for new entries.
@@ -544,12 +606,12 @@ Keep `vault.db` and `master_key_salt.bin` together in backup procedures. A verif
 
 ## Credential Selectors
 
-Most CLI commands that target an existing credential accept a **credential selector** — a positional argument that resolves to exactly one credential. Three forms are supported:
+Most CLI commands that target an existing credential accept a **credential selector**, a positional argument that resolves to exactly one credential. Three forms are supported:
 
 | Selector | Example | When it works |
 |---|---|---|
-| **credential ID** (UUID) | `hermes-vault rotate a1b2c3d4-...` | Always — exact match |
-| **service + `--alias`** | `hermes-vault rotate github --alias work` | Always — exact match |
+| **credential ID** (UUID) | `hermes-vault rotate a1b2c3d4-...` | Always, exact match |
+| **service + `--alias`** | `hermes-vault rotate github --alias work` | Always, exact match |
 | **service only** | `hermes-vault rotate openai` | Only when exactly one credential exists for that service |
 
 ### When service-only is ambiguous
@@ -558,7 +620,7 @@ If you have multiple credentials for the same service (e.g. `github` with aliase
 
 ```
 $ hermes-vault rotate github
-Ambiguous: Service 'github' has 2 credentials — specify credential ID or service+alias
+Ambiguous: Service 'github' has 2 credentials. Specify credential ID or service+alias
 Use --alias or provide the credential ID.
 ```
 
@@ -575,9 +637,9 @@ Fix it by adding `--alias` or using the credential ID from `hermes-vault list`.
 
 These commands accept a service name (normalized to canonical ID) and don't require alias disambiguation:
 
-- `add <service> --secret SECRET [--alias ALIAS]` — adds a new credential
-- `broker get <service> --agent AGENT` — fetches a credential via policy
-- `broker env <service> --agent AGENT` — materializes ephemeral env vars
+- `add <service> --secret SECRET [--alias ALIAS]`: adds a new credential
+- `broker get <service> --agent AGENT`: fetches a credential via policy
+- `broker env <service> --agent AGENT`: materializes ephemeral env vars
 
 Service names are normalized automatically (see [Canonical Service IDs](#canonical-service-ids) above).
 
@@ -585,37 +647,44 @@ Service names are normalized automatically (see [Canonical Service IDs](#canonic
 
 Query the audit log to trace credential access, denials, and mutations:
 
-  hermes-vault audit
-  hermes-vault audit --agent dwight --since 7d
-  hermes-vault audit --service openai --decision deny --format json
-  hermes-vault audit --since 2026-01-01 --until 2026-03-01
+```bash
+hermes-vault audit
+hermes-vault audit --agent dwight --since 7d
+hermes-vault audit --service openai --decision deny --format json
+hermes-vault audit --since 2026-01-01 --until 2026-03-01
+```
 
-Use --since with a relative value (7d, 30d) or an ISO date (YYYY-MM-DD).
-Use --decision allow or --decision deny to filter by access decision.
-Use --format json for machine-readable output.
+Use `--since` with a relative value (`7d`, `30d`) or an ISO date (`YYYY-MM-DD`).
+Use `--decision allow` or `--decision deny` to filter by access decision.
+Use `--format json` for machine-readable output.
 
 ## Credential Status
 
 Inspect credential health across the vault:
 
-  hermes-vault status
-  hermes-vault status --stale 7d
-  hermes-vault status --invalid
-  hermes-vault status --expiring 30d --format json
+```bash
+hermes-vault status
+hermes-vault status --stale 7d
+hermes-vault status --invalid
+hermes-vault status --expiring 30d --format json
+hermes-vault status --stale 7d --invalid
+```
 
-Credentials with no last_verified_at are always stale.
-Credentials with no expiry set are never shown by --expiring.
-Filters can be combined: hermes-vault status --stale 7d --invalid
+Credentials with no `last_verified_at` are classified as stale.
+Credentials with no expiry set are omitted by `--expiring`.
+Filters can be combined.
 
 ## Expiry Metadata
 
 Set or clear expiry dates for credentials to track renewal windows:
 
-  hermes-vault set-expiry openai --alias primary --days 90
-  hermes-vault set-expiry github --alias work --date 2026-07-01
-  hermes-vault clear-expiry openai --alias primary
+```bash
+hermes-vault set-expiry openai --alias primary --days 90
+hermes-vault set-expiry github --alias work --date 2026-07-01
+hermes-vault clear-expiry openai --alias primary
+```
 
-Use --days for a relative deadline (N days from today) or --date for an
+Use `--days` for a relative deadline (N days from today) or `--date` for an
 absolute date. Both commands write audit entries. Expiry dates are
 preserved through backup and restore.
 
