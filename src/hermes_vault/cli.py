@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import re
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -68,6 +69,34 @@ _typer_app.add_typer(broker_app, name="broker")
 policy_app = typer.Typer(help="Policy diagnostics and maintenance.")
 _typer_app.add_typer(policy_app, name="policy")
 console = Console()
+
+
+def _dashboard_runtime_warning() -> str | None:
+    raw_home = os.environ.get("HERMES_VAULT_HOME")
+    if not raw_home:
+        return None
+    runtime_home = Path(raw_home).expanduser()
+    try:
+        is_tmp = runtime_home.resolve().is_relative_to(Path("/tmp").resolve())
+    except OSError:
+        is_tmp = str(runtime_home).startswith("/tmp/")
+    if not is_tmp:
+        return None
+    real_db = Path("~/.hermes/hermes-vault-data/vault.db").expanduser()
+    if not real_db.exists():
+        return None
+    try:
+        with sqlite3.connect(real_db) as conn:
+            row = conn.execute("SELECT COUNT(*) FROM credentials").fetchone()
+        real_count = int(row[0]) if row else 0
+    except Exception:
+        return None
+    if real_count <= 0:
+        return None
+    return (
+        f"Dashboard is using temporary HERMES_VAULT_HOME={runtime_home}; "
+        f"default vault {real_db} has {real_count} credential metadata record(s)."
+    )
 
 
 def _print_update_plan(plan: UpdatePlan) -> None:
@@ -1406,6 +1435,55 @@ def policy_doctor(
     if report.strict_violation:
         raise typer.Exit(code=1)
     raise typer.Exit(code=0)
+
+
+@_typer_app.command("dashboard")
+def dashboard(
+    ctx: typer.Context,
+    port: int = typer.Option(0, "--port", help="Local dashboard port. 0 = OS-assigned ephemeral."),
+    no_open: bool = typer.Option(False, "--no-open", help="Do not open a browser automatically."),
+    no_intro: bool = typer.Option(False, "--no-intro", help="Skip the vault-door intro for this launch."),
+    ttl_seconds: int = typer.Option(3600, "--ttl-seconds", help="Seconds before the local session token expires."),
+    dev_assets: str | None = typer.Option(None, "--dev-assets", help="Frontend dev-server URL for UI iteration."),
+) -> None:
+    """Start the local Hermes Vault Console.
+
+    The dashboard binds to 127.0.0.1 and uses a random session token in the
+    launch URL. It does not expose raw secrets.
+    """
+    if port < 0 or port > 65535:
+        console.print("[red]--port must be between 0 and 65535[/red]")
+        raise typer.Exit(code=2)
+    if ttl_seconds < 60:
+        console.print("[red]--ttl-seconds must be at least 60[/red]")
+        raise typer.Exit(code=2)
+    runtime_warning = _dashboard_runtime_warning()
+    from hermes_vault.dashboard import run_dashboard
+
+    try:
+        url, server = run_dashboard(
+            port=port,
+            open_browser=not no_open,
+            dev_assets=dev_assets,
+            no_intro=no_intro,
+            ttl_seconds=ttl_seconds,
+        )
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    console.print("[green]Hermes Vault Console is running locally.[/green]")
+    if runtime_warning:
+        console.print(f"[yellow]Warning: {runtime_warning}[/yellow]")
+    console.print(f"URL: {url}")
+    console.print("Press Ctrl+C to stop.")
+    try:
+        import time
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        server.shutdown()
+        server.server_close()
 
 
 @broker_app.command("get")

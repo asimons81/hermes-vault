@@ -74,6 +74,16 @@ Hermes Vault is a local-first Python project that centralizes credential scannin
 - Emits a structured maintenance report with refresh results, health findings, and a recommended exit code
 - Records an audit entry for each run without exposing secret material
 
+### `dashboard.py`
+
+- Serves the local Hermes Vault Console through `hermes-vault dashboard`
+- Binds to `127.0.0.1` and guards API endpoints with an ephemeral launch token
+- Serves bundled static frontend assets from the Python package
+- Exposes JSON views for health, credentials, policy, audit, MCP binding, and safe operator actions
+- Reuses existing service-layer functions and never serializes raw secrets or encrypted payloads
+- Treats brand media as packaged static assets; no image/video generation runs inside the dashboard process
+- Keeps destructive or high-risk operations outside the dashboard surface
+
 ### `mcp_server.py`
 
 - Stdio-based MCP server using the official Python MCP SDK
@@ -123,6 +133,8 @@ This keeps repository code separate from live secrets and operator state.
 - MCP transport is a thin wrapper: all policy enforcement reuses the broker; no parallel authority
 - Raw secrets are never transmitted over MCP -- only ephemeral environment materialization
 - v0.7.0 adds maintenance, policy doctor, OAuth normalization, and backup verification/drill without changing the local-first storage model
+- v0.8.0 adds the local dashboard as a token-guarded localhost operator surface; it is not a remote service or a raw-secret UI
+- Dashboard visual polish is a release concern only when bundled assets, responsive layouts, and first-run intro behavior pass smoke checks
 - **OAuth-specific:**
   - CSRF protection via randomly-generated state parameter validated with timing-safe comparison
   - PKCE mitigates authorization-code interception (even without a confidential client)

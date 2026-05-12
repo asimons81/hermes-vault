@@ -393,6 +393,9 @@ class Vault:
         """
         # If alias is provided, always do service+alias lookup
         if alias is not None:
+            record = self._find_by_service_alias(service_or_id, alias)
+            if record:
+                return record
             normalized = normalize(service_or_id)
             record = self._find_by_service_alias(normalized, alias)
             if not record:
@@ -410,6 +413,18 @@ class Vault:
 
             # Service-only lookup — must be unambiguous
             normalized = normalize(service_or_id)
+            if normalized != service_or_id:
+                rows = conn.execute(
+                    "SELECT * FROM credentials WHERE service = ? ORDER BY updated_at DESC",
+                    (service_or_id,),
+                ).fetchall()
+                if rows:
+                    if len(rows) > 1:
+                        raise AmbiguousTargetError(
+                            f"Service '{service_or_id}' has {len(rows)} credentials — "
+                            f"specify credential ID or service+alias to target exactly one"
+                        )
+                    return self._row_to_record(rows[0])
             rows = conn.execute(
                 "SELECT * FROM credentials WHERE service = ? ORDER BY updated_at DESC",
                 (normalized,),

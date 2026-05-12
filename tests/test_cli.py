@@ -6,7 +6,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from hermes_vault.cli import _hermes_group, app
+from hermes_vault.cli import _dashboard_runtime_warning, _hermes_group, app
 from hermes_vault.models import BrokerDecision, MutationResult
 from hermes_vault.vault import Vault
 
@@ -1051,6 +1051,37 @@ def test_verify_expands_tilde_in_report_path(monkeypatch, tmp_path) -> None:
     result = runner.invoke(_hermes_group, ["verify", "--all", "--report", str(report)])
     # Should succeed (path exists or is creatable)
     assert result.exit_code == 0 or "permission" in result.output.lower()
+
+
+def test_dashboard_runtime_warning_flags_temp_home_with_populated_default(monkeypatch, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    default_runtime = home / ".hermes" / "hermes-vault-data"
+    default_runtime.mkdir(parents=True)
+    Vault(default_runtime / "vault.db", default_runtime / "salt.bin", "test-passphrase").add_credential(
+        "openai",
+        "sk-test-secret",
+        "api_key",
+        alias="default",
+    )
+    temp_runtime = tmp_path / "dashboard-demo"
+    temp_runtime.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(temp_runtime))
+
+    warning = _dashboard_runtime_warning()
+
+    assert warning is not None
+    assert "temporary HERMES_VAULT_HOME" in warning
+    assert "1 credential metadata record" in warning
+    assert "sk-test-secret" not in warning
+
+
+def test_dashboard_runtime_warning_ignores_non_temp_home(monkeypatch, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_VAULT_HOME", "relative-runtime")
+
+    assert _dashboard_runtime_warning() is None
 
 
 def _fake_vault():

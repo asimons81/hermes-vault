@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hermes Vault Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="intro" class="intro" aria-hidden="true">
+      <div class="vault-scene">
+        <img class="vault-brand-image" src="/assets/hermes-vault-console-brand.png" alt="" />
+        <div class="vault-halo"></div>
+        <div class="vault-door">
+          <div class="vault-ring"></div>
+          <div class="vault-spokes"></div>
+          <div class="vault-mark">HV</div>
+        </div>
+      </div>
+      <div class="intro-copy">
+        <p>Hermes Vault Console</p>
+        <strong>Hermes Vault</strong>
+        <span>Local credential control plane</span>
+      </div>
+    </div>
+
+    <main class="shell" aria-live="polite">
+      <aside class="rail">
+        <div class="brand">
+          <div class="brand-mark">HV</div>
+          <div>
+            <div class="brand-title">Hermes Vault</div>
+            <div class="brand-subtitle">Console</div>
+          </div>
+        </div>
+        <nav class="nav" aria-label="Console views">
+          <button class="nav-item active" data-view="overview">Overview</button>
+          <button class="nav-item" data-view="credentials">Credentials</button>
+          <button class="nav-item" data-view="policy">Policy</button>
+          <button class="nav-item" data-view="audit">Audit</button>
+          <button class="nav-item" data-view="operations">Operations</button>
+        </nav>
+        <div class="rail-status">
+          <span class="pulse"></span>
+          <span id="connection">Local session</span>
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <div class="brand-atmosphere" aria-hidden="true"></div>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Local Credential Control Plane</p>
+            <h1 id="view-title">Overview</h1>
+          </div>
+          <button id="refresh" class="primary-button" type="button">
+            <span class="button-label">Refresh</span>
+          </button>
+        </header>
+        <section id="key-warning" class="key-warning" hidden>
+          <strong>Vault key status</strong>
+          <p>Hermes Vault is checking local key material.</p>
+        </section>
+
+        <section id="overview" class="view active">
+          <div class="metric-grid">
+            <article class="metric"><span>Credentials</span><strong id="metric-credentials">0</strong></article>
+            <article class="metric"><span>Services</span><strong id="metric-services">0</strong></article>
+            <article class="metric"><span>Health Findings</span><strong id="metric-health">0</strong></article>
+            <article class="metric"><span>Policy Findings</span><strong id="metric-policy">0</strong></article>
+          </div>
+          <div class="two-col">
+            <section class="panel">
+              <div class="panel-head"><h2>Vault Health</h2><button class="ghost-button" type="button" data-action="health">Run</button></div>
+              <div id="health-summary" class="stack"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><h2>MCP Binding</h2></div>
+              <div id="mcp-summary" class="stack"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="credentials" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Credential Inventory</h2>
+              <button class="ghost-button" type="button" data-action="verify-all" data-secret-action="true">Verify All</button>
+            </div>
+            <div id="credential-table" class="table"></div>
+          </section>
+        </section>
+
+        <section id="policy" class="view">
+          <div class="two-col">
+            <section class="panel">
+              <div class="panel-head"><h2>Policy Doctor</h2><button class="ghost-button" type="button" data-action="policy_doctor">Run</button></div>
+              <div id="policy-findings" class="stack"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><h2>Agents</h2></div>
+              <div id="agent-list" class="stack"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="audit" class="view">
+          <section class="panel">
+            <div class="panel-head"><h2>Audit Timeline</h2></div>
+            <div id="audit-table" class="table"></div>
+          </section>
+        </section>
+
+        <section id="operations" class="view">
+          <div class="ops-grid">
+            <section class="panel">
+              <h2>Maintenance</h2>
+              <p class="panel-note">Dashboard maintenance is dry-run-only in v0.8. Use the CLI for live maintenance.</p>
+              <div class="button-row">
+                <button class="primary-button" type="button" data-action="maintenance-dry" data-secret-action="true">Run Dry-Run</button>
+              </div>
+            </section>
+            <section class="panel">
+              <h2>OAuth Refresh</h2>
+              <p class="panel-note">OAuth refresh is dry-run-only from the dashboard in v0.8. Use the CLI for live refresh.</p>
+              <div class="form-row">
+                <input id="oauth-service" placeholder="service, e.g. google" />
+                <input id="oauth-alias" placeholder="alias" value="default" />
+              </div>
+              <div class="button-row">
+                <button class="primary-button" type="button" data-action="oauth-refresh-dry" data-secret-action="true">Dry Run</button>
+              </div>
+            </section>
+            <section class="panel">
+              <h2>Recovery Drill</h2>
+              <input id="backup-path" placeholder="/path/to/vault-backup.json" />
+              <div class="button-row">
+                <button class="primary-button" type="button" data-action="backup-verify" data-secret-action="true">Verify Backup</button>
+                <button class="ghost-button" type="button" data-action="restore-dry-run" data-secret-action="true">Restore Dry-Run</button>
+              </div>
+            </section>
+          </div>
+          <section class="panel output-panel">
+            <div class="panel-head"><h2>Action Output</h2></div>
+            <pre id="action-output">No action has run yet.</pre>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

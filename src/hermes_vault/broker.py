@@ -5,12 +5,29 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from hermes_vault.audit import AuditLogger
-from hermes_vault.models import AgentCapability, AccessLogRecord, BrokerDecision, CredentialStatus, Decision, MutationResult, ServiceAction
+from hermes_vault.models import (
+    AccessLogRecord,
+    AgentCapability,
+    BrokerDecision,
+    CredentialStatus,
+    Decision,
+    MutationResult,
+    ServiceAction,
+    VerificationCategory,
+    VerificationResult,
+)
 from hermes_vault.mutations import VaultMutations
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.service_ids import get_env_var_map, normalize
 from hermes_vault.verifier import Verifier
 from hermes_vault.vault import Vault
+
+
+def _verification_is_unsupported(result: VerificationResult) -> bool:
+    return (
+        result.category is VerificationCategory.unknown
+        and result.reason == "No provider-specific verifier is configured for this service."
+    )
 
 
 class Broker:
@@ -160,9 +177,10 @@ class Broker:
         return warnings
 
     def verify_credential(self, service: str, alias: str | None = None) -> BrokerDecision:
+        requested_service = service
         service = normalize(service)
         try:
-            record = self.vault.resolve_credential(service, alias=alias)
+            record = self.vault.resolve_credential(requested_service, alias=alias)
         except KeyError:
             return BrokerDecision(
                 allowed=False,
@@ -177,13 +195,56 @@ class Broker:
                 agent_id="hermes-vault",
                 reason=str(exc),
             )
-        secret = self.vault.get_secret(record.id)
-        assert secret is not None
+        try:
+            secret = self.vault.get_secret(record.id)
+        except Exception:
+            reason = "Credential secret could not be decrypted. Verify the vault passphrase and key material."
+            result = VerificationResult(
+                service=service,
+                category=VerificationCategory.unknown,
+                success=False,
+                reason=reason,
+            )
+            return BrokerDecision(
+                allowed=False,
+                service=service,
+                agent_id="hermes-vault",
+                reason=reason,
+                metadata={
+                    "credential_id": record.id,
+                    "alias": record.alias,
+                    "record_service": record.service,
+                    "error_kind": "secret_decrypt_failed",
+                    "verification_result": result.model_dump(mode="json"),
+                },
+            )
+        if secret is None:
+            reason = "Credential secret was not found in vault."
+            result = VerificationResult(
+                service=service,
+                category=VerificationCategory.unknown,
+                success=False,
+                reason=reason,
+            )
+            return BrokerDecision(
+                allowed=False,
+                service=service,
+                agent_id="hermes-vault",
+                reason=reason,
+                metadata={
+                    "credential_id": record.id,
+                    "alias": record.alias,
+                    "record_service": record.service,
+                    "error_kind": "secret_not_found",
+                    "verification_result": result.model_dump(mode="json"),
+                },
+            )
         result = self.verifier.verify(service, secret.secret)
         status = CredentialStatus.active if result.success else (
             CredentialStatus.invalid if result.category.value == "invalid_or_expired" else CredentialStatus.unknown
         )
-        self.vault.update_status(record.id, status=status, verified_at=result.checked_at.isoformat())
+        verified_at = None if _verification_is_unsupported(result) else result.checked_at.isoformat()
+        self.vault.update_status(record.id, status=status, verified_at=verified_at)
         self.audit.record(
             AccessLogRecord(
                 agent_id="hermes-vault",
@@ -202,6 +263,7 @@ class Broker:
             metadata={
                 "credential_id": record.id,
                 "alias": record.alias,
+                "record_service": record.service,
                 "verification_result": result.model_dump(mode="json"),
             },
         )

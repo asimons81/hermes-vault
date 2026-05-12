@@ -11,6 +11,7 @@ Hermes Vault is a local-first credential broker and encrypted vault for Hermes a
 - Brokers access with per-agent policy and ephemeral environment materialization
 - Verifies credentials before any re-auth recommendation
 - Generates `SKILL.md` files for Hermes agents and sub-agents
+- Provides a token-guarded local dashboard for operator visibility and safe actions
 
 ## Install
 
@@ -83,6 +84,19 @@ hermes-vault import --from-env .env --map DATABASE_URL=postgres:connection_url
 ```
 
 When `--redact-source` is used, only successfully imported env lines are commented out. Skipped lines remain unchanged and are counted in the summary. `--dry-run --redact-source` never changes the source file.
+
+## Dashboard
+
+Start the local Hermes Vault Console:
+
+```bash
+hermes-vault dashboard
+hermes-vault dashboard --no-open
+```
+
+The dashboard binds to `127.0.0.1` and prints a random tokenized URL for the current process. It shows vault health, credential inventory, policy findings, audit activity, MCP binding status, and recovery posture.
+
+Dashboard actions are intentionally narrow: run health and policy doctor, verify credentials, refresh OAuth tokens, run maintenance, verify backups, and run restore dry-runs. It does not reveal raw secrets, expose encrypted payloads, edit credentials or policy, run destructive restore, sync to cloud, or bind remotely.
 
 ## MCP Server
 
@@ -164,6 +178,7 @@ hermes-vault health --format json
 hermes-vault maintain --dry-run
 hermes-vault maintain
 hermes-vault maintain --print-systemd
+hermes-vault dashboard --no-open
 hermes-vault policy doctor
 hermes-vault oauth normalize
 hermes-vault backup-verify --input ~/vault-backup.json
@@ -176,6 +191,17 @@ hermes-vault oauth login google --alias work
 hermes-vault oauth refresh google --alias work
 hermes-vault oauth providers
 ```
+
+## What's New in 0.8.0 - Hermes Vault Console
+
+### Local dashboard
+`hermes-vault dashboard` serves the Hermes Vault Console from packaged assets on `127.0.0.1` with a random launch token. It gives operators one local view for health, inventory, policy findings, audit activity, MCP binding, operations, and recovery posture.
+
+### Safe action boundary
+The console only calls existing safe service-layer workflows: health, policy doctor, verification, OAuth refresh, maintenance, backup verification, and restore dry-run. Raw secret display, encrypted payload display, credential or policy editing, destructive restore, cloud sync, and remote binding stay out of the dashboard.
+
+### Brand and visual QA
+The release includes bundled brand assets for the console experience. Before release, visual QA should check desktop and mobile widths, the first-run vault-door intro, asset loading, text overflow, and control overlap.
 
 ## What's New in 0.7.0 - Operational Autonomy
 

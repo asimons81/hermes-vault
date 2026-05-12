@@ -4,7 +4,14 @@ from pathlib import Path
 
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
-from hermes_vault.models import AgentCapability, AgentPolicy, PolicyConfig, VerificationCategory, VerificationResult
+from hermes_vault.models import (
+    AgentCapability,
+    AgentPolicy,
+    CredentialStatus,
+    PolicyConfig,
+    VerificationCategory,
+    VerificationResult,
+)
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.vault import Vault
 
@@ -17,6 +24,43 @@ class StubVerifier:
             success=True,
             reason="ok",
         )
+
+
+class UnsupportedVerifier:
+    def verify(self, service: str, secret: str) -> VerificationResult:
+        return VerificationResult(
+            service=service,
+            category=VerificationCategory.unknown,
+            success=False,
+            reason="No provider-specific verifier is configured for this service.",
+        )
+
+
+def test_verify_supported_provider_updates_last_verified(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-test", "api_key")
+    broker = Broker(vault, PolicyEngine(PolicyConfig()), StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+
+    decision = broker.verify_credential("openai")
+
+    record = vault.list_credentials()[0]
+    assert decision.allowed is True
+    assert record.status == CredentialStatus.active
+    assert record.last_verified_at is not None
+
+
+def test_verify_unsupported_provider_does_not_update_last_verified(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("internal-tool", "secret", "api_key")
+    broker = Broker(vault, PolicyEngine(PolicyConfig()), UnsupportedVerifier(), AuditLogger(tmp_path / "vault.db"))
+
+    decision = broker.verify_credential("internal-tool")
+
+    record = vault.list_credentials()[0]
+    assert decision.allowed is False
+    assert "No provider-specific verifier" in decision.reason
+    assert record.status == CredentialStatus.unknown
+    assert record.last_verified_at is None
 
 
 def test_broker_enforces_policy_and_returns_env(tmp_path: Path) -> None:

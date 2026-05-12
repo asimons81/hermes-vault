@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -231,6 +232,19 @@ def test_update_status_by_service_alias(tmp_path: Path) -> None:
     rec2 = vault.get_credential(id1)
     assert rec2 is not None
     assert rec2.status == CredentialStatus.unknown
+
+
+def test_resolve_credential_prefers_exact_stored_service_before_normalizing(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    record = vault.add_credential("google", "gmail-secret", "app_password", alias="primary")
+    with sqlite3.connect(vault.db_path) as conn:
+        conn.execute("UPDATE credentials SET service = ? WHERE id = ?", ("gmail", record.id))
+        conn.commit()
+
+    resolved = vault.resolve_credential("gmail", alias="primary")
+
+    assert resolved.id == record.id
+    assert resolved.service == "gmail"
 
 
 def test_rotate_ambiguous_service_raises(tmp_path: Path) -> None:

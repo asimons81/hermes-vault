@@ -1,1 +1,2 @@
 include data/*.yaml
+recursive-include src/hermes_vault/dashboard_static *

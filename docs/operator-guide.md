@@ -253,12 +253,12 @@ Safe v0.8.0 actions include:
 - Run health
 - Run policy doctor
 - Verify one credential or all credentials
-- Refresh OAuth tokens
-- Run maintenance dry-run or maintenance
+- Run OAuth refresh dry-run
+- Run maintenance dry-run
 - Verify a backup file
 - Run restore dry-run
 
-Unsafe or out-of-scope actions stay in the CLI and require the existing explicit flags or workflows. The dashboard does not expose raw secrets, encrypted payloads, credential editing, policy editing, cloud sync, remote access, raw restore, credential deletion, master-key rotation, or plaintext export.
+Unsafe or out-of-scope actions stay in the CLI and require the existing explicit flags or workflows. The v0.8.0 dashboard forces OAuth refresh and maintenance to dry-run-only even if a client posts `dry_run=false`; live OAuth refresh and live maintenance remain CLI-only. The dashboard does not expose raw secrets, encrypted payloads, credential editing, policy editing, cloud sync, remote access, raw restore, credential deletion, master-key rotation, or plaintext export.
 
 Release visual QA should cover desktop and mobile widths, the first-run vault-door intro, bundled brand asset loading, text overflow, and control overlap before publishing a dashboard build.
 
