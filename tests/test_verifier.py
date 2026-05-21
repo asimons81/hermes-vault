@@ -304,7 +304,7 @@ def test_plugin_protocol_exports_remain_available() -> None:
 def test_generic_verifier_normalization(monkeypatch) -> None:
     # Test normalization of service names to environment variables
     verifier = Verifier(load_file_plugins=False, load_entry_points=False)
-    
+
     captured_config = []
 
     def fake_http_verify(config):
@@ -343,7 +343,7 @@ def test_generic_verifier_normalization(monkeypatch) -> None:
 def test_generic_verifier_http_success(monkeypatch) -> None:
     import io
     import urllib.request
-    
+
     monkeypatch.setenv("HERMES_VAULT_VERIFY_URL_DEEPSEEK", "https://api.deepseek.com/v1/models")
     verifier = Verifier(load_file_plugins=False, load_entry_points=False)
 
@@ -384,7 +384,7 @@ def test_generic_verifier_http_success(monkeypatch) -> None:
 def test_generic_verifier_http_failures(monkeypatch) -> None:
     import io
     import urllib.request
-    
+
     monkeypatch.setenv("HERMES_VAULT_VERIFY_URL_FIREWORKS", "https://api.fireworks.ai/v1/models")
     verifier = Verifier(load_file_plugins=False, load_entry_points=False)
 
@@ -431,7 +431,7 @@ def test_generic_verifier_http_failures(monkeypatch) -> None:
 
 def test_generic_verifier_transport_failure(monkeypatch) -> None:
     import urllib.request
-    
+
     monkeypatch.setenv("HERMES_VAULT_VERIFY_URL_DEEPSEEK", "https://api.deepseek.com/v1/models")
     verifier = Verifier(load_file_plugins=False, load_entry_points=False)
 

@@ -565,7 +565,7 @@ Keep `vault.db` and `master_key_salt.bin` together in backup procedures. A verif
 
 ### Custom OpenAI-Compatible Endpoints Verification
 
-Hermes Vault supports a generic, environment-driven OpenAI-compatible verifier for custom or unknown services. 
+Hermes Vault supports a generic, environment-driven OpenAI-compatible verifier for custom or unknown services.
 
 - Define the environment variable `HERMES_VAULT_VERIFY_URL_<SERVICE>` to specify the verification URL for that service.
 - The service name is normalized: hyphens (`-`), dots (`.`), and spaces (` `) are translated to underscores (`_`), and the name is uppercased.
