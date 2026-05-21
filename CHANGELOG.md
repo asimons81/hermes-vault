@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added support for generic OpenAI-compatible custom verifiers via `HERMES_VAULT_VERIFY_URL_<SERVICE>` environment variables. Normalizes service names (replacing hyphens, dots, and spaces with underscores, and uppercasing) to form the environment variable name (e.g. `HERMES_VAULT_VERIFY_URL_DEEPSEEK`). Performs bearer-authenticated requests and sanitizes error reasons and transport exceptions for safety.
+
 ## 0.9.0 -- Profile, Verifier, and MCP Expansion
 
 ### Added

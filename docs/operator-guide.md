@@ -563,6 +563,19 @@ Keep `vault.db` and `master_key_salt.bin` together in backup procedures. A verif
 - Point it at an operator-validated authenticated GET endpoint that returns `200` for valid credentials and `401` or `403` for invalid ones
 - If you are testing an OpenAI-compatible MiniMax deployment, `/v1/models` is a candidate endpoint to validate, not an assumed contract
 
+### Custom OpenAI-Compatible Endpoints Verification
+
+Hermes Vault supports a generic, environment-driven OpenAI-compatible verifier for custom or unknown services. 
+
+- Define the environment variable `HERMES_VAULT_VERIFY_URL_<SERVICE>` to specify the verification URL for that service.
+- The service name is normalized: hyphens (`-`), dots (`.`), and spaces (` `) are translated to underscores (`_`), and the name is uppercased.
+  - For service `deepseek` -> `HERMES_VAULT_VERIFY_URL_DEEPSEEK`
+  - For service `fireworks` -> `HERMES_VAULT_VERIFY_URL_FIREWORKS`
+  - For service `custom-provider` -> `HERMES_VAULT_VERIFY_URL_CUSTOM_PROVIDER`
+- The endpoint is expected to be an OpenAI-compatible `/v1/models`-style endpoint.
+- Hermes Vault will send a GET request with the vaulted credential as the bearer token (`Authorization: Bearer <secret>`).
+- **Security Warning**: Ensure that the configured URL is trusted and provider-controlled, as the vault will send the decrypted bearer token to it.
+
 ### "Broker denied access"
 
 - Read the exact denial reason

@@ -259,6 +259,18 @@ class Verifier:
 
         adapter = getattr(self, f"_verify_{service}", None)
         if adapter is None:
+            env_var = f"HERMES_VAULT_VERIFY_URL_{service.replace('-', '_').replace('.', '_').replace(' ', '_').upper()}"
+            url = os.environ.get(env_var)
+            if url:
+                result = self._http_verify(ProviderVerifierConfig(
+                    service=service,
+                    url=url,
+                    headers={"Authorization": f"Bearer {secret}"},
+                ))
+                if result.status_code is not None and result.reason.startswith(f"Provider returned status {result.status_code}:"):
+                    result.reason = f"Provider returned status {result.status_code}."
+                return result
+
             return VerificationResult(
                 service=service,
                 category=VerificationCategory.unknown,

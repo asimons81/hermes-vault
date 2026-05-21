@@ -299,3 +299,159 @@ def test_plugin_protocol_exports_remain_available() -> None:
     assert CredentialVerifierPlugin is not None
     assert VerifierContext is not None
     assert ProviderVerifierConfig is not None
+
+
+def test_generic_verifier_normalization(monkeypatch) -> None:
+    # Test normalization of service names to environment variables
+    verifier = Verifier(load_file_plugins=False, load_entry_points=False)
+    
+    captured_config = []
+
+    def fake_http_verify(config):
+        captured_config.append(config)
+        return VerificationResult(
+            service=config.service,
+            category=VerificationCategory.valid,
+            success=True,
+            reason="ok",
+        )
+
+    monkeypatch.setattr(verifier, "_http_verify", fake_http_verify)
+
+    # 1. service with hyphens
+    monkeypatch.setenv("HERMES_VAULT_VERIFY_URL_CUSTOM_PROVIDER", "https://api.custom.invalid/v1/models")
+    result = verifier.verify("custom-provider", "secret-value")
+    assert result.success is True
+    assert captured_config[-1].url == "https://api.custom.invalid/v1/models"
+    assert captured_config[-1].service == "custom-provider"
+
+    # 2. service with dots
+    monkeypatch.setenv("HERMES_VAULT_VERIFY_URL_MY_CUSTOM_PROVIDER", "https://api.dot.invalid/v1/models")
+    result = verifier.verify("my.custom.provider", "secret-value")
+    assert result.success is True
+    assert captured_config[-1].url == "https://api.dot.invalid/v1/models"
+    assert captured_config[-1].service == "my.custom.provider"
+
+    # 3. service with spaces and mixed case
+    monkeypatch.setenv("HERMES_VAULT_VERIFY_URL_MY_SPACE_PROVIDER", "https://api.space.invalid/v1/models")
+    result = verifier.verify("my space provider", "secret-value")
+    assert result.success is True
+    assert captured_config[-1].url == "https://api.space.invalid/v1/models"
+    assert captured_config[-1].service == "my space provider"
+
+
+def test_generic_verifier_http_success(monkeypatch) -> None:
+    import io
+    import urllib.request
+    
+    monkeypatch.setenv("HERMES_VAULT_VERIFY_URL_DEEPSEEK", "https://api.deepseek.com/v1/models")
+    verifier = Verifier(load_file_plugins=False, load_entry_points=False)
+
+    class FakeResponse:
+        def __init__(self, code, body):
+            self.code = code
+            self.body = body
+            self.headers = {}
+        def getcode(self):
+            return self.code
+        def read(self):
+            return self.body
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    captured_req = []
+
+    def fake_urlopen(req, timeout=None):
+        captured_req.append(req)
+        return FakeResponse(200, b'{"models": []}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = verifier.verify("deepseek", "sentinel-secret-token")
+    assert result.success is True
+    assert result.category is VerificationCategory.valid
+    assert result.status_code == 200
+    assert result.reason == "Credential verified successfully."
+
+    assert len(captured_req) == 1
+    req = captured_req[0]
+    assert req.full_url == "https://api.deepseek.com/v1/models"
+    assert req.get_header("Authorization") == "Bearer sentinel-secret-token"
+
+
+def test_generic_verifier_http_failures(monkeypatch) -> None:
+    import io
+    import urllib.request
+    
+    monkeypatch.setenv("HERMES_VAULT_VERIFY_URL_FIREWORKS", "https://api.fireworks.ai/v1/models")
+    verifier = Verifier(load_file_plugins=False, load_entry_points=False)
+
+    current_status = 401
+    current_body = b"{}"
+
+    def fake_urlopen(req, timeout=None):
+        fp = io.BytesIO(current_body)
+        raise urllib.error.HTTPError(req.full_url, current_status, "HTTP Error", {}, fp)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    # Test 401 -> invalid_or_expired
+    current_status = 401
+    current_body = b'{"error": "Unauthorized"}'
+    result = verifier.verify("fireworks", "token")
+    assert result.success is False
+    assert result.category is VerificationCategory.invalid_or_expired
+    assert result.status_code == 401
+    assert "Unauthorized" not in result.reason
+    assert "token" not in result.reason
+
+    # Test 403 -> permission_scope_issue
+    current_status = 403
+    current_body = b'{"error": "Forbidden"}'
+    result = verifier.verify("fireworks", "token")
+    assert result.success is False
+    assert result.category is VerificationCategory.permission_scope_issue
+    assert result.status_code == 403
+    assert "Forbidden" not in result.reason
+    assert "token" not in result.reason
+
+    # Test 500 -> unknown, body sanitized (not exposed at all)
+    current_status = 500
+    current_body = b'{"error": "internal error", "sensitive_key": "some_value"}'
+    result = verifier.verify("fireworks", "token")
+    assert result.success is False
+    assert result.category is VerificationCategory.unknown
+    assert result.status_code == 500
+    assert result.reason == "Provider returned status 500."
+    assert "sensitive_key" not in result.reason
+    assert "some_value" not in result.reason
+
+
+def test_generic_verifier_transport_failure(monkeypatch) -> None:
+    import urllib.request
+    
+    monkeypatch.setenv("HERMES_VAULT_VERIFY_URL_DEEPSEEK", "https://api.deepseek.com/v1/models")
+    verifier = Verifier(load_file_plugins=False, load_entry_points=False)
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = verifier.verify("deepseek", "token")
+    assert result.success is False
+    assert result.category is VerificationCategory.network_failure
+    assert "URLError" in result.reason
+    assert "connection refused" not in result.reason  # sanitized to class name only in reason
+    assert "token" not in result.reason
+
+
+def test_generic_verifier_missing_env_var() -> None:
+    verifier = Verifier(load_file_plugins=False, load_entry_points=False)
+    # Check that without the env var, we fall back to unsupported result
+    result = verifier.verify("deepseek", "token")
+    assert result.success is False
+    assert result.category is VerificationCategory.unknown
+    assert result.reason == "No provider-specific verifier is configured for this service."
