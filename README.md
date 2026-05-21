@@ -246,6 +246,26 @@ hermes-vault oauth refresh google --alias work
 hermes-vault oauth providers
 ```
 
+## What's New in 0.9.0 - Profiles, Verifiers, and MCP Expansion
+
+### Verifier plugin architecture
+v0.9.0 introduces a modular, file-based YAML verifier plugin system (under `src/hermes_vault/verifiers/`). This allows operators to define custom validation checks for new services and register them via entry points, while fully maintaining backward compatibility with built-in verifiers.
+
+### Multi-vault profile support
+Enables complete profile isolation via CLI flags like `--profile work` and `--profile personal`. Each profile manages its own isolated SQLite database, custom policies, OAuth registries, and verifier plugins. Pending OAuth states are scoped to prevent token pollution, and profile contexts propagate properly across worker threads (including MCP and local dashboard launches). Profiles support dedicated passphrases via environment variables like `HERMES_VAULT_PASSPHRASE_PROFILE`.
+
+### MCP read-only resources
+Exposes `vault://services`, `vault://services/{name}`, `vault://health`, and `vault://policy` as Model Context Protocol (MCP) resources. The resources are agent-bound and policy-scoped, returning metadata and status summaries only—ensuring raw secrets and encrypted payloads are never exposed to the host.
+
+### Credential tags and notes
+Adds support for persistent top-level tags and notes. Operators can supply tags and notes via the CLI (`add --tag / --note`), update them, view them in metadata commands, and expose them programmatically in dashboard and MCP tool returns.
+
+### Community onboarding
+Improves community onboarding with standardized repository guides:
+- [CONTRIBUTING.md](CONTRIBUTING.md): Setup instructions, test suites, and contributor rules.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): Contributor-focused module layouts and security boundary maps.
+- GitHub issue templates (`bug.md`, `feature.md`, `verifier.md`) and pull request template (`PULL_REQUEST_TEMPLATE.md`).
+
 ## What's New in 0.8.0 - Hermes Vault Console
 
 ### Local operator console
