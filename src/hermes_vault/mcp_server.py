@@ -24,13 +24,15 @@ from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import Resource, ResourceTemplate, TextContent, TextResourceContents, Tool
+from pydantic import AnyUrl
 
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings
 from hermes_vault.crypto import resolve_passphrase
-from hermes_vault.models import AccessLogRecord, CredentialSecret, CredentialStatus, Decision, ServiceAction
+from hermes_vault.health import run_health
+from hermes_vault.models import AccessLogRecord, AgentCapability, CredentialSecret, CredentialStatus, Decision, ServiceAction
 from hermes_vault.mutations import OPERATOR_AGENT_ID, VaultMutations
 from hermes_vault.oauth.callback import CallbackServer
 from hermes_vault.oauth.errors import OAuthProviderError
@@ -129,15 +131,15 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
 _broker: Broker | None = None
 
 
-def _build_broker() -> Broker:
+def _build_broker(profile: str | None = None) -> Broker:
     """Initialise vault, policy, and broker — same rules as the CLI."""
-    settings = get_settings()
+    settings = get_settings(profile=profile)
     policy = PolicyEngine.from_yaml(settings.effective_policy_path)
     policy.write_default(settings.effective_policy_path)
-    passphrase = resolve_passphrase(prompt=False)
+    passphrase = resolve_passphrase(prompt=False, profile_name=settings.profile_name)
     vault = Vault(settings.db_path, settings.salt_path, passphrase)
     audit = AuditLogger(settings.db_path)
-    verifier = Verifier()
+    verifier = Verifier(plugin_dir=settings.verifier_plugin_dir)
     scanner = Scanner(settings, policy=policy)
     return Broker(vault=vault, policy=policy, verifier=verifier, audit=audit, scanner=scanner)
 
@@ -266,6 +268,224 @@ def _resolve_mcp_binding(
     raise ValueError(reason)
 
 
+def _generated_at() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _resource_arguments(uri: Any) -> dict[str, Any]:
+    parsed = urllib.parse.urlparse(str(uri))
+    query = urllib.parse.parse_qs(parsed.query)
+    arguments: dict[str, Any] = {}
+    if query.get("agent_id"):
+        arguments["agent_id"] = query["agent_id"][0]
+    if query.get("alias"):
+        arguments["alias"] = query["alias"][0]
+    return arguments
+
+
+def _resource_key(uri: Any) -> str:
+    parsed = urllib.parse.urlparse(str(uri))
+    if parsed.scheme != "vault":
+        raise ValueError(f"Unsupported resource URI: {uri}")
+    if parsed.netloc == "services" and parsed.path not in ("", "/"):
+        return "vault://services/{name}"
+    if parsed.netloc in {"services", "health", "policy"} and parsed.path in ("", "/"):
+        return f"vault://{parsed.netloc}"
+    raise ValueError(f"Unknown resource URI: {uri}")
+
+
+def _resource_service_name(uri: Any) -> str | None:
+    parsed = urllib.parse.urlparse(str(uri))
+    if parsed.netloc != "services" or parsed.path in ("", "/"):
+        return None
+    return normalize(urllib.parse.unquote(parsed.path.lstrip("/")).replace(" ", "_"))
+
+
+def _resolve_resource_binding(settings: Any, uri: Any, resource_key: str) -> MCPBindingContext:
+    return _resolve_mcp_binding(
+        settings,
+        _resource_arguments(uri),
+        f"resource:{resource_key}",
+    )
+
+
+def _json_resource(uri: Any, payload: dict[str, Any]) -> TextResourceContents:
+    return TextResourceContents(
+        uri=AnyUrl(str(uri)),
+        mimeType="application/json",
+        text=_json_text(payload),
+    )
+
+
+def _resource_error(uri: Any, error: str, agent_id: str | None = None) -> dict[str, Any]:
+    return {
+        "version": "vault-resource-error-v1",
+        "resource": str(uri).split("?", 1)[0],
+        "agent_id": agent_id,
+        "error": error,
+    }
+
+
+def _record_resource_audit(
+    broker: Broker,
+    agent_id: str,
+    action: str,
+    decision: Decision,
+    reason: str,
+) -> None:
+    broker.audit.record(
+        AccessLogRecord(
+            agent_id=agent_id,
+            service="*",
+            action=action,
+            decision=decision,
+            reason=reason,
+        )
+    )
+
+
+def _service_metadata_payload(record: Any) -> dict[str, Any]:
+    return record.model_dump(mode="json", exclude={"encrypted_payload"})
+
+
+def _services_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    agent_id = binding.effective_agent_id or ""
+    services = broker.list_available_credentials(agent_id)
+    return {
+        "version": "vault-services-v1",
+        "generated_at": _generated_at(),
+        "agent_id": agent_id,
+        "binding_mode": binding.binding_mode,
+        "count": len(services),
+        "services": [
+            {
+                **service,
+                "resource_uri": f"vault://services/{urllib.parse.quote(service['service'], safe='')}",
+            }
+            for service in services
+        ],
+    }
+
+
+def _service_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    agent_id = binding.effective_agent_id or ""
+    service = _resource_service_name(uri)
+    if service is None:
+        raise ValueError(f"Missing service name in resource URI: {uri}")
+    alias = _resource_arguments(uri).get("alias")
+
+    allowed, reason = broker.policy.can(agent_id, service, ServiceAction.metadata)
+    if not allowed:
+        broker.audit.record(
+            AccessLogRecord(
+                agent_id=agent_id,
+                service=service,
+                action="get_metadata",
+                decision=Decision.deny,
+                reason=reason,
+            )
+        )
+        raise ValueError(reason)
+
+    credentials: list[dict[str, Any]] = []
+    if alias is not None:
+        result = broker.get_metadata(agent_id, service, alias)
+        if not result.allowed:
+            raise ValueError(result.reason)
+        if result.record is not None:
+            credentials.append(_service_metadata_payload(result.record))
+    else:
+        records = [record for record in broker.vault.list_credentials() if record.service == service]
+        for record in records:
+            result = broker.get_metadata(agent_id, service, record.alias)
+            if result.allowed and result.record is not None:
+                credentials.append(_service_metadata_payload(result.record))
+            elif not result.allowed:
+                raise ValueError(result.reason)
+
+    return {
+        "version": "vault-service-v1",
+        "generated_at": _generated_at(),
+        "agent_id": agent_id,
+        "binding_mode": binding.binding_mode,
+        "service": service,
+        "alias": alias,
+        "count": len(credentials),
+        "credentials": credentials,
+    }
+
+
+def _health_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    agent_id = binding.effective_agent_id or ""
+    cap_ok, cap_reason = broker.policy.can_capability(agent_id, AgentCapability.list_credentials)
+    if not cap_ok:
+        _record_resource_audit(broker, agent_id, "mcp_resource_health", Decision.deny, cap_reason)
+        raise ValueError(cap_reason)
+    agent_policy = broker.policy.get_agent_policy(agent_id)
+    if agent_policy is None:
+        reason = f"agent '{agent_id}' is not defined in policy"
+        _record_resource_audit(broker, agent_id, "mcp_resource_health", Decision.deny, reason)
+        raise ValueError(reason)
+
+    _record_resource_audit(
+        broker,
+        agent_id,
+        "mcp_resource_health",
+        Decision.allow,
+        "returned policy-scoped health snapshot",
+    )
+    payload = run_health(
+        broker.vault,
+        audit=broker.audit,
+        verify_live=False,
+        services=set(agent_policy.services),
+    ).as_dict(exclude_none=False)
+    payload.update({
+        "agent_id": agent_id,
+        "binding_mode": binding.binding_mode,
+        "policy_scoped": True,
+    })
+    return payload
+
+
+def _policy_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    agent_id = binding.effective_agent_id or ""
+    agent_policy = broker.policy.get_agent_policy(agent_id)
+    if agent_policy is None:
+        reason = f"agent '{agent_id}' is not defined in policy"
+        _record_resource_audit(broker, agent_id, "mcp_resource_policy", Decision.deny, reason)
+        raise ValueError(reason)
+
+    _record_resource_audit(
+        broker,
+        agent_id,
+        "mcp_resource_policy",
+        Decision.allow,
+        "returned effective-agent policy summary",
+    )
+    return {
+        "version": "policy-summary-v1",
+        "generated_at": _generated_at(),
+        "agent_id": agent_id,
+        "binding_mode": binding.binding_mode,
+        "policy_hash": broker.policy.compute_policy_hash(),
+        "services": agent_policy.services,
+        "capabilities": [capability.value for capability in agent_policy.capabilities],
+        "raw_secret_access": agent_policy.raw_secret_access,
+        "ephemeral_env_only": agent_policy.ephemeral_env_only,
+        "require_verification_before_reauth": agent_policy.require_verification_before_reauth,
+        "max_ttl_seconds": agent_policy.max_ttl_seconds,
+        "approval_required_services": agent_policy.approval_required_services,
+        "service_actions": {
+            service: {
+                "actions": [action.value for action in entry.actions],
+                "max_ttl_seconds": entry.max_ttl_seconds,
+            }
+            for service, entry in agent_policy.service_actions.items()
+        },
+    }
+
+
 def _preflight_tool_arguments(name: str, arguments: dict[str, Any]) -> str | None:
     if name in {"get_credential_metadata", "get_ephemeral_env", "verify_credential", "rotate_credential"}:
         if _normalize_agent_id(arguments.get("service")) is None:
@@ -287,7 +507,7 @@ _pending_oauth: dict[str, dict[str, Any]] = {}
 
 # ── server ─────────────────────────────────────────────────────────────────────
 
-server = Server("hermes-vault", version="0.8.0")
+server = Server("hermes-vault", version="0.9.0")
 
 
 @server.list_tools()
@@ -334,6 +554,110 @@ async def list_tools() -> list[Tool]:
             inputSchema=_TOOL_SCHEMAS["oauth_refresh"],
         ),
     ]
+
+
+async def _default_agent_service_resources() -> list[Resource]:
+    settings = get_settings()
+    if not settings.mcp_default_agent:
+        return []
+    try:
+        binding = _resolve_mcp_binding(settings, {}, "resource:list")
+    except ValueError:
+        return []
+    try:
+        services = _get_broker().list_available_credentials(binding.effective_agent_id or "")
+    except Exception:
+        logger.exception("Failed to resolve default-agent service resources")
+        return []
+
+    seen: set[str] = set()
+    resources: list[Resource] = []
+    for service in services:
+        service_name = service.get("service")
+        if not service_name or service_name in seen:
+            continue
+        seen.add(service_name)
+        resources.append(
+            Resource(
+                name=f"vault-service-{service_name}",
+                title=f"Hermes Vault service: {service_name}",
+                uri=AnyUrl(f"vault://services/{urllib.parse.quote(service_name, safe='')}"),
+                description=f"Metadata for policy-visible service '{service_name}'.",
+                mimeType="application/json",
+            )
+        )
+    return resources
+
+
+@server.list_resources()
+async def list_resources() -> list[Resource]:
+    resources = [
+        Resource(
+            name="vault-services",
+            title="Hermes Vault services",
+            uri=AnyUrl("vault://services"),
+            description="Policy-scoped credential services visible to the effective agent.",
+            mimeType="application/json",
+        ),
+        Resource(
+            name="vault-health",
+            title="Hermes Vault health",
+            uri=AnyUrl("vault://health"),
+            description="Policy-scoped read-only vault health summary. Does not perform live provider verification.",
+            mimeType="application/json",
+        ),
+        Resource(
+            name="vault-policy",
+            title="Hermes Vault policy summary",
+            uri=AnyUrl("vault://policy"),
+            description="Sanitized policy summary for the effective agent only.",
+            mimeType="application/json",
+        ),
+    ]
+    resources.extend(await _default_agent_service_resources())
+    return resources
+
+
+@server.list_resource_templates()
+async def list_resource_templates() -> list[ResourceTemplate]:
+    return [
+        ResourceTemplate(
+            name="vault-service-detail",
+            title="Hermes Vault service metadata",
+            uriTemplate="vault://services/{name}",
+            description="Metadata for one policy-visible service. Optional query parameters: agent_id, alias.",
+            mimeType="application/json",
+        )
+    ]
+
+
+@server.read_resource()
+async def read_resource(uri: Any) -> Any:
+    settings = get_settings()
+    key = _resource_key(uri)
+    try:
+        binding = _resolve_resource_binding(settings, uri, key)
+    except ValueError as exc:
+        return [_json_resource(uri, _resource_error(uri, str(exc), agent_id=None))]
+
+    broker = _get_broker()
+    agent_id = binding.effective_agent_id or ""
+
+    try:
+        if key == "vault://services":
+            payload = _services_resource_payload(broker, binding)
+        elif key == "vault://services/{name}":
+            payload = _service_detail_resource_payload(uri, broker, binding)
+        elif key == "vault://health":
+            payload = _health_resource_payload(broker, binding)
+        elif key == "vault://policy":
+            payload = _policy_resource_payload(broker, binding)
+        else:
+            raise ValueError(f"Unknown resource URI: {uri}")
+    except ValueError as exc:
+        payload = _resource_error(uri, str(exc), agent_id=agent_id)
+
+    return [_json_resource(uri, payload)]
 
 
 @server.call_tool()
@@ -527,7 +851,9 @@ def _handle_oauth_login(arguments: dict[str, Any], broker: Broker, agent_id: str
     auth_url = str(provider.authorization_endpoint) + "?" + urllib.parse.urlencode(auth_params)
 
     # Track pending login (so callback can validate state + exchange)
-    pending_key = f"{provider_id}:{alias}"
+    # Include profile to prevent cross-profile OAuth collisions
+    settings = get_settings()
+    pending_key = f"{settings.profile_name}:{provider_id}:{alias}"
     _pending_oauth[pending_key] = {
         "state": state,
         "code_verifier": code_verifier,
@@ -538,6 +864,7 @@ def _handle_oauth_login(arguments: dict[str, Any], broker: Broker, agent_id: str
         "client_secret": client_secret,
         "scopes": requested_scopes,
         "broker": broker,
+        "profile_name": settings.profile_name,
     }
 
     # Attach auto-exchange handler onto CallbackServer's result mechanism.
@@ -574,8 +901,8 @@ def _exchange_and_store(result: Any, pending_key: str) -> None:
     broker = info["broker"]
     provider_id = info["provider_id"]
 
-    # Build registry + provider again (lightweight)
-    settings = get_settings()
+    # Build registry + provider — use the stored profile to avoid default fallback
+    settings = get_settings(profile=info.get("profile_name"))
     registry = OAuthProviderRegistry(settings.runtime_home / "oauth-providers.yaml")
     provider = registry.get(provider_id)
     if provider is None:

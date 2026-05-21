@@ -57,10 +57,13 @@ class Vault:
                     last_verified_at TEXT,
                     imported_from TEXT,
                     expiry TEXT,
+                    tags TEXT NOT NULL DEFAULT '[]',
+                    notes TEXT,
                     crypto_version TEXT NOT NULL
                 )
                 """
             )
+            self._migrate_credentials_schema(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_credentials_service_alias ON credentials(service, alias)"
             )
@@ -75,6 +78,35 @@ class Vault:
             )
             conn.commit()
         self._secure_storage_files()
+
+    def _migrate_credentials_schema(self, conn: sqlite3.Connection) -> None:
+        """Add metadata columns introduced after the original credentials table."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(credentials)").fetchall()}
+        if "tags" not in columns:
+            conn.execute("ALTER TABLE credentials ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+        if "notes" not in columns:
+            conn.execute("ALTER TABLE credentials ADD COLUMN notes TEXT")
+
+    @staticmethod
+    def _normalize_tags(tags: list[str] | None) -> list[str]:
+        if not tags:
+            return []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for tag in tags:
+            value = str(tag).strip()
+            if not value or value in seen:
+                continue
+            normalized.append(value)
+            seen.add(value)
+        return normalized
+
+    @staticmethod
+    def _normalize_notes(notes: str | None) -> str | None:
+        if notes is None:
+            return None
+        value = str(notes).strip()
+        return value or None
 
     def _prepare_storage(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +133,8 @@ class Vault:
         alias: str = "default",
         imported_from: str | None = None,
         scopes: list[str] | None = None,
+        tags: list[str] | None = None,
+        notes: str | None = None,
         replace_existing: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> CredentialRecord:
@@ -110,9 +144,13 @@ class Vault:
             raise DuplicateCredentialError(
                 f"Credential for service '{service}' and alias '{alias}' already exists."
             )
+        resolved_tags = self._normalize_tags(tags) if tags is not None else (existing.tags if existing else [])
+        resolved_notes = self._normalize_notes(notes) if notes is not None else (existing.notes if existing else None)
         payload = CredentialSecret(
             secret=secret,
             metadata=self._resolve_secret_metadata(existing.id if existing else None, metadata),
+            tags=resolved_tags,
+            notes=resolved_notes,
         ).model_dump_json()
         encrypted_payload = encrypt_secret(payload, self.key)
         record = existing.model_copy(update={
@@ -120,6 +158,8 @@ class Vault:
             "encrypted_payload": encrypted_payload,
             "imported_from": imported_from,
             "scopes": scopes or [],
+            "tags": resolved_tags,
+            "notes": resolved_notes,
             "status": CredentialStatus.unknown,
             "updated_at": utc_now(),
             "expiry": None,
@@ -131,6 +171,8 @@ class Vault:
             encrypted_payload=encrypted_payload,
             imported_from=imported_from,
             scopes=scopes or [],
+            tags=resolved_tags,
+            notes=resolved_notes,
             crypto_version=CRYPTO_VERSION,
         )
         with sqlite3.connect(self.db_path) as conn:
@@ -139,7 +181,8 @@ class Vault:
                     """
                     UPDATE credentials
                     SET credential_type = ?, encrypted_payload = ?, status = ?, scopes = ?,
-                        updated_at = ?, last_verified_at = ?, imported_from = ?, expiry = ?, crypto_version = ?
+                        tags = ?, notes = ?, updated_at = ?, last_verified_at = ?,
+                        imported_from = ?, expiry = ?, crypto_version = ?
                     WHERE id = ?
                     """,
                     (
@@ -147,6 +190,8 @@ class Vault:
                         record.encrypted_payload,
                         record.status.value,
                         json.dumps(record.scopes),
+                        json.dumps(record.tags),
+                        record.notes,
                         record.updated_at.isoformat(),
                         record.last_verified_at.isoformat() if record.last_verified_at else None,
                         record.imported_from,
@@ -160,8 +205,8 @@ class Vault:
                     """
                     INSERT INTO credentials (
                         id, service, alias, credential_type, encrypted_payload, status, scopes,
-                        created_at, updated_at, last_verified_at, imported_from, expiry, crypto_version
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        tags, notes, created_at, updated_at, last_verified_at, imported_from, expiry, crypto_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.id,
@@ -171,6 +216,8 @@ class Vault:
                         record.encrypted_payload,
                         record.status.value,
                         json.dumps(record.scopes),
+                        json.dumps(record.tags),
+                        record.notes,
                         record.created_at.isoformat(),
                         record.updated_at.isoformat(),
                         record.last_verified_at.isoformat() if record.last_verified_at else None,
@@ -300,6 +347,8 @@ class Vault:
         payload = CredentialSecret(
             secret=new_secret,
             metadata=self._resolve_secret_metadata(current.id, metadata),
+            tags=current.tags,
+            notes=current.notes,
         ).model_dump_json()
         encrypted_payload = encrypt_secret(payload, self.key)
         current.encrypted_payload = encrypted_payload
@@ -376,6 +425,11 @@ class Vault:
     def _row_to_record(self, row: sqlite3.Row) -> CredentialRecord:
         payload = dict(row)
         payload["scopes"] = json.loads(payload["scopes"])
+        try:
+            payload["tags"] = self._normalize_tags(json.loads(payload.get("tags") or "[]"))
+        except (TypeError, json.JSONDecodeError):
+            payload["tags"] = []
+        payload["notes"] = self._normalize_notes(payload.get("notes"))
         payload["status"] = CredentialStatus(payload["status"])
         return CredentialRecord.model_validate(payload)
 
@@ -561,6 +615,8 @@ class Vault:
                 "credential_type": rec.credential_type,
                 "status": rec.status.value,
                 "scopes": rec.scopes,
+                "tags": rec.tags,
+                "notes": rec.notes,
                 "imported_from": rec.imported_from,
                 "expiry": rec.expiry.isoformat() if rec.expiry else None,
                 "crypto_version": rec.crypto_version,
@@ -612,6 +668,8 @@ class Vault:
                 encrypted_payload=cred_data["encrypted_payload"],
                 status=CredentialStatus(cred_data.get("status", "unknown")),
                 scopes=cred_data.get("scopes", []),
+                tags=self._normalize_tags(cred_data.get("tags") or []),
+                notes=self._normalize_notes(cred_data.get("notes")),
                 imported_from=cred_data.get("imported_from"),
                 expiry=expiry,
                 last_verified_at=last_verified_at,
@@ -625,6 +683,8 @@ class Vault:
                     "encrypted_payload": cred_data["encrypted_payload"],
                     "status": CredentialStatus(cred_data.get("status", "unknown")),
                     "scopes": cred_data.get("scopes", []),
+                    "tags": self._normalize_tags(cred_data.get("tags")) if "tags" in cred_data else existing.tags,
+                    "notes": self._normalize_notes(cred_data.get("notes")) if "notes" in cred_data else existing.notes,
                     "imported_from": cred_data.get("imported_from"),
                     "last_verified_at": last_verified_at,
                     "updated_at": utc_now(),
@@ -635,7 +695,7 @@ class Vault:
                         """
                         UPDATE credentials
                         SET credential_type=?, encrypted_payload=?, status=?, scopes=?,
-                            updated_at=?, last_verified_at=?, imported_from=?, expiry=?
+                            tags=?, notes=?, updated_at=?, last_verified_at=?, imported_from=?, expiry=?
                         WHERE id=?
                         """,
                         (
@@ -643,6 +703,8 @@ class Vault:
                             record.encrypted_payload,
                             record.status.value,
                             json.dumps(record.scopes),
+                            json.dumps(record.tags),
+                            record.notes,
                             record.updated_at.isoformat(),
                             record.last_verified_at.isoformat() if record.last_verified_at else None,
                             record.imported_from,
@@ -655,8 +717,8 @@ class Vault:
                         """
                         INSERT INTO credentials (
                             id, service, alias, credential_type, encrypted_payload, status, scopes,
-                            created_at, updated_at, last_verified_at, imported_from, expiry, crypto_version
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            tags, notes, created_at, updated_at, last_verified_at, imported_from, expiry, crypto_version
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             record.id,
@@ -666,6 +728,8 @@ class Vault:
                             record.encrypted_payload,
                             record.status.value,
                             json.dumps(record.scopes),
+                            json.dumps(record.tags),
+                            record.notes,
                             record.created_at.isoformat(),
                             record.updated_at.isoformat(),
                             record.last_verified_at.isoformat() if record.last_verified_at else None,

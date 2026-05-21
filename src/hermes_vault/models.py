@@ -66,12 +66,16 @@ class CredentialRecord(BaseModel):
     last_verified_at: datetime | None = None
     imported_from: str | None = None
     expiry: datetime | None = None
+    tags: list[str] = Field(default_factory=list)
+    notes: str | None = None
     crypto_version: str = "aesgcm-v1"
 
 
 class CredentialSecret(BaseModel):
     secret: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    notes: str | None = None
 
 
 class AccessLogRecord(BaseModel):

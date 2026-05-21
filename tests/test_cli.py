@@ -40,6 +40,8 @@ class StubMutations:
             alias=kwargs.get("alias", "default"),
             credential_type=kwargs.get("credential_type", "api_key"),
             encrypted_payload="encrypted",
+            tags=kwargs.get("tags") or [],
+            notes=kwargs.get("notes"),
         )
         return MutationResult(
             allowed=True,
@@ -357,6 +359,15 @@ def test_verify_no_target_shows_helpful_error(monkeypatch) -> None:
     assert "hermes-vault verify openai" in result.output
 
 
+def test_verify_help_mentions_verifier_plugin_directory() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(_hermes_group, ["verify", "--help"])
+
+    assert result.exit_code == 0
+    assert "$HERMES_VAULT_HOME/verifiers/" in result.output
+
+
 # ── add (canonical service ID) ─────────────────────────────────────────────
 
 
@@ -382,6 +393,33 @@ def test_add_shows_credential_id(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "test-id-123" in result.output
+
+
+def test_add_accepts_tags_and_notes(monkeypatch) -> None:
+    mutations = StubMutations()
+    monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services(mutations=mutations))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        [
+            "add",
+            "openai",
+            "--secret",
+            "sk-test",
+            "--tags",
+            "prod, ai",
+            "--tags",
+            "prod",
+            "--notes",
+            "plaintext note",
+        ],
+    )
+
+    assert result.exit_code == 0
+    kwargs = mutations.calls[0][1]
+    assert kwargs["tags"] == ["prod", "ai"]
+    assert kwargs["notes"] == "plaintext note"
 
 
 # ── show-metadata (error handling) ─────────────────────────────────────────
@@ -605,7 +643,18 @@ def test_import_from_env_reports_skipped_unknowns(monkeypatch, tmp_path: Path) -
     env_path.write_text("OPENAI_API_KEY=fake-openai\nUNKNOWN_NAME=fake\n", encoding="utf-8")
 
     runner = CliRunner()
-    result = runner.invoke(_hermes_group, ["import", "--from-env", str(env_path)])
+    result = runner.invoke(
+        _hermes_group,
+        [
+            "import",
+            "--from-env",
+            str(env_path),
+            "--tags",
+            "imported, env",
+            "--notes",
+            "source import",
+        ],
+    )
 
     assert result.exit_code == 0
     assert "Imported 1 credential" in result.output
@@ -613,6 +662,8 @@ def test_import_from_env_reports_skipped_unknowns(monkeypatch, tmp_path: Path) -
     assert "Skipped" in result.output
     assert "UNKNOWN_NAME" in result.output
     assert mutations.calls[0][1]["service"] == "openai"
+    assert mutations.calls[0][1]["tags"] == ["imported", "env"]
+    assert mutations.calls[0][1]["notes"] == "source import"
 
 
 def test_import_from_env_is_idempotent_and_updates_existing(monkeypatch, tmp_path: Path) -> None:
@@ -1082,6 +1133,42 @@ def test_dashboard_runtime_warning_ignores_non_temp_home(monkeypatch, tmp_path: 
     monkeypatch.setenv("HERMES_VAULT_HOME", "relative-runtime")
 
     assert _dashboard_runtime_warning() is None
+
+
+def test_cli_profile_flag_isolates_runtime_home(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+    monkeypatch.delenv("HERMES_VAULT_PROFILE", raising=False)
+    runner = CliRunner()
+
+    default_add = runner.invoke(_hermes_group, ["--no-banner", "add", "openai", "--secret", "default-secret"])
+    work_add = runner.invoke(_hermes_group, ["--no-banner", "--profile", "work", "add", "github", "--secret", "work-secret"])
+    default_list = runner.invoke(_hermes_group, ["--no-banner", "list"])
+    work_list = runner.invoke(_hermes_group, ["--no-banner", "--profile", "work", "list"])
+
+    assert default_add.exit_code == 0, default_add.output
+    assert work_add.exit_code == 0, work_add.output
+    assert default_list.exit_code == 0, default_list.output
+    assert work_list.exit_code == 0, work_list.output
+    assert (tmp_path / "vault.db").exists()
+    assert (tmp_path / "profiles" / "work" / "vault.db").exists()
+    assert "openai" in default_list.output
+    assert "github" not in default_list.output
+    assert "github" in work_list.output
+    assert "openai" not in work_list.output
+
+
+def test_cli_profile_flag_beats_env_profile(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_PROFILE", "env-profile")
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+    runner = CliRunner()
+
+    result = runner.invoke(_hermes_group, ["--no-banner", "--profile", "cli-profile", "add", "openai", "--secret", "cli-secret"])
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "profiles" / "cli-profile" / "vault.db").exists()
+    assert not (tmp_path / "profiles" / "env-profile" / "vault.db").exists()
 
 
 def _fake_vault():

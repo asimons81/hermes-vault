@@ -14,6 +14,7 @@ from hermes_vault.broker import Broker
 from hermes_vault.dashboard import (
     DashboardAPI,
     DashboardContext,
+    DashboardState,
     _safe_refresh_attempt_dict,
     _sanitize_maintenance_for_dashboard,
     dashboard_static_dir,
@@ -26,7 +27,6 @@ from hermes_vault.models import AccessLogRecord, BrokerDecision, Decision, Verif
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.verifier import Verifier
 from hermes_vault.vault import Vault
-
 
 def _context(tmp_path: Path) -> DashboardContext:
     from hermes_vault.config import AppSettings
@@ -45,11 +45,11 @@ agents:
 """.lstrip(),
         encoding="utf-8",
     )
-    settings = AppSettings(runtime_home=tmp_path, policy_path=policy_path)
+    settings = AppSettings(runtime_home=tmp_path, base_home=tmp_path, policy_path=policy_path)
     settings.ensure_runtime_layout()
     policy = PolicyEngine.from_yaml(policy_path)
     vault = Vault(settings.db_path, settings.salt_path, "test-passphrase")
-    vault.add_credential("openai", "sk-test-secret", "api_key", alias="default")
+    vault.add_credential("openai", "***", "api_key", alias="default", tags=["prod", "ai"], notes="dashboard note")
     audit = AuditLogger(settings.db_path)
     audit.record(
         AccessLogRecord(
@@ -87,7 +87,7 @@ agents:
 """.lstrip(),
         encoding="utf-8",
     )
-    settings = AppSettings(runtime_home=tmp_path, policy_path=policy_path)
+    settings = AppSettings(runtime_home=tmp_path, base_home=tmp_path, policy_path=policy_path)
     settings.ensure_runtime_layout()
     policy = PolicyEngine.from_yaml(policy_path)
     vault = Vault(settings.db_path, settings.salt_path, "test-passphrase")
@@ -123,8 +123,82 @@ def test_dashboard_api_credentials_are_sanitized(tmp_path: Path) -> None:
     assert payload["runtime"]["credential_count"] == 1
     assert payload["runtime"]["db_path"].endswith("vault.db")
     assert payload["runtime"]["home_source"] in {"default", "env"}
+    assert payload["runtime"]["profile"] == "default"
+    assert payload["runtime"]["profile_is_default"] is True
     assert "encrypted_payload" not in payload["credentials"][0]
-    assert "sk-test-secret" not in json.dumps(payload)
+    assert "***" not in json.dumps(payload)
+
+
+def test_dashboard_profiles_endpoint_lists_active_profile(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    (tmp_path / "profiles" / "work").mkdir(parents=True)
+    api = DashboardAPI(context_factory=lambda: ctx)
+
+    payload = api.profiles()
+
+    assert payload["active_profile"] == "default"
+    profiles = {profile["name"]: profile for profile in payload["profiles"]}
+    assert profiles["default"]["active"] is True
+    assert profiles["default"]["db_exists"] is True
+    assert profiles["default"]["credential_count"] == 1
+    assert profiles["work"]["active"] is False
+
+
+def test_dashboard_state_switches_profile_when_passphrase_available(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE_DEFAULT", "default-passphrase")
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE_WORK", "work-passphrase")
+    state = DashboardState(prompt=False)
+    api = DashboardAPI(context_factory=state.current_context, profile_switcher=state.switch_profile)
+
+    status, payload = api.select_profile({"profile": "work"})
+
+    assert status == 200
+    assert payload["selected_profile"] == "work"
+    assert state.current_context().settings.runtime_home == tmp_path / "profiles" / "work"
+
+
+def test_dashboard_profile_switch_requires_passphrase_and_keeps_old_context(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE_DEFAULT", "default-passphrase")
+    monkeypatch.delenv("HERMES_VAULT_PASSPHRASE", raising=False)
+    monkeypatch.delenv("HERMES_VAULT_PASSPHRASE_WORK", raising=False)
+    state = DashboardState(prompt=False)
+    api = DashboardAPI(context_factory=state.current_context, profile_switcher=state.switch_profile)
+
+    status, payload = api.select_profile({"profile": "work"})
+
+    assert status == 409
+    assert payload["requires_passphrase"] is True
+    assert state.current_context().settings.profile_name == "default"
+
+
+def test_dashboard_profile_select_http_endpoint(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE_DEFAULT", "default-passphrase")
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE_WORK", "work-passphrase")
+    state = DashboardState(prompt=False)
+    api = DashboardAPI(context_factory=state.current_context, profile_switcher=state.switch_profile)
+    server = create_dashboard_server(token="secret-token", api=api)
+    try:
+        port = server.server_address[1]
+        import threading
+
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/profile/select",
+            data=json.dumps({"profile": "work"}).encode("utf-8"),
+            headers={"Authorization": "Bearer secret-token", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        assert payload["selected_profile"] == "work"
+        assert state.current_context().settings.profile_name == "work"
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_dashboard_rejects_non_local_binding() -> None:
@@ -569,7 +643,7 @@ def test_dashboard_bad_json_returns_json_400(tmp_path: Path) -> None:
 
 
 def test_run_dashboard_builds_context_before_server_start(monkeypatch) -> None:
-    def fail_context(*, prompt: bool = True):
+    def fail_context(*, prompt: bool = True, profile: str | None = None):
         raise RuntimeError("missing passphrase")
 
     monkeypatch.setattr("hermes_vault.dashboard.build_dashboard_context", fail_context)

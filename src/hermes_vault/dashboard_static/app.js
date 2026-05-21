@@ -38,6 +38,7 @@ const state = {
   credentials: [],
   verificationResults: {},
   policy: null,
+  profiles: [],
   audit: [],
 };
 
@@ -169,7 +170,10 @@ function runtimeDiagnostic() {
   const passphraseSource = runtime.passphrase_source || "-";
   const homeSource = runtime.home_source || "-";
   const isTempRuntime = Boolean(runtime.is_temp_runtime);
-  return { home, dbPath, policyPath, passphraseSource, homeSource, isTempRuntime };
+  const profile = runtime.profile || "default";
+  const profileHome = runtime.profile_home || home;
+  const policySource = runtime.policy_source || "profile";
+  return { home, dbPath, policyPath, passphraseSource, homeSource, isTempRuntime, profile, profileHome, policySource };
 }
 
 function keyValidation() {
@@ -229,17 +233,19 @@ async function loadAll(button) {
   setConnection("Refreshing", "busy");
   renderLoading();
   try {
-    const [overview, credentials, policy, audit] = await Promise.all([
+    const [overview, credentials, policy, audit, profiles] = await Promise.all([
       api("/api/overview"),
       api("/api/credentials"),
       api("/api/policy"),
       api("/api/audit?limit=60"),
+      api("/api/profiles"),
     ]);
     state.overview = overview;
     state.credentials = credentials.credentials || [];
     state.credentialsRuntime = credentials.runtime || null;
     state.policy = policy;
     state.audit = audit.entries || [];
+    state.profiles = profiles.profiles || [];
     render();
     setConnection("Local session", "ready");
   } catch (error) {
@@ -254,10 +260,29 @@ async function loadAll(button) {
 
 function render() {
   renderKeyWarning();
+  renderProfileBadge();
   renderOverview();
   renderCredentials();
   renderPolicy();
   renderAudit();
+}
+
+function renderProfileBadge() {
+  const badge = qs("#profile-badge");
+  if (!badge) return;
+  const diagnostic = runtimeDiagnostic();
+  const profiles = state.profiles || [];
+  const options = profiles.map((profile) => `
+    <option value="${escapeHtml(profile.name)}" ${profile.active ? "selected" : ""}>${escapeHtml(profile.name)}</option>
+  `).join("");
+  badge.innerHTML = `
+    <label>
+      <span>Profile</span>
+      <select id="profile-select" aria-label="Vault profile">${options || `<option value="${escapeHtml(diagnostic.profile)}">${escapeHtml(diagnostic.profile)}</option>`}</select>
+    </label>
+    <div>Vault: ${escapeHtml(diagnostic.profileHome)}</div>
+    <div>Policy: ${escapeHtml(diagnostic.policySource)}</div>
+  `;
 }
 
 function renderOverview() {
@@ -286,12 +311,22 @@ function renderOverview() {
   }));
 }
 
+function renderTagChips(tags) {
+  const safeTags = Array.isArray(tags) ? tags : [];
+  if (!safeTags.length) return "-";
+  return `<span class="tag-list">${safeTags.map((tag) => `<span class="tag-chip">${escapeHtml(tag)}</span>`).join("")}</span>`;
+}
+
 function renderCredentials() {
   const rows = state.credentials.map((record) => `
     <tr>
       <td><strong>${escapeHtml(record.service)}</strong></td>
       <td>${escapeHtml(record.alias)}</td>
       <td>${escapeHtml(record.credential_type)}</td>
+      <td>${renderTagChips(record.tags)}</td>
+      <td>
+        ${record.notes ? `<p class="cell-note metadata-note">${escapeHtml(record.notes)}</p>` : "-"}
+      </td>
       <td><span class="status ${escapeHtml(record.status)}">${escapeHtml(record.status)}</span></td>
       <td>
         <span class="status ${escapeHtml(verificationTone(state.verificationResults[credentialKey(record.service, record.alias)]))}">${escapeHtml(verificationLabel(state.verificationResults[credentialKey(record.service, record.alias)]))}</span>
@@ -305,7 +340,7 @@ function renderCredentials() {
   if (rows.length) {
     renderTable(
       qs("#credential-table"),
-      ["Service", "Alias", "Type", "Status", "Verification", "Last Verified", "Expiry", "Action"],
+      ["Service", "Alias", "Type", "Tags", "Notes", "Status", "Verification", "Last Verified", "Expiry", "Action"],
       rows,
       "No credentials in the vault.",
     );
@@ -318,6 +353,7 @@ function renderCredentials() {
       <strong>No credentials found in this runtime.</strong>
       <p>${diagnostic.isTempRuntime ? "This looks like a temporary/demo runtime. " : ""}Hermes Vault is reading the runtime below. If you expected credentials, relaunch without a demo <code>HERMES_VAULT_HOME</code> or verify that the passphrase matches this vault.</p>
       <dl>
+        <dt>Profile</dt><dd>${escapeHtml(diagnostic.profile)}</dd>
         <dt>Runtime home</dt><dd>${escapeHtml(diagnostic.home)}</dd>
         <dt>Home source</dt><dd>${escapeHtml(diagnostic.homeSource)}</dd>
         <dt>Vault database</dt><dd>${escapeHtml(diagnostic.dbPath)}</dd>
@@ -404,6 +440,27 @@ qsa(".nav-item").forEach((button) => {
     qsa(".view").forEach((view) => view.classList.toggle("active", view.id === state.view));
     qs("#view-title").textContent = button.textContent;
   });
+});
+
+document.body.addEventListener("change", async (event) => {
+  const target = event.target.closest("#profile-select");
+  if (!target) return;
+  const profile = target.value;
+  setConnection("Switching profile", "busy");
+  try {
+    await api("/api/profile/select", {
+      method: "POST",
+      body: JSON.stringify({ profile }),
+    });
+    state.verificationResults = {};
+    await loadAll();
+    setConnection("Local session", "ready");
+  } catch (error) {
+    qs("#action-output").classList.add("error");
+    qs("#action-output").textContent = String(error.message || error);
+    setConnection("Profile switch failed", "error");
+    await loadAll();
+  }
 });
 
 document.body.addEventListener("click", (event) => {

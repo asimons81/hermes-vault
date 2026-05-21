@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
 import pytest
 
+from hermes_vault.crypto import SALT_SIZE
 from hermes_vault.vault import Vault
 from hermes_vault.vault import DuplicateCredentialError, AmbiguousTargetError
 from hermes_vault.models import CredentialStatus
@@ -17,6 +19,115 @@ def test_vault_encrypts_and_decrypts(tmp_path: Path) -> None:
     secret = vault.get_secret("openai")
     assert secret is not None
     assert secret.secret == "sk-secret-1234567890"
+
+
+def test_vault_persists_tags_and_notes(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    record = vault.add_credential(
+        "openai",
+        "sk-sec...7890",
+        "api_key",
+        alias="primary",
+        tags=["ai", " prod ", "ai", ""],
+        notes="  plaintext operator note  ",
+    )
+
+    assert record.tags == ["ai", "prod"]
+    assert record.notes == "plaintext operator note"
+
+    fetched = vault.resolve_credential("openai", alias="primary")
+    assert fetched.tags == ["ai", "prod"]
+    assert fetched.notes == "plaintext operator note"
+
+    secret = vault.get_secret(record.id)
+    assert secret is not None
+    assert secret.tags == ["ai", "prod"]
+    assert secret.notes == "plaintext operator note"
+
+
+def test_vault_replace_preserves_tags_and_notes_by_default(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    original = vault.add_credential(
+        "openai",
+        "sk-old",
+        "api_key",
+        alias="primary",
+        tags=["prod"],
+        notes="keep me",
+    )
+
+    replaced = vault.add_credential(
+        "openai",
+        "sk-new",
+        "api_key",
+        alias="primary",
+        replace_existing=True,
+    )
+
+    assert replaced.id == original.id
+    assert replaced.tags == ["prod"]
+    assert replaced.notes == "keep me"
+    secret = vault.get_secret(replaced.id)
+    assert secret is not None
+    assert secret.tags == ["prod"]
+    assert secret.notes == "keep me"
+
+
+def test_vault_initializes_old_schema_with_tags_notes_defaults(tmp_path: Path) -> None:
+    db_path = tmp_path / "vault.db"
+    salt_path = tmp_path / "salt.bin"
+    salt_path.write_bytes(os.urandom(SALT_SIZE))
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE credentials (
+                id TEXT PRIMARY KEY,
+                service TEXT NOT NULL,
+                alias TEXT NOT NULL,
+                credential_type TEXT NOT NULL,
+                encrypted_payload TEXT NOT NULL,
+                status TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_verified_at TEXT,
+                imported_from TEXT,
+                expiry TEXT,
+                crypto_version TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+    vault = Vault(db_path, salt_path, "test-passphrase")
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(credentials)").fetchall()}
+
+    assert "tags" in columns
+    assert "notes" in columns
+    record = vault.add_credential("openai", "sk-test", "api_key")
+    assert record.tags == []
+    assert record.notes is None
+
+
+def test_vault_backup_preserves_tags_and_notes(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    record = vault.add_credential(
+        "openai",
+        "sk-test",
+        "api_key",
+        tags=["prod"],
+        notes="backup note",
+    )
+
+    backup = vault.export_backup()
+    assert backup["credentials"][0]["tags"] == ["prod"]
+    assert backup["credentials"][0]["notes"] == "backup note"
+
+    imported = vault.import_backup(backup)
+    restored = next(item for item in imported if item.id == record.id)
+    assert restored.tags == ["prod"]
+    assert restored.notes == "backup note"
 
 
 def test_vault_preserves_secret_metadata_on_add_and_rotate(tmp_path: Path) -> None:

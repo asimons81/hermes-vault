@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import getpass
 import os
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes
@@ -28,19 +30,55 @@ class CorruptKeyMaterialError(RuntimeError):
     pass
 
 
-def resolve_passphrase(explicit_passphrase: str | None = None, prompt: bool = False) -> str:
+@dataclass(frozen=True)
+class PassphraseResult:
+    passphrase: str
+    source: str
+
+
+def profile_passphrase_env_name(profile_name: str = "default") -> str:
+    suffix = re.sub(r"[^A-Za-z0-9]", "_", profile_name or "default").upper()
+    return f"HERMES_VAULT_PASSPHRASE_{suffix}"
+
+
+def resolve_passphrase_with_source(
+    explicit_passphrase: str | None = None,
+    prompt: bool = False,
+    profile_name: str = "default",
+) -> PassphraseResult:
     if explicit_passphrase:
-        return explicit_passphrase
+        return PassphraseResult(explicit_passphrase, "explicit")
+
+    profile_env = profile_passphrase_env_name(profile_name)
+    profile_env_passphrase = os.environ.get(profile_env)
+    if profile_env_passphrase:
+        return PassphraseResult(profile_env_passphrase, f"env:{profile_env}")
+
     env_passphrase = os.environ.get("HERMES_VAULT_PASSPHRASE")
     if env_passphrase:
-        return env_passphrase
+        return PassphraseResult(env_passphrase, "env:HERMES_VAULT_PASSPHRASE")
+
     if prompt:
         secret = getpass.getpass("Hermes Vault passphrase: ")
         if secret:
-            return secret
+            return PassphraseResult(secret, "prompt")
+
+    hint = f" or {profile_env}" if profile_name and profile_name != "default" else ""
     raise MissingPassphraseError(
-        "No Hermes Vault passphrase available. Set HERMES_VAULT_PASSPHRASE or use an interactive prompt."
+        f"No Hermes Vault passphrase available. Set HERMES_VAULT_PASSPHRASE{hint} or use an interactive prompt."
     )
+
+
+def resolve_passphrase(
+    explicit_passphrase: str | None = None,
+    prompt: bool = False,
+    profile_name: str = "default",
+) -> str:
+    return resolve_passphrase_with_source(
+        explicit_passphrase=explicit_passphrase,
+        prompt=prompt,
+        profile_name=profile_name,
+    ).passphrase
 
 
 def load_or_create_salt(path: Path, create_if_missing: bool = False) -> bytes:

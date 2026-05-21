@@ -48,7 +48,7 @@ body::before {
   mask-image: linear-gradient(180deg, rgba(0,0,0,.9), transparent 78%);
 }
 
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 
 button {
   cursor: pointer;
@@ -353,6 +353,41 @@ input:focus-visible {
   max-width: 1320px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.profile-badge {
+  max-width: min(42vw, 520px);
+  padding: 9px 12px;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 8px;
+  color: var(--soft);
+  background: rgba(255,255,255,.045);
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.profile-badge label {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.profile-badge select {
+  max-width: 160px;
+  border: 1px solid rgba(85, 220, 233, .35);
+  border-radius: 6px;
+  color: var(--text);
+  background: #10151b;
+  padding: 4px 8px;
+}
+
 .key-warning {
   position: relative;
   z-index: 1;
@@ -581,7 +616,7 @@ h2 { font-size: 16px; }
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 760px;
+  min-width: 980px;
 }
 
 th, td {
@@ -613,6 +648,31 @@ tbody tr:hover { background: rgba(255,255,255,.035); }
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
+}
+
+.metadata-note {
+  max-width: 220px;
+  margin-top: 0;
+  overflow-wrap: anywhere;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-width: 180px;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(85, 220, 233, .24);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--cyan);
+  background: rgba(85, 220, 233, .08);
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .empty-row td {

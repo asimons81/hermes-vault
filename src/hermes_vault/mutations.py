@@ -63,6 +63,8 @@ class VaultMutations:
         alias: str = "default",
         imported_from: str | None = None,
         scopes: list[str] | None = None,
+        tags: list[str] | None = None,
+        notes: str | None = None,
         replace_existing: bool = False,
         metadata: dict | None = None,
     ) -> MutationResult:
@@ -95,6 +97,8 @@ class VaultMutations:
                 alias=alias,
                 imported_from=imported_from,
                 scopes=scopes,
+                tags=tags,
+                notes=notes,
                 metadata=metadata,
                 replace_existing=replace_existing,
             )

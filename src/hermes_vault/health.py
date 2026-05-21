@@ -139,6 +139,7 @@ def run_health(
     stale_days: int = 30,
     expiring_days: int = 7,
     backup_days: int = 30,
+    services: set[str] | None = None,
 ) -> HealthReport:
     """Produce a read-only health report for the vault.
 
@@ -157,6 +158,9 @@ def run_health(
         Credentials expiring within this many days are flagged.
     backup_days:
         A backup older than this many days produces a warning.
+    services:
+        Optional normalized service-id allowlist. When provided, all credential
+        counts and findings are scoped to records whose service is in the set.
 
     Returns
     -------
@@ -173,6 +177,8 @@ def run_health(
 
     # ── credentials ─────────────────────────────────────────────────
     records = vault.list_credentials()
+    if services is not None:
+        records = [rec for rec in records if rec.service in services]
     report.total_credentials = len(records)
 
     healthy = 0

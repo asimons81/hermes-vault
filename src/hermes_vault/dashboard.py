@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import secrets
+import sqlite3
 import threading
 import time
 import urllib.parse
@@ -17,12 +18,13 @@ from typing import Any, Callable
 from hermes_vault.audit import AuditLogger
 from hermes_vault.backup import restore_dry_run, verify_backup_file
 from hermes_vault.broker import Broker
-from hermes_vault.config import AppSettings, get_settings
-from hermes_vault.crypto import resolve_passphrase
+from hermes_vault.config import AppSettings, get_settings, list_profiles, validate_profile_name
+from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase_with_source
 from hermes_vault.health import run_health
 from hermes_vault.maintenance import run_maintenance
 from hermes_vault.models import CredentialRecord
 from hermes_vault.oauth.oauth_refresh import RefreshEngine
+from hermes_vault.oauth.providers import OAuthProviderRegistry
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.policy_doctor import run_policy_doctor
 from hermes_vault.service_ids import normalize
@@ -68,19 +70,20 @@ class DashboardContext:
     policy: PolicyEngine
     broker: Broker
     audit: AuditLogger
+    passphrase_source: str | None = None
 
 
-def build_dashboard_context(*, prompt: bool = True) -> DashboardContext:
-    settings = get_settings()
+def build_dashboard_context(*, prompt: bool = True, profile: str | None = None) -> DashboardContext:
+    settings = get_settings(profile=profile)
     policy = PolicyEngine.from_yaml(settings.effective_policy_path)
     policy.write_default(settings.effective_policy_path)
-    passphrase = resolve_passphrase(prompt=prompt)
-    vault = Vault(settings.db_path, settings.salt_path, passphrase)
+    passphrase_result = resolve_passphrase_with_source(prompt=prompt, profile_name=settings.profile_name)
+    vault = Vault(settings.db_path, settings.salt_path, passphrase_result.passphrase)
     audit = AuditLogger(settings.db_path)
     broker = Broker(
         vault=vault,
         policy=policy,
-        verifier=Verifier(),
+        verifier=Verifier(plugin_dir=settings.verifier_plugin_dir),
         audit=audit,
     )
     return DashboardContext(
@@ -89,7 +92,29 @@ def build_dashboard_context(*, prompt: bool = True) -> DashboardContext:
         policy=policy,
         broker=broker,
         audit=audit,
+        passphrase_source=passphrase_result.source,
     )
+
+
+class DashboardState:
+    def __init__(self, initial_profile: str | None = None, prompt: bool = True) -> None:
+        self._lock = threading.RLock()
+        self._prompt = prompt
+        self._context = build_dashboard_context(prompt=prompt, profile=initial_profile)
+
+    def current_context(self) -> DashboardContext:
+        with self._lock:
+            return self._context
+
+    def switch_profile(self, profile: str) -> DashboardContext:
+        name = validate_profile_name(profile)
+        new_context = build_dashboard_context(prompt=False, profile=name)
+        key_validation = validate_vault_key(new_context)
+        if key_validation.get("ok") is False:
+            raise ValueError(key_validation.get("reason") or "Vault key material is not valid for selected profile")
+        with self._lock:
+            self._context = new_context
+            return self._context
 
 
 def dashboard_static_dir() -> Path:
@@ -108,6 +133,8 @@ def sanitize_credential(record: CredentialRecord) -> dict[str, Any]:
         "credential_type": record.credential_type,
         "status": record.status.value,
         "scopes": list(record.scopes),
+        "tags": list(record.tags),
+        "notes": record.notes,
         "created_at": record.created_at.isoformat(),
         "updated_at": record.updated_at.isoformat(),
         "last_verified_at": record.last_verified_at.isoformat() if record.last_verified_at else None,
@@ -188,15 +215,26 @@ def runtime_metadata(ctx: DashboardContext) -> dict[str, Any]:
         "salt_exists": ctx.settings.salt_path.exists(),
         "credential_count": len(credentials),
         "key_validation": validate_vault_key(ctx),
-        "passphrase_source": "env" if os.environ.get("HERMES_VAULT_PASSPHRASE") else "prompt",
-        "home_source": "env" if os.environ.get("HERMES_VAULT_HOME") else "default",
+        "passphrase_source": ctx.passphrase_source or "unknown",
+        "home_source": ctx.settings.profile_home_source,
         "is_temp_runtime": str(ctx.settings.runtime_home).startswith("/tmp/"),
+        "profile": ctx.settings.profile_name,
+        "profile_source": ctx.settings.profile_source,
+        "profile_home": str(ctx.settings.runtime_home),
+        "base_home": str(ctx.settings.base_home),
+        "profile_is_default": ctx.settings.profile_name == "default",
+        "policy_source": ctx.settings.policy_source,
     }
 
 
 class DashboardAPI:
-    def __init__(self, context_factory: Callable[[], DashboardContext] = build_dashboard_context) -> None:
+    def __init__(
+        self,
+        context_factory: Callable[[], DashboardContext] = build_dashboard_context,
+        profile_switcher: Callable[[str], DashboardContext] | None = None,
+    ) -> None:
         self._context_factory = context_factory
+        self._profile_switcher = profile_switcher
 
     def overview(self) -> dict[str, Any]:
         ctx = self._context_factory()
@@ -259,6 +297,58 @@ class DashboardAPI:
             "allowed_agents": list(ctx.settings.mcp_allowed_agents),
             "default_agent": ctx.settings.mcp_default_agent,
         }
+
+    def profiles(self) -> dict[str, Any]:
+        ctx = self._context_factory()
+        active = ctx.settings.profile_name
+        profiles = []
+        for profile in list_profiles(ctx.settings.base_home):
+            db_path = profile.profile_home / "vault.db"
+            policy_path = profile.profile_home / "policy.yaml"
+            credential_count: int | None = None
+            if db_path.exists():
+                try:
+                    with sqlite3.connect(db_path) as conn:
+                        row = conn.execute("SELECT COUNT(*) FROM credentials").fetchone()
+                    credential_count = int(row[0]) if row else 0
+                except Exception:
+                    credential_count = None
+            profiles.append(
+                {
+                    "name": profile.name,
+                    "profile_home": str(profile.profile_home),
+                    "base_home": str(profile.base_home),
+                    "is_default": profile.is_default,
+                    "active": profile.name == active,
+                    "db_exists": db_path.exists(),
+                    "policy_exists": policy_path.exists(),
+                    "credential_count": credential_count,
+                }
+            )
+        return {"version": DASHBOARD_VERSION, "active_profile": active, "profiles": profiles}
+
+    def select_profile(self, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        switcher = getattr(self, "_profile_switcher", None)
+        if switcher is None:
+            return 409, {"error": "Dashboard profile switching is not enabled for this server."}
+        profile = str(payload.get("profile") or "").strip()
+        if not profile:
+            return 400, {"error": "profile is required"}
+        try:
+            ctx = switcher(profile)
+        except ValueError as exc:
+            return 422, {"error": str(exc), "profile": profile}
+        except MissingPassphraseError as exc:
+            relaunch = f"hermes-vault --profile {profile} dashboard"
+            return 409, {
+                "error": str(exc),
+                "profile": profile,
+                "requires_passphrase": True,
+                "relaunch_command": relaunch,
+            }
+        except Exception as exc:
+            return 500, {"error": str(exc), "profile": profile}
+        return 200, {"version": DASHBOARD_VERSION, "selected_profile": ctx.settings.profile_name, "runtime": runtime_metadata(ctx)}
 
     def session(self, server: "DashboardServer") -> dict[str, Any]:
         ctx = self._context_factory()
@@ -341,8 +431,10 @@ class DashboardAPI:
         return {"version": DASHBOARD_VERSION, "results": results}
 
     def _action_oauth_refresh(self, payload: dict[str, Any], ctx: DashboardContext) -> dict[str, Any]:
+        registry = OAuthProviderRegistry(ctx.settings.runtime_home / "oauth-providers.yaml")
         engine = RefreshEngine(
             vault=ctx.vault,
+            registry=registry,
             proactive_margin_seconds=int(payload.get("margin") or 300),
         )
         engine.set_audit(ctx.audit)
@@ -508,7 +600,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
-        if not parsed.path.startswith("/api/actions/"):
+        if not parsed.path.startswith("/api/"):
             self._write_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             return
         if not self._authorized(parsed):
@@ -518,6 +610,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             payload = self._read_json()
         except ValueError as exc:
             self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/api/profile/select":
+            status, response = self.server.api.select_profile(payload)
+            self._write_json(response, status=status)
+            return
+        if not parsed.path.startswith("/api/actions/"):
+            self._write_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             return
         action = parsed.path.rsplit("/", 1)[-1]
         status, response = self.server.api.action(action, payload)
@@ -562,6 +661,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._write_json(self.server.api.audit(limit=limit))
         elif path == "/api/mcp":
             self._write_json(self.server.api.mcp_status())
+        elif path == "/api/profiles":
+            self._write_json(self.server.api.profiles())
         elif path == "/api/session":
             self._write_json(self.server.api.session(self.server))
         else:
@@ -675,7 +776,7 @@ def run_dashboard(
     no_intro: bool = False,
     ttl_seconds: int = 3600,
 ) -> tuple[str, DashboardServer]:
-    context = build_dashboard_context(prompt=True)
+    state = DashboardState(prompt=True)
     dev_origin = None
     if dev_assets:
         parsed_dev_assets = urllib.parse.urlparse(dev_assets)
@@ -684,7 +785,7 @@ def run_dashboard(
     server = create_dashboard_server(
         host=host,
         port=port,
-        api=DashboardAPI(context_factory=lambda: context),
+        api=DashboardAPI(context_factory=state.current_context, profile_switcher=state.switch_profile),
         ttl_seconds=ttl_seconds,
         dev_origin=dev_origin,
     )

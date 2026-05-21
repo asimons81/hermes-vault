@@ -36,13 +36,47 @@ export HERMES_VAULT_MCP_DEFAULT_AGENT='claude-desktop'
 hermes-vault mcp
 ```
 
-When the binding env vars are set, the server denies any `agent_id` outside the allowed set before policy evaluation. When they are not set, `agent_id` remains required on every MCP tool call.
+When the binding env vars are set, the server denies any `agent_id` outside the allowed set before policy evaluation. When they are not set, `agent_id` remains required on every MCP tool call or MCP resource read.
 
 ## Caller Identity
 
 The MCP server uses the caller's supplied `agent_id` unless the deployment provides an allowed-agent binding plus a default agent. In bound mode, the default agent is used only when the host omits `agent_id`.
 
 This is a deployment guardrail, not strong authentication. Policy still decides what the effective agent may do once identity is resolved.
+
+MCP resource reads receive only a URI, not JSON tool arguments. In unbound mode, include identity in the query string, for example `vault://services?agent_id=hermes`. In bound mode, set both `HERMES_VAULT_MCP_ALLOWED_AGENTS` and `HERMES_VAULT_MCP_DEFAULT_AGENT` so bare resource URIs such as `vault://services` resolve to the configured default agent.
+
+## Available MCP Resources
+
+Resources are read-only, metadata-only context. They never return raw secrets, encrypted payloads, or brokered environment variable values. Use tools for active operations like env materialization, live verification, OAuth, rotation, and scanning.
+
+| Resource URI | Description | Policy scope |
+|--------------|-------------|--------------|
+| `vault://services` | Lists credential services visible to the effective agent. | Requires `list_credentials`; returns only services in the effective agent policy. |
+| `vault://services/{name}` | Returns safe metadata for one service. Optional query params: `agent_id`, `alias`. | Requires `metadata` action on the requested service. |
+| `vault://health` | Returns a no-live-verify health snapshot. | Requires `list_credentials`; counts and findings are limited to services in the effective agent policy. |
+| `vault://policy` | Returns the effective agent's sanitized policy summary. | Returns only that agent's services, capabilities, TTL settings, approval-required services, and service actions. |
+
+Examples:
+
+```text
+vault://services?agent_id=hermes
+vault://services/github?agent_id=hermes
+vault://services/github?agent_id=hermes&alias=work
+vault://health?agent_id=hermes
+vault://policy?agent_id=hermes
+```
+
+In a bound deployment with a default agent, the same resources can be read without the `agent_id` query:
+
+```text
+vault://services
+vault://services/github
+vault://health
+vault://policy
+```
+
+Resource responses use `application/json`. Authorization and binding denials are returned as JSON content with `version: "vault-resource-error-v1"` so clients can parse them consistently.
 
 ## Available MCP Tools
 
@@ -144,6 +178,7 @@ For Hermes Vault, this becomes:
 | "No refresh token found" | No `refresh:<alias>` record exists yet | Run `oauth_login` first or run `oauth normalize` on older vaults |
 | "Denied:" | Policy blocks the agent | Add the service/action to the agent's policy |
 | "Denied: agent 'X' is not allowed for this MCP server" | The caller identity is outside `HERMES_VAULT_MCP_ALLOWED_AGENTS` | Use an allowed agent or change the binding env vars |
-| "Missing required parameter: agent_id" | Unbound server mode still requires caller identity | Supply `agent_id`, or launch the server with a default agent binding |
+| "Missing required parameter: agent_id" | Unbound server mode still requires caller identity for tools and resources | Supply `agent_id`, or launch the server with a default agent binding |
+| Resource returns `vault-resource-error-v1` | A resource binding or policy check failed | Read the JSON `error` field and adjust `agent_id`, binding env vars, or policy |
 | Callback times out | User didn't complete browser auth within 120s | Retry login |
 | State mismatch | CSRF attack or stale callback | Retry login with fresh state |

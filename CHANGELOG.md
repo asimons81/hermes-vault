@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.0 -- Profile, Verifier, and MCP Expansion
+
+### Added
+
+- **Credential tags and notes** -- top-level tags and notes now persist through encryption, schema migration, CLI add/import/list/metadata paths, dashboard views, MCP metadata, and backup round-trips.
+- **MCP resources** -- `vault://services`, `vault://services/{name}`, `vault://health`, and `vault://policy` expose read-only broker and health data without raw secrets or encrypted payloads.
+- **Verifier plugins** -- file-based YAML verifier plugins and entry-point discovery extend provider verification while preserving the existing broker compatibility path.
+- **Multi-vault profiles** -- profile-aware home resolution isolates pending OAuth state, verifier plugin directories, and CLI/dashboard/MCP flows across vault profiles.
+- **Community onboarding docs** -- CONTRIBUTING guidance, issue templates, PR template, and architecture docs now give contributors a clearer path into the repo.
+
+### Changed
+
+- Version surfaces now report `0.9.0` in `pyproject.toml`, `src/hermes_vault/__init__.py`, and `src/hermes_vault/mcp_server.py`.
+- Current release validation passed the full pytest suite and import check before the version bump was recorded.
+
+
 ## 0.8.0 -- Hermes Vault Console Release
 
 ### Added

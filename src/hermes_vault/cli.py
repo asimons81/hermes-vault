@@ -16,7 +16,7 @@ from rich.table import Table
 
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
-from hermes_vault.config import get_settings
+from hermes_vault.config import get_settings, reset_active_profile, set_active_profile
 from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase
 from hermes_vault.detectors import EnvImportDecision, classify_env_name, detect_matches, parse_env_map
 from hermes_vault.diff import diff_backups
@@ -138,15 +138,22 @@ class HermesGroup(click.Group, typer.Typer):
     def invoke(self, ctx: click.Context) -> None:
         """Fire the banner before every command dispatch. Also resolve Typer groups."""
         self._resolve_typer_groups(ctx)
-        # Skip banner for Click's internal recursive main() call (--help / --version):
-        # in that call ctx.obj is already set (inherited from parent context).
-        if (
-            not ctx.params.get("no_banner", False)
-            and _should_show_banner()
-            and not getattr(ctx, "obj", None)
-        ):
-            _show_banner()
-        super().invoke(ctx)
+        try:
+            profile_token = set_active_profile(ctx.params.get("profile"))
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--profile") from exc
+        try:
+            # Skip banner for Click's internal recursive main() call (--help / --version):
+            # in that call ctx.obj is already set (inherited from parent context).
+            if (
+                not ctx.params.get("no_banner", False)
+                and _should_show_banner()
+                and not getattr(ctx, "obj", None)
+            ):
+                _show_banner()
+            super().invoke(ctx)
+        finally:
+            reset_active_profile(profile_token)
 
     def _resolve_typer_groups(self, ctx: click.Context) -> None:
         """Resolve Typer sub-groups into Click commands on first use."""
@@ -194,6 +201,10 @@ class HermesGroup(click.Group, typer.Typer):
 _hermes_group = HermesGroup(
     params=[
         click.Option(
+            ["--profile"],
+            help="Select a Hermes Vault profile (default maps to HERMES_VAULT_HOME).",
+        ),
+        click.Option(
             ["--no-banner"],
             is_flag=True,
             is_eager=True,
@@ -209,10 +220,10 @@ def build_services(prompt: bool = False) -> tuple[Vault, PolicyEngine, Broker, V
     settings = get_settings()
     policy = PolicyEngine.from_yaml(settings.effective_policy_path)
     policy.write_default(settings.effective_policy_path)
-    passphrase = resolve_passphrase(prompt=prompt)
+    passphrase = resolve_passphrase(prompt=prompt, profile_name=settings.profile_name)
     vault = Vault(settings.db_path, settings.salt_path, passphrase)
     audit = AuditLogger(settings.db_path)
-    verifier = Verifier()
+    verifier = Verifier(plugin_dir=settings.verifier_plugin_dir)
     broker = Broker(vault=vault, policy=policy, verifier=verifier, audit=audit)
     mutations = VaultMutations(vault=vault, policy=policy, audit=audit)
     return vault, policy, broker, mutations
@@ -225,6 +236,20 @@ def _handle_mutation_error(result, success_msg: str | None = None) -> None:
         raise typer.Exit(code=1)
     if success_msg:
         console.print(success_msg)
+
+
+def _parse_tags(values: list[str] | None) -> list[str]:
+    """Normalize repeated or comma-separated --tags values."""
+    tags: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        for part in str(raw).split(","):
+            tag = part.strip()
+            if not tag or tag in seen:
+                continue
+            tags.append(tag)
+            seen.add(tag)
+    return tags
 
 
 # ── Selector help text ───────────────────────────────────────────────────────────
@@ -282,6 +307,8 @@ def import_credentials(
     redact_source: bool = typer.Option(False, "--redact-source", help="Comment out imported lines in the source file after successful import."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview imports and skips without mutating the vault or source file."),
     env_map: list[str] | None = typer.Option(None, "--map", help="Explicit mapping ENV_NAME=service:credential_type. Repeatable."),
+    tags: list[str] | None = typer.Option(None, "--tags", help="Plaintext metadata tags for imported credentials. Repeat or comma-separate."),
+    notes: str | None = typer.Option(None, "--notes", help="Plaintext metadata notes for imported credentials."),
 ) -> None:
     """Import credentials from env files or JSON.
 
@@ -308,6 +335,7 @@ def import_credentials(
         raise typer.Exit(code=1)
 
     overrides: dict[str, tuple[str, str]] = {}
+    parsed_tags = _parse_tags(tags)
     for mapping in env_map or []:
         try:
             env_name, service, credential_type = parse_env_map(mapping)
@@ -380,6 +408,8 @@ def import_credentials(
                     credential_type=decision.credential_type,
                     alias=alias,
                     imported_from=str(source),
+                    tags=parsed_tags,
+                    notes=notes,
                     replace_existing=existing_record is not None,
                 )
                 if not result.allowed:
@@ -473,6 +503,8 @@ def import_credentials(
             credential_type=detector.credential_type,
             alias=alias,
             imported_from=str(source),
+            tags=parsed_tags,
+            notes=notes,
             replace_existing=existing_record is not None,
         )
         if not result.allowed:
@@ -505,6 +537,8 @@ def add(
     alias: str = typer.Option("default", "--alias", help="Alias for this credential. Required when adding a second credential for the same service."),
     credential_type: str = typer.Option("api_key", "--credential-type", help="Credential type (api_key, personal_access_token, oauth_access_token, etc.)."),
     secret: str | None = typer.Option(None, "--secret", help="The secret value. Prompts interactively if omitted."),
+    tags: list[str] | None = typer.Option(None, "--tags", help="Plaintext metadata tags. Repeat or comma-separate."),
+    notes: str | None = typer.Option(None, "--notes", help="Plaintext metadata notes. Do not put secrets here."),
 ) -> None:
     """Add a credential to the vault.
 
@@ -526,6 +560,8 @@ def add(
         secret=secret_value,
         credential_type=credential_type,
         alias=alias,
+        tags=_parse_tags(tags),
+        notes=notes,
     )
     if not result.allowed:
         console.print(f"[red]Denied: {result.reason}[/red]")
@@ -550,6 +586,7 @@ def list_credentials_cmd(ctx: typer.Context) -> None:
     table.add_column("Service")
     table.add_column("Alias")
     table.add_column("Type")
+    table.add_column("Tags")
     table.add_column("Status")
     table.add_column("Last Verified")
     for record in records:
@@ -558,6 +595,7 @@ def list_credentials_cmd(ctx: typer.Context) -> None:
             record.service,
             record.alias,
             record.credential_type,
+            ", ".join(record.tags) if record.tags else "-",
             record.status.value,
             record.last_verified_at.isoformat() if record.last_verified_at else "-",
         )
@@ -896,6 +934,8 @@ def status(
             "service": rec.service,
             "alias": rec.alias,
             "credential_type": rec.credential_type,
+            "tags": rec.tags,
+            "notes": rec.notes,
             "status": rec.status.value,
             "last_verified_at": last_verified.isoformat() if last_verified else None,
             "expiry": expiry.isoformat() if expiry else None,
@@ -1089,12 +1129,15 @@ def verify(
 ) -> None:
     """Verify credential(s) against provider endpoints.
 
-    Target a single credential or use --all to verify everything.
+    Target a single credential or use --all to verify everything. Built-in verifiers
+    cover common providers; operators can add custom HTTP verifier YAML files under
+    $HERMES_VAULT_HOME/verifiers/ without modifying core code.
 
     \b
     Examples:
       hermes-vault verify openai
       hermes-vault verify github --alias work
+      hermes-vault verify acme-custom
       hermes-vault verify a1b2c3d4-...
       hermes-vault verify --all
       hermes-vault verify --all --format table

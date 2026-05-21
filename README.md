@@ -36,6 +36,37 @@ python3 -m pip install -e .[dev]
 
 Hermes Vault targets Python 3.11+.
 
+## For Contributors
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, safe test vault usage, test commands, and PR expectations.
+
+Quick contributor loop:
+
+```bash
+uv sync --extra dev
+uv run python -m pytest tests/ -q
+```
+
+Or with an editable pip install:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+python -m pytest tests/ -q
+```
+
+Helpful docs:
+
+- [Contributor architecture map](docs/ARCHITECTURE.md)
+- [Detailed architecture notes](docs/architecture.md)
+- [Operator guide](docs/operator-guide.md)
+- [MCP server guide](docs/mcp-server.md)
+- [Threat model](docs/threat-model.md)
+- [Credential lifecycle](docs/credential-lifecycle.md)
+
+For issues and PRs, use the GitHub templates. Never paste real tokens, passphrases, vault databases, provider token responses, or unredacted `.env` files into issues, docs, tests, logs, or screenshots.
+
 ## Update
 
 Check for the latest tagged release without changing the environment:

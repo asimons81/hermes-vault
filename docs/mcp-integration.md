@@ -36,7 +36,7 @@ mcp_servers:
 
 ## 2. How it works (auto-start)
 
-When Hermes loads, it reads `mcp_servers` from `config.yaml`.  Any server with `enabled: true` is started automatically via stdio transport.  Hermes discovers the tools exposed by the server and makes them available to the agent loop.
+When Hermes loads, it reads `mcp_servers` from `config.yaml`.  Any server with `enabled: true` is started automatically via stdio transport.  Hermes discovers the tools and resources exposed by the server and makes them available to the agent loop.
 
 `hermes-vault` exposes the following MCP tools:
 
@@ -51,6 +51,34 @@ When Hermes loads, it reads `mcp_servers` from `config.yaml`.  Any server with `
 | `oauth_login` | Initiate a PKCE OAuth login flow for a provider. |
 | `oauth_refresh` | Refresh an OAuth access token using a stored refresh token. |
 
+`hermes-vault` also exposes read-only MCP resources:
+
+| Resource | Description |
+|----------|-------------|
+| `vault://services` | Policy-scoped service inventory for the effective agent. |
+| `vault://services/{name}` | Safe metadata for one visible service. Optional query params: `agent_id`, `alias`. |
+| `vault://health` | Policy-scoped health snapshot with `verified_live: false`. |
+| `vault://policy` | Sanitized policy summary for the effective agent only. |
+
+Resources are context, tools are actions. Read resources to understand available services, health, and policy boundaries. Call tools when you need to materialize env vars, verify providers live, refresh OAuth, rotate credentials, or scan files.
+
+For bare resource URIs, bind the MCP server to a default policy agent:
+
+```yaml
+mcp_servers:
+  hermes-vault:
+    command: /home/tony/.local/hermes-vault-venv/bin/hermes-vault
+    args:
+      - mcp
+    enabled: true
+    env:
+      HERMES_VAULT_HOME: /home/tony/.hermes/hermes-vault-data
+      HERMES_VAULT_MCP_ALLOWED_AGENTS: hermes
+      HERMES_VAULT_MCP_DEFAULT_AGENT: hermes
+```
+
+Without a default binding, include identity in the URI query, for example `vault://services?agent_id=hermes`.
+
 ## 3. Verifying registration
 
 After adding the config entry, start a new Hermes session and run:
@@ -59,7 +87,7 @@ After adding the config entry, start a new Hermes session and run:
 hermes mcp list
 ```
 
-You should see `hermes-vault` listed with its transport (`python -m hermes_vault.mcp_server`) and tool count.
+You should see `hermes-vault` listed with its transport (`python -m hermes_vault.mcp_server`) and discovered capabilities.
 
 To test the OAuth tools specifically, ask Hermes:
 
