@@ -4,7 +4,7 @@
 
 Hermes Vault is a local-first Python project that centralizes credential scanning, secure storage, brokered access, policy enforcement, verification, auditing, maintenance, and skill generation for Hermes and Hermes sub-agents.
 
-v0.10.0 is the published partial unattended-auth release: OAuth refresh can run without a browser after a refresh token exists, but first login still uses PKCE with a localhost callback. Browserless first login and device-code authorization aren't part of the current architecture.
+v0.10.1 is the device-code follow-up release: OAuth refresh can still run without a browser after a refresh token exists, and first login now has a browserless device-code path on supported providers. v0.10.0 remains the published partial unattended-refresh release.
 
 ## Major Components
 
@@ -96,7 +96,7 @@ v0.10.0 is the published partial unattended-auth release: OAuth refresh can run 
 - Exposes brokered capabilities as MCP tools: list_services, get_credential_metadata, get_ephemeral_env, verify_credential, rotate_credential, scan_for_secrets
 - **New in 0.6.0:** `oauth_login` initiates PKCE login and returns an authorization URL. A background thread spawns a callback server, waits for the browser redirect, exchanges the code for tokens, and stores them in the vault atomically.
 - **New in 0.6.0:** `oauth_refresh` triggers the `RefreshEngine` to proactively or on-demand refresh expired access tokens.
-- **Current v0.10.0 boundary:** MCP OAuth login is still callback-based PKCE. It doesn't expose device-code login, and adding that surface requires Hermes/Tony review.
+- **Current v0.10.1 boundary:** MCP OAuth login supports both callback-based PKCE and device-code login on providers that expose it.
 - Every tool call uses caller-supplied `agent_id` unless the server is launched with `HERMES_VAULT_MCP_ALLOWED_AGENTS` and `HERMES_VAULT_MCP_DEFAULT_AGENT`
 - Bound MCP deployments deny agent IDs outside the allowed set before policy evaluation and audit the binding decision separately
 - MCP access defaults to policy-gated ephemeral env materialization rather than direct raw-secret handling
@@ -179,7 +179,7 @@ Live OAuth refresh, live maintenance, credential add/import/rotate/delete, polic
 - MCP access defaults to policy-gated ephemeral environment materialization rather than direct raw-secret handling
 - v0.7.0 adds maintenance, policy doctor, OAuth normalization, and backup verification/drill without changing the local-first storage model
 - v0.8.0 adds the local dashboard as a token-guarded localhost operator surface; it is not a remote service or a raw-secret UI
-- v0.10.0 adds unattended OAuth refresh for existing OAuth credentials, but not browserless first login or device-code authorization
+- v0.10.1 adds unattended OAuth refresh for existing OAuth credentials plus browserless device-code first login on supported providers
 - Dashboard visual polish is a release concern only when bundled assets, responsive layouts, and first-run intro behavior pass smoke checks
 - **OAuth-specific:**
   - CSRF protection via randomly-generated state parameter validated with timing-safe comparison

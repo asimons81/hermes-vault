@@ -4,7 +4,18 @@
 
 ### Added
 
-- Future auth work will focus on browserless initial login options for headless operators.
+- Future auth work will focus on provider coverage and browserless initial-login polish.
+
+## 0.10.1 -- Device-Code Login Follow-up
+
+### Added
+
+- `hermes-vault oauth device-login <provider>` adds a no-browser OAuth device-code flow for supported providers, so headless operators can complete first login without a local callback browser.
+- Device-code support now threads through the CLI and OAuth exchange layer, including provider capability checks and token polling.
+
+### Changed
+
+- Version surfaces now report `0.10.1` in `pyproject.toml`, `src/hermes_vault/__init__.py`, and `src/hermes_vault/mcp_server.py`.
 
 ## 0.10.0 -- Unattended OAuth and Custom Verifiers
 

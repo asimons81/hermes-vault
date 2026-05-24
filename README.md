@@ -249,6 +249,16 @@ hermes-vault oauth refresh google --alias work
 hermes-vault oauth providers
 ```
 
+## What's New in 0.10.1 - Device-Code Login
+
+v0.10.1 adds explicit OAuth device-code login for supported providers. Use it when you need first-time authorization on a headless machine or don't have a browser on the box.
+
+```bash
+hermes-vault oauth device-login google --alias work
+```
+
+`oauth login` is still the browser-based PKCE path, and `oauth refresh` still covers unattended renewal after a refresh token exists.
+
 ## What's New in 0.10.0 - Unattended OAuth and Custom Verifiers
 
 v0.10.0 is the published partial unattended-auth release. It ships non-interactive refresh for OAuth credentials that already have a stored `refresh:<alias>` token, plus generic custom verifier endpoints. It doesn't ship browserless first login or OAuth device-code login yet.

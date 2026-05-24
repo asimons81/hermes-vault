@@ -133,7 +133,7 @@ The point isn't “more files.” The point is one canonical secret source, one 
 
 When an agent already has an OAuth access token and matching `refresh:<alias>` record, use `hermes-vault oauth refresh <service> --alias <alias>` or `hermes-vault maintain` for non-interactive renewal. Those paths require `rotate` permission on the service, use the stored refresh token instead of opening a browser, and fail closed if the provider refuses renewal or the refresh token is missing. `policy doctor` will flag the gap and suggest the `rotate` action when an agent should be allowed to refresh.
 
-v0.10.0 is a partial unattended-auth release: refresh is unattended once the refresh token exists, but first login is still browser-based PKCE. Browserless first login and OAuth device-code login remain future work.
+v0.10.1 adds browserless device-code login for supported providers. Refresh is still unattended once the refresh token exists, and v0.10.0 remains the partial unattended-refresh release.
 
 ### Remote browser fallback for callback login
 
@@ -151,7 +151,7 @@ On your local machine:
 ssh -L 8765:127.0.0.1:8765 <host>
 ```
 
-Open the printed authorization URL in your local browser. The provider callback to `127.0.0.1:8765` travels through the SSH tunnel to the remote callback server. This is remote-browser-to-callback plumbing, not true browserless auth, and it doesn't add device-code support.
+Open the printed authorization URL in your local browser. The provider callback to `127.0.0.1:8765` travels through the SSH tunnel to the remote callback server. This is still remote-browser-to-callback plumbing. If you need true browserless first login, use `hermes-vault oauth device-login`; that's the separate device-code flow.
 
 ## Multiple Profiles
 
@@ -811,4 +811,4 @@ When Hermes Vault is registered as an MCP server inside Hermes Agent, agents can
 - `oauth_login` returns an authorization URL and starts a background callback thread. The operator opens the URL, completes browser consent, and tokens are stored automatically.
 - `oauth_refresh` triggers the same refresh engine described above, returning the result to the agent.
 
-Both tools require policy permissions (`add_credential` for login, `rotate` for refresh). MCP doesn't provide a device-code first-login flow in v0.10.0.
+Both tools require policy permissions (`add_credential` for login, `rotate` for refresh). MCP now also exposes a device-code first-login flow on providers that support it.
