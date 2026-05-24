@@ -9,11 +9,10 @@ from __future__ import annotations
 import urllib.parse
 import webbrowser
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from rich.console import Console
 
-from hermes_vault.models import CredentialSecret, CredentialStatus
+from hermes_vault.models import CredentialSecret
 from hermes_vault.mutations import OPERATOR_AGENT_ID, VaultMutations
 from hermes_vault.oauth.callback import CallbackServer
 from hermes_vault.oauth.errors import (
@@ -23,12 +22,70 @@ from hermes_vault.oauth.errors import (
     OAuthStateMismatchError,
     OAuthTimeoutError,
 )
-from hermes_vault.oauth.exchange import TokenExchanger
+from hermes_vault.oauth.exchange import TokenExchanger, TokenResponse
 from hermes_vault.oauth.pkce import PKCEGenerator
 from hermes_vault.oauth.providers import OAuthProviderRegistry
 from hermes_vault.oauth.oauth_refresh import refresh_alias_for
 from hermes_vault.oauth.state import StateManager
 from hermes_vault.vault import Vault
+
+
+def _store_oauth_tokens(
+    *,
+    provider,
+    alias: str,
+    requested_scopes: list[str],
+    token_response: TokenResponse,
+    vault: Vault,
+    mutations: VaultMutations,
+    console: Console,
+):
+    """Persist the access token and optional refresh token using the canonical storage shape."""
+    credential_secret = token_response.to_credential_secret(provider)
+    with console.status("[bold green]Storing credential...", spinner="dots"):
+        result_mutation = mutations.add_credential(
+            agent_id=OPERATOR_AGENT_ID,
+            service=provider.service_id,
+            secret=credential_secret.secret,
+            credential_type="oauth_access_token",
+            alias=alias,
+            scopes=requested_scopes,
+            metadata=credential_secret.metadata,
+            replace_existing=True,
+        )
+
+    if not result_mutation.allowed:
+        raise OAuthProviderError(
+            f"Vault refused credential storage: {result_mutation.reason}"
+        )
+
+    record = result_mutation.record
+    assert record is not None
+
+    if token_response.expires_in is not None:
+        expiry = datetime.now(timezone.utc) + timedelta(seconds=token_response.expires_in)
+        vault.set_expiry(record.id, expiry)
+
+    if token_response.refresh_token:
+        refresh_secret = CredentialSecret(
+            secret=token_response.refresh_token,
+            metadata={
+                "associated_access_token_alias": alias,
+                "provider": provider.service_id,
+            },
+        )
+        mutations.add_credential(
+            agent_id=OPERATOR_AGENT_ID,
+            service=provider.service_id,
+            secret=refresh_secret.secret,
+            credential_type="oauth_refresh_token",
+            alias=refresh_alias_for(alias),
+            scopes=requested_scopes,
+            metadata=refresh_secret.metadata,
+            replace_existing=True,
+        )
+
+    return record
 
 
 class LoginFlow:
@@ -142,7 +199,10 @@ class LoginFlow:
                     f"[yellow]Could not open browser automatically. Open this URL:[/yellow]\n{auth_url}"
                 )
         else:
-            self.console.print(f"Open this URL in your browser:\n{auth_url}")
+            self.console.print(
+                f"Open this URL in your browser to continue the browser PKCE flow:\n{auth_url}\n"
+                f"For no-browser device-code login, use `hermes-vault oauth device-login {provider.service_id}`."
+            )
 
         # ── 7. Wait for callback ───────────────────────────────────────────
         with self.console.status("[bold green]Waiting for browser authorization...", spinner="dots"):
@@ -181,56 +241,20 @@ class LoginFlow:
 
         if not self.mutations or not self.vault:
             # CLI mode: build services now
-            vault, policy, _broker, mutations = self._build_services()
+            vault, _policy, _broker, mutations = self._build_services()
             self.vault = vault
             self.mutations = mutations
 
         # ── 10. Store in vault ───────────────────────────────────────────
-        credential_secret = token_response.to_credential_secret(provider)
-        with self.console.status("[bold green]Storing credential...", spinner="dots"):
-            result_mutation = self.mutations.add_credential(
-                agent_id=OPERATOR_AGENT_ID,
-                service=provider.service_id,
-                secret=credential_secret.secret,
-                credential_type="oauth_access_token",
-                alias=self.alias,
-                scopes=requested_scopes,
-                metadata=credential_secret.metadata,
-                replace_existing=True,
-            )
-
-        if not result_mutation.allowed:
-            raise OAuthProviderError(
-                f"Vault refused credential storage: {result_mutation.reason}"
-            )
-
-        record = result_mutation.record
-        assert record is not None
-
-        # Set expiry if provider returned one
-        if token_response.expires_in is not None:
-            expiry = datetime.now(timezone.utc) + timedelta(seconds=token_response.expires_in)
-            self.vault.set_expiry(record.id, expiry)
-
-        # Store refresh token separately at an alias-scoped refresh record
-        if token_response.refresh_token:
-            refresh_secret = CredentialSecret(
-                secret=token_response.refresh_token,
-                metadata={
-                    "associated_access_token_alias": self.alias,
-                    "provider": provider.service_id,
-                },
-            )
-            self.mutations.add_credential(
-                agent_id=OPERATOR_AGENT_ID,
-                service=provider.service_id,
-                secret=refresh_secret.secret,
-                credential_type="oauth_refresh_token",
-                alias=refresh_alias_for(self.alias),
-                scopes=requested_scopes,
-                metadata=refresh_secret.metadata,
-                replace_existing=True,
-            )
+        record = _store_oauth_tokens(
+            provider=provider,
+            alias=self.alias,
+            requested_scopes=requested_scopes,
+            token_response=token_response,
+            vault=self.vault,
+            mutations=self.mutations,
+            console=self.console,
+        )
 
         # ── 11. Success ────────────────────────────────────────────────────
         msg = (
