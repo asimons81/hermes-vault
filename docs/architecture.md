@@ -4,6 +4,8 @@
 
 Hermes Vault is a local-first Python project that centralizes credential scanning, secure storage, brokered access, policy enforcement, verification, auditing, maintenance, and skill generation for Hermes and Hermes sub-agents.
 
+v0.10.0 is the published partial unattended-auth release: OAuth refresh can run without a browser after a refresh token exists, but first login still uses PKCE with a localhost callback. Browserless first login and device-code authorization aren't part of the current architecture.
+
 ## Major Components
 
 ### `scanner.py`
@@ -77,14 +79,14 @@ Hermes Vault is a local-first Python project that centralizes credential scannin
 ### `dashboard.py`
 
 - Serves the local Hermes Vault Console through `hermes-vault dashboard`
-- Binds to `127.0.0.1` by default; v0.8.0 rejects non-local dashboard hosts
+- Binds to `127.0.0.1` by default; non-local dashboard hosts are rejected
 - Generates an ephemeral browser-session token and guards all `/api/*` endpoints with the token
 - Serves bundled static frontend assets from `hermes_vault/dashboard_static/` in the installed Python package
 - Resolves static paths under the dashboard asset root before reading files, and falls back to `index.html` only for app routes
 - Exposes JSON views for health, credentials, policy, audit, MCP binding, session status, and safe operator actions
 - Reuses existing service-layer functions for health, policy doctor, verification, OAuth refresh, maintenance, backup verification, and restore dry-run
 - Sanitizes dashboard responses so browser JSON doesn't include raw secrets, raw OAuth access or refresh tokens, or encrypted payloads
-- Forces OAuth refresh and maintenance to dry-run-only from the dashboard in v0.8.0
+- Forces OAuth refresh and maintenance to dry-run-only from the dashboard
 - Treats brand media as packaged static assets; no image/video generation runs inside the dashboard process
 - Keeps destructive or high-risk operations outside the dashboard surface
 
@@ -94,6 +96,7 @@ Hermes Vault is a local-first Python project that centralizes credential scannin
 - Exposes brokered capabilities as MCP tools: list_services, get_credential_metadata, get_ephemeral_env, verify_credential, rotate_credential, scan_for_secrets
 - **New in 0.6.0:** `oauth_login` initiates PKCE login and returns an authorization URL. A background thread spawns a callback server, waits for the browser redirect, exchanges the code for tokens, and stores them in the vault atomically.
 - **New in 0.6.0:** `oauth_refresh` triggers the `RefreshEngine` to proactively or on-demand refresh expired access tokens.
+- **Current v0.10.0 boundary:** MCP OAuth login is still callback-based PKCE. It doesn't expose device-code login, and adding that surface requires Hermes/Tony review.
 - Every tool call uses caller-supplied `agent_id` unless the server is launched with `HERMES_VAULT_MCP_ALLOWED_AGENTS` and `HERMES_VAULT_MCP_DEFAULT_AGENT`
 - Bound MCP deployments deny agent IDs outside the allowed set before policy evaluation and audit the binding decision separately
 - MCP access defaults to policy-gated ephemeral env materialization rather than direct raw-secret handling
@@ -102,7 +105,7 @@ Hermes Vault is a local-first Python project that centralizes credential scannin
 
 ### `oauth/` subsystem
 
-New in 0.6.0. The OAuth package is self-contained and does not depend on CLI code:
+Introduced in 0.6.0. The OAuth package is self-contained and does not depend on CLI code. The current package covers browser PKCE login, callback handling, token exchange, and unattended refresh. It doesn't include a device-code module yet.
 
 | Module | Responsibility |
 |---|---|
@@ -129,11 +132,11 @@ This keeps repository code separate from live secrets and operator state.
 
 ## Dashboard Server Boundary
 
-The v0.8.0 dashboard is a local browser session over a Python `ThreadingHTTPServer`, not a new credential authority.
+The dashboard is a local browser session over a Python `ThreadingHTTPServer`, not a new credential authority.
 
 ### Local server and static assets
 
-`hermes-vault dashboard` builds one `DashboardContext` from the same settings, vault, policy, broker, verifier, and audit logger used by the CLI. `create_dashboard_server()` accepts `127.0.0.1` and `localhost` only; attempts to create a dashboard server for a non-local host raise an error in v0.8.0.
+`hermes-vault dashboard` builds one `DashboardContext` from the same settings, vault, policy, broker, verifier, and audit logger used by the CLI. `create_dashboard_server()` accepts `127.0.0.1` and `localhost` only; attempts to create a dashboard server for a non-local host raise an error.
 
 The server serves static files from the installed package's `hermes_vault/dashboard_static/` directory. Request paths are resolved and checked against that static root before bytes are read. Missing asset paths return `404`; application routes fall back to `index.html` so the packaged single-page console can render.
 
@@ -161,7 +164,7 @@ OAuth and maintenance responses are sanitized before they reach the browser. Raw
 
 ### Dry-run action boundary
 
-Dashboard actions are intentionally narrower than the CLI. Health, policy doctor, credential verification, backup verification, and restore dry-run are available. OAuth refresh and maintenance are forced to `dry_run=True` server-side in v0.8.0, even if a client sends `dry_run=false`.
+Dashboard actions are intentionally narrower than the CLI. Health, policy doctor, credential verification, backup verification, and restore dry-run are available. OAuth refresh and maintenance are forced to `dry_run=True` server-side, even if a client sends `dry_run=false`.
 
 Live OAuth refresh, live maintenance, credential add/import/rotate/delete, policy editing, destructive restore, master-key rotation, plaintext export, cloud sync, and remote binding remain CLI-only or out of scope for this release. Expanding that boundary requires Hermes/Tony review before release.
 
@@ -176,6 +179,7 @@ Live OAuth refresh, live maintenance, credential add/import/rotate/delete, polic
 - MCP access defaults to policy-gated ephemeral environment materialization rather than direct raw-secret handling
 - v0.7.0 adds maintenance, policy doctor, OAuth normalization, and backup verification/drill without changing the local-first storage model
 - v0.8.0 adds the local dashboard as a token-guarded localhost operator surface; it is not a remote service or a raw-secret UI
+- v0.10.0 adds unattended OAuth refresh for existing OAuth credentials, but not browserless first login or device-code authorization
 - Dashboard visual polish is a release concern only when bundled assets, responsive layouts, and first-run intro behavior pass smoke checks
 - **OAuth-specific:**
   - CSRF protection via randomly-generated state parameter validated with timing-safe comparison
@@ -195,5 +199,6 @@ Live OAuth refresh, live maintenance, credential add/import/rotate/delete, polic
 - Extend broker env mappings in `broker.py`
 - Add policy fields in `models.py` and `policy.py`
 - Add new MCP tools in `mcp_server.py` (must route through broker and respect optional MCP binding)
+- Add device-code OAuth only after an explicit security review of provider metadata, polling behavior, CLI output, and any MCP/dashboard surface changes
 - **Add OAuth providers without code changes by editing `oauth-providers.yaml`**
 - Adjust refresh engine parameters (`proactive_margin_seconds`, `max_retries`, `base_backoff_seconds`) via constructor or caller

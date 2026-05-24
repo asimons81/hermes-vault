@@ -10,6 +10,7 @@ Hermes Vault is a local-first credential broker and encrypted vault for Hermes a
 - Encrypts credentials in a local SQLite-backed vault
 - Brokers access with per-agent policy and ephemeral environment materialization
 - Verifies credentials before any re-auth recommendation
+- Refreshes already-authorized OAuth credentials without opening a browser when a refresh token exists
 - Generates `SKILL.md` files for Hermes agents and sub-agents
 - Provides a token-guarded local dashboard for operator visibility and safe actions
 
@@ -122,7 +123,7 @@ When `--redact-source` is used, only successfully imported env lines are comment
 
 ## Hermes Vault Console
 
-Hermes Vault Console is the v0.8.0 local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, recovery posture, and safe operations without turning the browser into a secret viewer.
+Hermes Vault Console, introduced in v0.8.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, recovery posture, and safe operations without turning the browser into a secret viewer.
 
 Launch it from the same machine that owns the vault:
 
@@ -151,6 +152,8 @@ Screenshot set captured with a temporary demo vault and fake/demo credentials on
 - [MCP Binding Status view](docs/assets/v0.8.0-dashboard/dashboard-mcp-status.png)
 - [Recovery Posture view](docs/assets/v0.8.0-dashboard/dashboard-recovery-posture.png)
 - [Operations Panel view](docs/assets/v0.8.0-dashboard/dashboard-operations.png)
+
+The screenshots and launch notes above document the v0.8.0 dashboard launch. They remain accurate for the current local console safety boundary unless a later release note says otherwise.
 
 ## MCP Server
 
@@ -205,7 +208,7 @@ MCP access is brokered through policy-gated tools. Prefer `get_ephemeral_env` fo
 
 ### OAuth via MCP
 
-Hermes Vault can broker OAuth logins so agents avoid raw-password handling. `oauth_login` returns an authorization URL and spins up a callback server -- open the URL in a browser, and tokens are stored automatically. `oauth_refresh` renews tokens proactively before expiry. See [docs/mcp-server.md](docs/mcp-server.md) for full tool schemas.
+Hermes Vault can broker OAuth logins so agents avoid raw-password handling. `oauth_login` returns an authorization URL and spins up a local callback server -- open the URL in a browser, and tokens are stored automatically. `oauth_refresh` renews existing OAuth tokens proactively before expiry. This is still callback-based PKCE login plus unattended refresh, not device-code or truly browserless first login. See [docs/mcp-server.md](docs/mcp-server.md) for full tool schemas.
 
 ## Common Commands
 
@@ -248,8 +251,12 @@ hermes-vault oauth providers
 
 ## What's New in 0.10.0 - Unattended OAuth and Custom Verifiers
 
+v0.10.0 is the published partial unattended-auth release. It ships non-interactive refresh for OAuth credentials that already have a stored `refresh:<alias>` token, plus generic custom verifier endpoints. It doesn't ship browserless first login or OAuth device-code login yet.
+
 ### Unattended OAuth refresh
 `hermes-vault oauth refresh <service>` is the non-interactive renewal path for stored OAuth credentials. It uses the paired `refresh:<alias>` record, requires `rotate` permission on the service, and is also available through `hermes-vault maintain` for scheduled runs. If a refresh token is missing or the provider refuses renewal, the command fails closed instead of guessing.
+
+Initial OAuth authorization still uses browser-based PKCE with a localhost callback. Use `--no-browser` when you need to copy the authorization URL manually, but don't treat that as device-code support.
 
 ### Generic custom verifiers
 `HERMES_VAULT_VERIFY_URL_<SERVICE>` lets you point any service at a custom OpenAI-compatible verification endpoint without writing a plugin. Service names normalize hyphens, dots, and spaces to underscores and are uppercased, so `deepseek` becomes `HERMES_VAULT_VERIFY_URL_DEEPSEEK`.

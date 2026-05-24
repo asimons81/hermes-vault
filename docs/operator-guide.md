@@ -133,7 +133,25 @@ The point isn't “more files.” The point is one canonical secret source, one 
 
 When an agent already has an OAuth access token and matching `refresh:<alias>` record, use `hermes-vault oauth refresh <service> --alias <alias>` or `hermes-vault maintain` for non-interactive renewal. Those paths require `rotate` permission on the service, use the stored refresh token instead of opening a browser, and fail closed if the provider refuses renewal or the refresh token is missing. `policy doctor` will flag the gap and suggest the `rotate` action when an agent should be allowed to refresh.
 
-Initial OAuth login is still browser-based PKCE. If you need a browserless first login path, that remains future device-flow work.
+v0.10.0 is a partial unattended-auth release: refresh is unattended once the refresh token exists, but first login is still browser-based PKCE. Browserless first login and OAuth device-code login remain future work.
+
+### Remote browser fallback for callback login
+
+For a remote shell where the vault runs on a host without a browser, keep using `--no-browser` with an explicit callback port and forward that port from your local machine:
+
+On the remote host:
+
+```bash
+hermes-vault oauth login google --alias work --no-browser --port 8765
+```
+
+On your local machine:
+
+```bash
+ssh -L 8765:127.0.0.1:8765 <host>
+```
+
+Open the printed authorization URL in your local browser. The provider callback to `127.0.0.1:8765` travels through the SSH tunnel to the remote callback server. This is remote-browser-to-callback plumbing, not true browserless auth, and it doesn't add device-code support.
 
 ## Multiple Profiles
 
@@ -242,7 +260,7 @@ hermes-vault maintain --print-systemd
 
 ## Dashboard
 
-`hermes-vault dashboard` starts the local Hermes Vault Console. Use it for daily operator visibility and bounded checks. Use the CLI for setup, imports, backups, policy edits, credential mutation, destructive recovery, release work, and any operation where you want an explicit command transcript.
+`hermes-vault dashboard` starts the local Hermes Vault Console introduced in v0.8.0. Use it for daily operator visibility and bounded checks. Use the CLI for setup, imports, backups, policy edits, credential mutation, destructive recovery, release work, and any operation where you want an explicit command transcript.
 
 ```bash
 hermes-vault dashboard
@@ -253,7 +271,7 @@ hermes-vault dashboard --ttl-seconds 3600
 
 Launch behavior:
 
-1. The server binds to `127.0.0.1` by default. v0.8.0 rejects non-local dashboard hosts.
+1. The server binds to `127.0.0.1` by default, and non-local dashboard hosts are rejected.
 2. A random session token is generated for that process and printed in the launch URL.
 3. API requests need either the launch URL token or the same token passed through the standard bearer authorization header.
 4. The token expires after the configured TTL and also dies when the process exits.
@@ -261,7 +279,7 @@ Launch behavior:
 
 The console is for health, credential inventory, policy findings, audit activity, MCP binding status, operations, and recovery posture. It is not a hosted vault, raw-secret viewer, policy editor, or remote admin plane.
 
-Safe v0.8.0 dashboard actions include:
+Safe dashboard actions include:
 
 - Run health
 - Run policy doctor
@@ -278,7 +296,7 @@ hermes-vault oauth refresh google --alias work
 hermes-vault maintain
 ```
 
-The dashboard responses redact raw secret and token material, and they do not expose encrypted payloads. Credential editing, policy editing, cloud sync, remote access, destructive restore, credential deletion, master-key rotation, and plaintext export stay out of the v0.8.0 dashboard surface.
+The dashboard responses redact raw secret and token material, and they do not expose encrypted payloads. Credential editing, policy editing, cloud sync, remote access, destructive restore, credential deletion, master-key rotation, and plaintext export stay out of the dashboard surface.
 
 ### Reading dashboard health and status
 
@@ -579,7 +597,7 @@ Hermes Vault supports a generic, environment-driven OpenAI-compatible verifier f
   - For service `fireworks` -> `HERMES_VAULT_VERIFY_URL_FIREWORKS`
   - For service `custom-provider` -> `HERMES_VAULT_VERIFY_URL_CUSTOM_PROVIDER`
 - The endpoint is expected to be an OpenAI-compatible `/v1/models`-style endpoint.
-- Hermes Vault will send a GET request with the vaulted credential as the bearer token (`Authorization: Bearer <secret>`).
+- Hermes Vault will send a GET request with the vaulted credential as the bearer token (`Authorization: Bearer <token>`).
 - **Security Warning**: Ensure that the configured URL is trusted and provider-controlled, as the vault will send the decrypted bearer token to it.
 
 ### "Broker denied access"
@@ -790,7 +808,7 @@ The refresh engine:
 
 When Hermes Vault is registered as an MCP server inside Hermes Agent, agents can use `oauth_login` and `oauth_refresh`:
 
-- `oauth_login` returns an authorization URL and starts a background callback thread. The agent opens the URL, completes consent, and tokens are stored automatically.
+- `oauth_login` returns an authorization URL and starts a background callback thread. The operator opens the URL, completes browser consent, and tokens are stored automatically.
 - `oauth_refresh` triggers the same refresh engine described above, returning the result to the agent.
 
-Both tools require policy permissions (`add_credential` for login, `rotate` for refresh).
+Both tools require policy permissions (`add_credential` for login, `rotate` for refresh). MCP doesn't provide a device-code first-login flow in v0.10.0.
