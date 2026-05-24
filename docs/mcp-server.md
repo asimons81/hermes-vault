@@ -148,7 +148,7 @@ Triggers an automatic token refresh for a service using its stored refresh token
 }
 ```
 
-**Policy requirement:** The calling agent must have access to the service (via `can_access_service`).
+**Policy requirement:** The calling agent must have `rotate` permission on the service.
 
 **Prerequisites:**
 - An `oauth_access_token` must exist for the service+alias

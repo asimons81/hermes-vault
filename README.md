@@ -246,12 +246,18 @@ hermes-vault oauth refresh google --alias work
 hermes-vault oauth providers
 ```
 
+## What's New in 0.10.0 - Unattended OAuth and Custom Verifiers
+
+### Unattended OAuth refresh
+`hermes-vault oauth refresh <service>` is the non-interactive renewal path for stored OAuth credentials. It uses the paired `refresh:<alias>` record, requires `rotate` permission on the service, and is also available through `hermes-vault maintain` for scheduled runs. If a refresh token is missing or the provider refuses renewal, the command fails closed instead of guessing.
+
+### Generic custom verifiers
+`HERMES_VAULT_VERIFY_URL_<SERVICE>` lets you point any service at a custom OpenAI-compatible verification endpoint without writing a plugin. Service names normalize hyphens, dots, and spaces to underscores and are uppercased, so `deepseek` becomes `HERMES_VAULT_VERIFY_URL_DEEPSEEK`.
+
 ## What's New in 0.9.0 - Profiles, Verifiers, and MCP Expansion
 
 ### Verifier plugin architecture
-v0.9.0 introduces a modular, file-based YAML verifier plugin system (under `src/hermes_vault/verifiers/`). This allows operators to define custom validation checks for new services and register them via entry points, while fully maintaining backward compatibility with built-in verifiers.
-
-Additionally, you can configure generic custom OpenAI-compatible verifiers via environment variables without creating plugins. Setting `HERMES_VAULT_VERIFY_URL_<SERVICE>` (with `<SERVICE>` normalising hyphens, dots, and spaces to underscores and converting to uppercase, e.g. `HERMES_VAULT_VERIFY_URL_DEEPSEEK`) will trigger a GET request to that URL using the credential as the bearer token (`Authorization: Bearer <secret>`).
+v0.9.0 introduces a modular, file-based YAML verifier plugin system (under `src/hermes_vault/verifiers/`). This allows operators to define custom validation checks for new services and register them via entry points, while maintaining backward compatibility with built-in verifiers.
 
 ### Multi-vault profile support
 Enables complete profile isolation via CLI flags like `--profile work` and `--profile personal`. Each profile manages its own isolated SQLite database, custom policies, OAuth registries, and verifier plugins. Pending OAuth states are scoped to prevent token pollution, and profile contexts propagate properly across worker threads (including MCP and local dashboard launches). Profiles support dedicated passphrases via environment variables like `HERMES_VAULT_PASSPHRASE_PROFILE`.

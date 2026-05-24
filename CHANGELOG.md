@@ -4,7 +4,24 @@
 
 ### Added
 
-- Added support for generic OpenAI-compatible custom verifiers via `HERMES_VAULT_VERIFY_URL_<SERVICE>` environment variables. Normalizes service names (replacing hyphens, dots, and spaces with underscores, and uppercasing) to form the environment variable name (e.g. `HERMES_VAULT_VERIFY_URL_DEEPSEEK`). Performs bearer-authenticated requests and sanitizes error reasons and transport exceptions for safety.
+- Future auth work will focus on browserless initial login options for headless operators.
+
+## 0.10.0 -- Unattended OAuth and Custom Verifiers
+
+### Added
+
+- Generic custom verifiers now work through `HERMES_VAULT_VERIFY_URL_<SERVICE>` environment variables, so any OpenAI-compatible endpoint can verify a service without writing a plugin.
+- `hermes-vault oauth refresh <service>` now handles unattended OAuth renewal from the paired `refresh:<alias>` record and fails closed if renewal cannot succeed.
+- `hermes-vault maintain` can batch refresh and health checks for scheduled-safe operator runs.
+
+### Changed
+
+- Refresh policy guidance now points OAuth-capable agents to the existing `rotate` permission instead of a hypothetical refresh-specific action.
+- Version surfaces now report `0.10.0` in `pyproject.toml`, `src/hermes_vault/__init__.py`, and `src/hermes_vault/mcp_server.py`.
+
+### Security
+
+- Browserless renewal does not expose raw access or refresh tokens in docs, dashboard, or MCP outputs.
 
 ## 0.9.0 -- Profile, Verifier, and MCP Expansion
 

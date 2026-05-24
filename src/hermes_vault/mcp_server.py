@@ -507,7 +507,7 @@ _pending_oauth: dict[str, dict[str, Any]] = {}
 
 # ── server ─────────────────────────────────────────────────────────────────────
 
-server = Server("hermes-vault", version="0.9.0")
+server = Server("hermes-vault", version="0.10.0")
 
 
 @server.list_tools()

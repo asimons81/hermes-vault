@@ -136,8 +136,7 @@ Mitigation: `backup-verify` and `restore --dry-run` prove the archive is structu
 
 ### Residual risks
 
-- Browser interaction is still required for initial login -- phishing-resistant flows (e.g., passkey-based OAuth) are not yet supported
-- Provider revocation of refresh tokens is handled gracefully (the engine raises `RefreshTokenExpiredError`), but re-authentication is operator-initiated, not automatic
+- Browser interaction is still required for initial login because device-code flow is not yet supported.
+- `oauth refresh` and `maintain` can renew access tokens unattended once a refresh token exists, but they do not remove the need to protect the local machine.
 - Compromise of the operator's local machine (outside the vault) still grants access to the browser session used for OAuth consent
-- No support for device-code flow -- headless servers without display/browsers cannot use `oauth_login` without an operator manually running the CLI
 - The MCP `oauth_login` flow uses a process-level `_pending_oauth` dictionary for state tracking. Concurrent login attempts for the same provider+alias are not isolated and will overwrite each other

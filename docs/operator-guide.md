@@ -129,6 +129,12 @@ This setup gives you a few hard wins:
 
 The point isn't “more files.” The point is one canonical secret source, one policy file, and one contract that tells the agent how to use them safely.
 
+## Unattended OAuth refresh
+
+When an agent already has an OAuth access token and matching `refresh:<alias>` record, use `hermes-vault oauth refresh <service> --alias <alias>` or `hermes-vault maintain` for non-interactive renewal. Those paths require `rotate` permission on the service, use the stored refresh token instead of opening a browser, and fail closed if the provider refuses renewal or the refresh token is missing. `policy doctor` will flag the gap and suggest the `rotate` action when an agent should be allowed to refresh.
+
+Initial OAuth login is still browser-based PKCE. If you need a browserless first login path, that remains future device-flow work.
+
 ## Multiple Profiles
 
 If you run multiple agents, don't jam everything into one catch-all profile. Split by job:
