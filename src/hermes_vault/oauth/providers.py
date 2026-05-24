@@ -18,11 +18,13 @@ class OAuthProvider(BaseModel):
     service_id: str
     name: str
     authorization_endpoint: HttpUrl
+    device_authorization_endpoint: HttpUrl | None = None
     token_endpoint: HttpUrl
     default_scopes: list[str] = Field(default_factory=list)
     scope_separator: str = " "
     use_pkce: bool = True
     extra_params: dict[str, str] = Field(default_factory=dict)
+    device_extra_params: dict[str, str] = Field(default_factory=dict)
     requires_client_id: bool = False
     requires_client_secret: bool = False
 
@@ -83,6 +85,14 @@ class OAuthProviderRegistry:
         """Return sorted list of registered provider IDs."""
         return sorted(self._providers.keys())
 
+    def list_device_code_providers(self) -> list[str]:
+        """Return the provider IDs that support device-code login."""
+        return sorted(
+            sid
+            for sid, provider in self._providers.items()
+            if provider.device_authorization_endpoint is not None
+        )
+
     def get_client_credentials(self, provider: OAuthProvider) -> tuple[str | None, str | None]:
         """Read client_id and client_secret from environment variables.
 
@@ -103,6 +113,7 @@ providers:
   google:
     name: "Google"
     authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth"
+    device_authorization_endpoint: "https://oauth2.googleapis.com/device/code"
     token_endpoint: "https://oauth2.googleapis.com/token"
     default_scopes:
       - "openid"
@@ -117,6 +128,7 @@ providers:
   github:
     name: "GitHub"
     authorization_endpoint: "https://github.com/login/oauth/authorize"
+    device_authorization_endpoint: "https://github.com/login/device/code"
     token_endpoint: "https://github.com/login/oauth/access_token"
     default_scopes:
       - "repo"

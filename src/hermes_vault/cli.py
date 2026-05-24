@@ -2011,15 +2011,16 @@ def oauth_login(
     alias: str = typer.Option("default", "--alias", help="Vault alias for the stored credential."),
     port: int = typer.Option(0, "--port", help="Callback server port. 0 = OS-assigned ephemeral."),
     timeout: int = typer.Option(120, "--timeout", help="Seconds to wait for the OAuth callback before aborting."),
-    no_browser: bool = typer.Option(False, "--no-browser", help="Skip auto-opening browser; print URL instead."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Skip auto-opening browser; print the browser PKCE URL instead (use `oauth device-login` for device-code auth)."),
     scopes: list[str] = typer.Option(None, "--scope", help="Override requested OAuth scopes (repeatable)."),
 ) -> None:
-    """Log in via OAuth PKCE and store tokens in the vault.
+    """Log in via browser PKCE and store tokens in the vault.
 
     \b
     Examples:
       hermes-vault oauth login google --alias work
       hermes-vault oauth login github --alias personal --no-browser
+      hermes-vault oauth device-login google --alias work
       hermes-vault oauth login google --scope openid --scope email --scope profile
     """
     from hermes_vault.oauth.flow import LoginFlow
@@ -2030,6 +2031,36 @@ def oauth_login(
             port=port,
             timeout=timeout,
             no_browser=no_browser,
+            scopes=list(scopes or []),
+            console=console,
+        )
+        flow.run()
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+
+@oauth_app.command("device-login")
+def oauth_device_login(
+    ctx: typer.Context,
+    provider: str = typer.Argument(help="OAuth provider name with device-code support (e.g. google, github)."),
+    alias: str = typer.Option("default", "--alias", help="Vault alias for the stored credential."),
+    timeout: int = typer.Option(300, "--timeout", help="Seconds to wait for the device-code authorization before aborting."),
+    scopes: list[str] = typer.Option(None, "--scope", help="Override requested OAuth scopes (repeatable)."),
+) -> None:
+    """Log in via OAuth device-code flow and store tokens in the vault.
+
+    \b
+    Examples:
+      hermes-vault oauth device-login google --alias work
+      hermes-vault oauth device-login github --scope repo --scope read:org
+    """
+    from hermes_vault.oauth.device import DeviceLoginFlow
+    try:
+        flow = DeviceLoginFlow(
+            provider_id=provider,
+            alias=alias,
+            timeout=timeout,
             scopes=list(scopes or []),
             console=console,
         )
@@ -2051,6 +2082,7 @@ def oauth_providers(ctx: typer.Context) -> None:
     table.add_column("Name")
     table.add_column("Requires Client ID")
     table.add_column("Requires Client Secret")
+    table.add_column("Device Code")
     for pid in registry.list_providers():
         p = registry.get(pid)
         if p is None:
@@ -2060,6 +2092,7 @@ def oauth_providers(ctx: typer.Context) -> None:
             p.name,
             "yes" if p.requires_client_id else "no",
             "yes" if p.requires_client_secret else "no",
+            "yes" if p.device_authorization_endpoint else "no",
         )
     console.print(table)
 

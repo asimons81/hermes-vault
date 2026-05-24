@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
@@ -12,24 +13,16 @@ from hermes_vault.oauth.errors import OAuthNetworkError, OAuthProviderError
 from hermes_vault.oauth.providers import OAuthProvider
 
 
+@dataclass(slots=True)
 class TokenResponse:
     """Response from a successful token exchange."""
 
-    def __init__(
-        self,
-        access_token: str,
-        token_type: str,
-        expires_in: int | None,
-        refresh_token: str | None,
-        scope: str | None,
-        raw: dict[str, Any],
-    ) -> None:
-        self.access_token = access_token
-        self.token_type = token_type
-        self.expires_in = expires_in
-        self.refresh_token = refresh_token
-        self.scope = scope
-        self.raw = raw
+    access_token: str
+    token_type: str
+    expires_in: int | None
+    refresh_token: str | None
+    scope: str | None
+    raw: dict[str, Any]
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "TokenResponse":
@@ -60,6 +53,31 @@ class TokenResponse:
         if scopes:
             metadata["scopes"] = scopes
         return CredentialSecret(secret=self.access_token, metadata=metadata)
+
+
+@dataclass(slots=True)
+class DeviceAuthorizationResponse:
+    """Response returned by a device-code authorization endpoint."""
+
+    device_code: str
+    user_code: str
+    verification_uri: str
+    verification_uri_complete: str | None
+    expires_in: int
+    interval: int
+    message: str | None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class DevicePollResult:
+    """Response returned by a device-code token polling request."""
+
+    status: str
+    token_response: TokenResponse | None = None
+    error_description: str | None = None
+    retry_after: int | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 class TokenExchanger:
@@ -115,11 +133,7 @@ class TokenExchanger:
         except requests.RequestException as exc:
             raise OAuthNetworkError(f"Token exchange failed: {exc}") from exc
 
-        try:
-            data = resp.json()
-        except Exception:
-            # Some legacy endpoints send URL-encoded text
-            data = _parse_url_encoded_body(resp.text)
+        data = _parse_response_payload(resp)
 
         if "error" in data:
             raise OAuthProviderError(
@@ -137,12 +151,180 @@ class TokenExchanger:
 
         return TokenResponse.from_json(data)
 
+    def request_device_code(
+        self,
+        *,
+        client_id: str,
+        scope: str,
+        client_secret: str | None = None,
+        extra_params: dict[str, str] | None = None,
+    ) -> DeviceAuthorizationResponse:
+        """Request a device/user code from the provider."""
+        if getattr(self.provider, "device_authorization_endpoint", None) is None:
+            raise OAuthProviderError(
+                f"Provider '{self.provider.service_id}' does not support device-code login."
+            )
+
+        payload: dict[str, str] = {
+            "client_id": client_id,
+            "scope": scope,
+        }
+        if client_secret is not None:
+            payload["client_secret"] = client_secret
+        for key, value in (extra_params or {}).items():
+            payload[key] = value
+
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+
+        try:
+            resp = requests.post(
+                str(self.provider.device_authorization_endpoint),
+                data=payload,
+                headers=headers,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise OAuthNetworkError(f"Device authorization failed: {exc}") from exc
+
+        data = _parse_response_payload(resp)
+        if "error" in data:
+            raise OAuthProviderError(
+                f"Device authorization error: {data.get('error')} — {data.get('error_description', '')}"
+            )
+
+        if not resp.ok:
+            raise OAuthProviderError(
+                f"Device authorization error: HTTP {resp.status_code} — {resp.text}"
+            )
+
+        device_code = data.get("device_code")
+        user_code = data.get("user_code")
+        verification_uri = data.get("verification_uri") or data.get("verification_url")
+        if not device_code or not user_code or not verification_uri:
+            raise OAuthProviderError(
+                "Device authorization response missing required fields"
+            )
+
+        return DeviceAuthorizationResponse(
+            device_code=str(device_code),
+            user_code=str(user_code),
+            verification_uri=str(verification_uri),
+            verification_uri_complete=(
+                str(data.get("verification_uri_complete"))
+                if data.get("verification_uri_complete")
+                else None
+            ),
+            expires_in=_coerce_int(data.get("expires_in"), default=0),
+            interval=_coerce_int(data.get("interval"), default=5),
+            message=str(data.get("message")) if data.get("message") else None,
+            raw=data,
+        )
+
+    def poll_device_code(
+        self,
+        *,
+        device_code: str,
+        client_id: str,
+        client_secret: str | None = None,
+    ) -> DevicePollResult:
+        """Poll the token endpoint using the device-code grant."""
+        payload: dict[str, str] = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "device_code": device_code,
+            "client_id": client_id,
+        }
+        if client_secret is not None:
+            payload["client_secret"] = client_secret
+
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+
+        try:
+            resp = requests.post(
+                str(self.provider.token_endpoint),
+                data=payload,
+                headers=headers,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise OAuthNetworkError(f"Device token polling failed: {exc}") from exc
+
+        data = _parse_response_payload(resp)
+        error = data.get("error")
+        if error == "authorization_pending":
+            return DevicePollResult(
+                status="authorization_pending",
+                error_description=data.get("error_description"),
+                raw=data,
+            )
+        if error == "slow_down":
+            return DevicePollResult(
+                status="slow_down",
+                error_description=data.get("error_description"),
+                retry_after=5,
+                raw=data,
+            )
+        if error == "access_denied":
+            return DevicePollResult(
+                status="access_denied",
+                error_description=data.get("error_description"),
+                raw=data,
+            )
+        if error == "expired_token":
+            return DevicePollResult(
+                status="expired_token",
+                error_description=data.get("error_description"),
+                raw=data,
+            )
+        if error:
+            raise OAuthProviderError(
+                f"Token endpoint error: {error} — {data.get('error_description', '')}"
+            )
+
+        if not resp.ok:
+            raise OAuthProviderError(
+                f"Token endpoint error: HTTP {resp.status_code} — {resp.text}"
+            )
+
+        access_token = data.get("access_token")
+        if not access_token:
+            raise OAuthProviderError("Token endpoint response missing access_token")
+
+        return DevicePollResult(
+            status="success",
+            token_response=TokenResponse.from_json(data),
+            raw=data,
+        )
+
 
 def _parse_url_encoded_body(text: str) -> dict[str, str]:
     """Best-effort parse for URL-encoded responses (e.g., GitHub legacy)."""
     from urllib.parse import parse_qs
+
     result = parse_qs(text.strip())
     return {k: v[0] if len(v) == 1 else " ".join(v) for k, v in result.items()}
+
+
+def _parse_response_payload(resp: requests.Response) -> dict[str, Any]:
+    try:
+        data = resp.json()
+    except Exception:
+        data = _parse_url_encoded_body(resp.text)
+    return data if isinstance(data, dict) else {}
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _parse_scope_list(scope: str | None) -> list[str]:

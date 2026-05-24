@@ -228,6 +228,44 @@ def test_maintain_print_systemd(monkeypatch) -> None:
     assert "hermes-vault --no-banner maintain --format json" in result.output
 
 
+def test_oauth_device_login_invokes_device_flow(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeFlow:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run(self):
+            captured["ran"] = True
+
+    monkeypatch.setattr("hermes_vault.oauth.device.DeviceLoginFlow", FakeFlow)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["oauth", "device-login", "google", "--alias", "work", "--scope", "openid", "--scope", "email"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["provider_id"] == "google"
+    assert captured["alias"] == "work"
+    assert captured["timeout"] == 300
+    assert captured["scopes"] == ["openid", "email"]
+    assert captured["ran"] is True
+
+
+def test_oauth_providers_shows_device_code_support(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["oauth", "providers"])
+
+    assert result.exit_code == 0
+    assert "Device Code" in result.output
+    assert "google" in result.output
+    assert "github" in result.output
+
+
 def test_oauth_normalize_json_output(monkeypatch) -> None:
     monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services())
 
