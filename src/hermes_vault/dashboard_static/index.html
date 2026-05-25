@@ -9,18 +9,31 @@
   <body>
     <div id="intro" class="intro" aria-hidden="true">
       <div class="vault-scene">
-        <img class="vault-brand-image" src="/assets/hermes-vault-console-brand.png" alt="" />
+        <img class="vault-brand-image" src="/assets/hermes-vault-promo-image.png" alt="" />
         <div class="vault-halo"></div>
         <div class="vault-door">
           <div class="vault-ring"></div>
           <div class="vault-spokes"></div>
-          <div class="vault-mark">HV</div>
+          <div class="vault-mark">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <!-- Stylized Winged Foot -->
+              <path d="M19 13.5c0 3.58-2.92 6.5-6.5 6.5S6 17.08 6 13.5s2.92-6.5 6.5-6.5 6.5 2.92 6.5 6.5z" stroke-opacity="0.2"/>
+              <path d="M12.5 16.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="currentColor"/>
+              <path d="M10 11.5c-2.5 0-5.5 1.5-6 4M8 9.5C5.5 9.5 3 11 2.5 13M6.5 7.5C4 7.5 2 9 1.5 10.5" stroke-linecap="round"/>
+              <path d="M11 13c1.5-1.5 3.5-1.5 5 0M10.5 14.5c1.2-1.2 2.8-1.2 4 0" stroke-linecap="round"/>
+            </svg>
+          </div>
         </div>
       </div>
       <div class="intro-copy">
         <p>Hermes Vault Console</p>
         <strong>Hermes Vault</strong>
         <span>Local credential control plane</span>
+        <div class="intro-terminal">
+          <div class="terminal-line">[INIT] RESOLVING LOCAL KEY MATERIAL... <span class="status-ok">OK</span></div>
+          <div class="terminal-line">[AUTH] VALIDATING PROFILE CONFIGURATION... <span class="status-ok">OK</span></div>
+          <div class="terminal-line">[OPEN] DECRYPTING ENVELOPE METADATA... <span class="status-success">SUCCESS</span></div>
+        </div>
       </div>
     </div>
 
@@ -34,6 +47,7 @@
           </div>
         </div>
         <nav class="nav" aria-label="Console views">
+          <div class="nav-indicator" id="nav-indicator"></div>
           <button class="nav-item active" data-view="overview">Overview</button>
           <button class="nav-item" data-view="credentials">Credentials</button>
           <button class="nav-item" data-view="policy">Policy</button>

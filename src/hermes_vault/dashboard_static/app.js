@@ -85,6 +85,33 @@ function credentialKey(service, alias) {
   return `${service || ""}::${alias || "default"}`;
 }
 
+function updateNavGlider() {
+  const activeBtn = qs(".nav-item.active");
+  const glider = qs("#nav-indicator");
+  if (!activeBtn || !glider) return;
+  const parentRect = activeBtn.parentElement.getBoundingClientRect();
+  const rect = activeBtn.getBoundingClientRect();
+  glider.style.opacity = "1";
+  glider.style.height = `${rect.height}px`;
+  glider.style.width = `${rect.width}px`;
+  glider.style.transform = `translate(${rect.left - parentRect.left}px, ${rect.top - parentRect.top}px)`;
+}
+
+function formatExpiry(expiryStr) {
+  if (!expiryStr) return "-";
+  const expiry = new Date(expiryStr);
+  const now = new Date();
+  const diffTime = expiry - now;
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  const formattedDate = shortDate(expiryStr);
+  if (diffDays < 0) {
+    return `<span style="color: var(--red); font-weight: bold;">Expired (${Math.abs(diffDays)}d ago)</span><br><span style="font-size:11px; opacity:0.6">${formattedDate}</span>`;
+  } else if (diffDays <= 30) {
+    return `<span style="color: var(--gold); font-weight: bold;">Expires in ${diffDays}d</span><br><span style="font-size:11px; opacity:0.6">${formattedDate}</span>`;
+  }
+  return `<span>${formattedDate}</span>`;
+}
+
 function verificationLabel(result) {
   if (!result) return "-";
   const verification = (result.metadata && result.metadata.verification_result) || {};
@@ -265,6 +292,7 @@ function render() {
   renderCredentials();
   renderPolicy();
   renderAudit();
+  updateNavGlider();
 }
 
 function renderProfileBadge() {
@@ -333,7 +361,7 @@ function renderCredentials() {
         ${verificationDetail(state.verificationResults[credentialKey(record.service, record.alias)]) ? `<p class="cell-note">${escapeHtml(verificationDetail(state.verificationResults[credentialKey(record.service, record.alias)]))}</p>` : ""}
       </td>
       <td>${escapeHtml(shortDate(record.last_verified_at))}</td>
-      <td>${escapeHtml(shortDate(record.expiry))}</td>
+      <td>${formatExpiry(record.expiry)}</td>
       <td><button class="ghost-button compact" type="button" data-secret-action="true" data-verify-service="${escapeHtml(record.service)}" data-verify-alias="${escapeHtml(record.alias)}" ${keyValid() ? "" : "disabled"}>Verify</button></td>
     </tr>
   `);
@@ -439,7 +467,13 @@ qsa(".nav-item").forEach((button) => {
     qsa(".nav-item").forEach((item) => item.classList.toggle("active", item === button));
     qsa(".view").forEach((view) => view.classList.toggle("active", view.id === state.view));
     qs("#view-title").textContent = button.textContent;
+    updateNavGlider();
   });
+});
+
+window.addEventListener("resize", updateNavGlider);
+window.addEventListener("load", () => {
+  setTimeout(updateNavGlider, 100);
 });
 
 document.body.addEventListener("change", async (event) => {
