@@ -1,8 +1,8 @@
 # Hermes Vault
 
-Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and generates skill contracts that keep agents on the same workflow.
+![Hermes Vault promo image](assets/hermes-vault-promo-image.png)
 
-![Hermes Vault CLI banner](assets/hermes-vault.png)
+Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and generates skill contracts that keep agents on the same workflow.
 
 ## What It Does
 
@@ -13,6 +13,12 @@ Hermes Vault is a local-first credential broker and encrypted vault for Hermes a
 - Refreshes already-authorized OAuth credentials without opening a browser when a refresh token exists
 - Generates `SKILL.md` files for Hermes agents and sub-agents
 - Provides a token-guarded local dashboard for operator visibility and safe actions
+
+### CLI snapshot
+
+The original terminal-first banner still reflects the operator workflow that powers the project:
+
+![Hermes Vault CLI banner](assets/hermes-vault.png)
 
 ## Install
 
