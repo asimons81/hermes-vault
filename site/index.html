@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hermes Vault — Local Credential Broker for Hermes Agent Operators</title>
+  <meta name="description" content="Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for plaintext secrets, brokers access with per-agent policy, and refreshes OAuth tokens.">
+  <meta name="theme-color" content="#030407">
+  <meta property="og:title" content="Hermes Vault">
+  <meta property="og:description" content="Local-first credential broker and encrypted vault for Hermes agents.">
+  <meta property="og:image" content="./assets/hermes-vault-promo-image.png">
+  <meta name="twitter:card" content="summary_large_image">
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+  <main class="page" id="top">
+    <!-- Navigation Bar -->
+    <header class="topbar reveal header-reveal">
+      <a class="brand" href="#top" aria-label="Hermes Vault home">
+        <span class="brand-mark" aria-hidden="true">HV</span>
+        <span class="brand-copy">
+          <strong>Hermes Vault</strong>
+          <small>credential broker layer</small>
+        </span>
+      </a>
+
+      <nav class="topnav" aria-label="Primary navigation">
+        <a href="#does">What it does</a>
+        <a href="#simulators">Simulators</a>
+        <a href="#console">Console</a>
+        <a href="#install">Install</a>
+      </nav>
+
+      <a class="ghost-link" href="https://github.com/asimons81/hermes-vault" rel="noreferrer noopener" target="_blank">GitHub</a>
+    </header>
+
+    <!-- Hero Section -->
+    <section class="hero section-pad reveal hero-reveal-1">
+      <div class="hero-copy">
+        <p class="eyebrow">v0.10.1 &bull; local first &bull; zero-trust broker</p>
+        <h1>Zero-Trust credential brokering for <span>Hermes Agent</span> operators.</h1>
+        <p class="lede">
+          An encrypted local database, per-agent access policies, ephemeral environment injection, and unattended OAuth refresh. Keep plaintext API keys off your disk and out of autonomous agent contexts.
+        </p>
+
+        <div class="cta-row">
+          <a class="button button-primary" href="#install">Install CLI</a>
+          <a class="button button-secondary" href="https://github.com/asimons81/hermes-vault#readme" rel="noreferrer noopener" target="_blank">Read the repository</a>
+        </div>
+
+        <ul class="pill-row" aria-label="Product highlights">
+          <li>Local-first SQLite Vault</li>
+          <li>Per-Agent Policy Doctor</li>
+          <li>Ephemeral Env Injection</li>
+          <li>Device-Code OAuth Login</li>
+        </ul>
+
+        <div class="hero-metrics" aria-label="Release and platform notes">
+          <div class="metric-card">
+            <span>Current Release</span>
+            <strong>0.10.1</strong>
+            <small>Adds explicit OAuth device-code login for headless terminal sessions.</small>
+          </div>
+          <div class="metric-card">
+            <span>Storage Engine</span>
+            <strong>SQLite + PBKDF2</strong>
+            <small>Credentials stay local and encrypted under your master passphrase.</small>
+          </div>
+          <div class="metric-card">
+            <span>Local State Path</span>
+            <strong>~/.hermes/vault-data</strong>
+            <small>Redirection supported via the <code>HERMES_VAULT_HOME</code> variable.</small>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hero Banner image -->
+      <div class="hero-visual reveal hero-reveal-2">
+        <figure class="glass-card">
+          <img src="./assets/hermes-vault-promo-image.png" alt="Hermes Vault official graphic showing a glowing obsidian vault box with winged foot logo, statue of Hermes holding a caduceus, and a terminal mockup of secrets list">
+          <figcaption>
+            <span>Obsidian Vault</span>
+            <span>Zero-trust control</span>
+            <span>Local-first scan</span>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- Simulators Section (Draggable Redaction & MCP timelines) -->
+    <section class="section reveal hero-reveal-3" id="simulators">
+      <div class="section-head">
+        <p class="eyebrow">Interactive Sandboxes</p>
+        <h2>Test the broker lifecycle in real time.</h2>
+        <p>
+          See how Hermes Vault scans plaintext configurations, imports credentials securely, and grants transient access to agents using Model Context Protocol (MCP) tool lifecycles.
+        </p>
+      </div>
+
+      <!-- Simulator 1: Secrets Redaction -->
+      <div class="simulator-container">
+        <header class="sim-header">
+          <div class="sim-controls">
+            <span class="sim-dot"></span>
+            <span class="sim-dot"></span>
+            <span class="sim-dot"></span>
+          </div>
+          <div class="sim-title">Hacker Scan & Redaction Simulator</div>
+          <button class="sim-action-btn" id="btn-scan" type="button">Scan & Redact</button>
+        </header>
+        <div class="secrets-simulator">
+          <!-- Left Panel: Plaintext .env Editor -->
+          <div class="sim-panel">
+            <div class="sim-panel-title">project-directory/.env (Source File)</div>
+            <div class="sim-panel-body" id="editor-body">
+<span class="sim-line"># Local Environment Variables</span>
+<span class="sim-line">DATABASE_URL=postgresql://localhost:5432/main</span>
+<span class="sim-line danger" id="env-line-openai">OPENAI_API_KEY="sk-proj-4a92c88f11d279bc3e8..."</span>
+<span class="sim-line danger" id="env-line-github">GITHUB_TOKEN="ghp_98a7bc72ef81a4b1239c..."</span>
+<span class="sim-line">PORT=4175</span>
+            </div>
+          </div>
+          <!-- Right Panel: Encrypted Vault State -->
+          <div class="sim-panel">
+            <div class="sim-panel-title">local-hermes-vault (SQLite DB)</div>
+            <div class="sim-panel-body">
+              <div class="vault-inventory-list" id="vault-inventory">
+                <div class="vault-record empty-state" id="vault-empty">
+                  <span>Vault is locked & empty. Run a scan.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Simulator 2: MCP Tool Lifecycle -->
+      <div class="simulator-container" style="margin-top: 32px;">
+        <header class="sim-header">
+          <div class="sim-controls">
+            <span class="sim-dot"></span>
+            <span class="sim-dot"></span>
+            <span class="sim-dot"></span>
+          </div>
+          <div class="sim-title">Model Context Protocol (MCP) Tool Lifecycle</div>
+          <button class="sim-action-btn" id="btn-mcp" type="button">Request Token via MCP</button>
+        </header>
+        <div class="mcp-timeline-simulator">
+          <div class="mcp-stages">
+            <!-- Stage 1: Tool Call -->
+            <div class="mcp-stage-card" id="mcp-stage-1">
+              <span class="mcp-stage-num">Stage 01</span>
+              <strong>Agent Tool Call</strong>
+              <p>Autonomous agent requests env variables via the <code>get_ephemeral_env</code> tool.</p>
+              <span class="mcp-stage-badge status-1">Idle</span>
+            </div>
+
+            <!-- Stage 2: Policy Check -->
+            <div class="mcp-stage-card" id="mcp-stage-2">
+              <span class="mcp-stage-num">Stage 02</span>
+              <strong>Policy Check</strong>
+              <p>Vault verifies the calling agent ID against permissions in <code>policy.yaml</code>.</p>
+              <span class="mcp-stage-badge status-2">Idle</span>
+            </div>
+
+            <!-- Stage 3: Materialization -->
+            <div class="mcp-stage-card" id="mcp-stage-3">
+              <span class="mcp-stage-num">Stage 03</span>
+              <strong>Transient Injection</strong>
+              <p>Key is safely materialized in agent environment for a TTL-bounded duration.</p>
+              <span class="mcp-stage-badge status-3">Idle</span>
+            </div>
+          </div>
+
+          <div class="mcp-timer-bar">
+            <div class="mcp-timer-progress" id="mcp-progress"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features Section -->
+    <section class="section reveal" id="does">
+      <div class="section-head">
+        <p class="eyebrow">What it does</p>
+        <h2>A secure boundary between credentials and agent contexts.</h2>
+        <p>
+          Hermes Vault keeps credentials in a central, local database, checking caller policy and providing temporary keys only when needed. Agents can interact programmatically using standard MCP tools.
+        </p>
+      </div>
+
+      <div class="feature-grid">
+        <article class="feature-card">
+          <span class="feature-index">01</span>
+          <h3>Local SQLite encryption</h3>
+          <p>Credentials live locally and are encrypted with AES-256-GCM. The salt stays beside the vault, failing closed on mismatch.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-index">02</span>
+          <h3>Least-Privilege Policy</h3>
+          <p><code>policy doctor</code> checks <code>policy.yaml</code> rules for agent capabilities, policy drift, and wildcard credential access.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-index">03</span>
+          <h3>Ephemeral environments</h3>
+          <p>Brokers transient key injection into environment variables with a strict Time-to-Live (TTL) countdown constraint.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-index">04</span>
+          <h3>Unattended OAuth engine</h3>
+          <p>Automatically rotates and refreshes OAuth tokens using stored refresh tokens without triggering a browser redirection.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-index">05</span>
+          <h3>MCP Server protocol</h3>
+          <p>Exposes tools like <code>verify_credential</code> and <code>get_ephemeral_env</code> to Claude Desktop, Cursor, and LLM hosts.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-index">06</span>
+          <h3>Local console dashboard</h3>
+          <p><code>dashboard</code> serves a secure browser layout from packaged assets, keeping secret payloads out of the DOM.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- Reality Check Section -->
+    <section class="section-reality reveal">
+      <div class="reality-callout">
+        <p class="eyebrow">Reality check</p>
+        <h2>Local security is local security.</h2>
+        <p>
+          No cloud sync. No central server audits. Destructive vault actions, raw key updates, and policy edits are locked to the local CLI, keeping browser dashboards strictly read-only and metadata-focused.
+        </p>
+      </div>
+      <div class="reality-points">
+        <div>
+          <strong>Multi-profile isolation</strong>
+          <p>Allows absolute vault database and policy configuration separation using the <code>--profile</code> argument.</p>
+        </div>
+        <div>
+          <strong>Token-guarded console</strong>
+          <p>The console dashboard binds to 127.0.0.1 and generates a process-local token required for all API calls.</p>
+        </div>
+        <div>
+          <strong>Recovery drills</strong>
+          <p>Verify backup age, check backups, and run non-mutating restore drills using the <code>backup-verify</code> utility.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Console Dashboard Showcase Section -->
+    <section class="section reveal" id="console">
+      <div class="section-head">
+        <p class="eyebrow">Console Dashboard</p>
+        <h2>Visual visibility without secret exposure.</h2>
+        <p>
+          The local dashboard (introduced in v0.8.0) renders health statistics, inventories, policies, and audits on localhost, keeping raw key payloads fully redacted.
+        </p>
+      </div>
+
+      <div class="screenshots-gallery-block">
+        <div class="screenshots-row">
+          <figure>
+            <img src="./assets/screenshots/dashboard-health.png" alt="Hermes Vault Console - Health Dashboard View">
+            <figcaption>System Health & Alerts</figcaption>
+          </figure>
+          <figure>
+            <img src="./assets/screenshots/dashboard-credential-inventory.png" alt="Hermes Vault Console - Credential Inventory View">
+            <figcaption>Credential Inventory Metadata</figcaption>
+          </figure>
+          <figure>
+            <img src="./assets/screenshots/dashboard-audit-activity.png" alt="Hermes Vault Console - Audit Logs View">
+            <figcaption>Local Agent Audit Logs</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- Installation Panel Section -->
+    <section class="section reveal" id="install">
+      <div class="section-head">
+        <p class="eyebrow">Operator installation</p>
+        <h2>Safe installations, editable development setups.</h2>
+        <p>
+          Hermes Vault requires Python 3.11+. The safest production path is via isolated tool managers.
+        </p>
+      </div>
+
+      <div class="install-shell">
+        <div class="tab-row" role="tablist" aria-label="Installation paths">
+          <div class="tab-glider" id="tab-glider"></div>
+          <button class="tab-button is-active" type="button" role="tab" aria-selected="true" aria-controls="panel-users" id="tab-users" data-tab="users">For operators</button>
+          <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="panel-dev" id="tab-dev" data-tab="dev">For contributors</button>
+        </div>
+
+        <div class="install-panels">
+          <section class="install-panel is-active" id="panel-users" role="tabpanel" aria-labelledby="tab-users" data-panel="users">
+            <div class="terminal-card">
+              <div class="terminal-top">
+                <span>Production Install</span>
+                <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
+              </div>
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git
+hermes-vault scan --path ~/.hermes
+hermes-vault import --from-env .env</code></pre>
+            </div>
+            <div class="install-notes">
+              <article class="note-card">
+                <h3>Installation Scope</h3>
+                <p>Installs the CLI inside an isolated tool context. Recommends running a scan to flag plaintext secrets instantly.</p>
+              </article>
+              <article class="note-card">
+                <h3>Imports</h3>
+                <p>Environment importer imports key variables automatically (e.g. <code>*_API_KEY</code>), skipping public configurations.</p>
+              </article>
+            </div>
+          </section>
+
+          <section class="install-panel" id="panel-dev" role="tabpanel" aria-labelledby="tab-dev" data-panel="dev" hidden>
+            <div class="terminal-card">
+              <div class="terminal-top">
+                <span>Contributor Workflow</span>
+                <button class="copy-button" type="button" data-copy-target="dev-code">Copy</button>
+              </div>
+              <pre><code id="dev-code">git clone https://github.com/asimons81/hermes-vault.git
+cd hermes-vault
+uv sync --extra dev
+uv run pytest tests/ -q</code></pre>
+            </div>
+            <div class="install-notes">
+              <article class="note-card">
+                <h3>Local Development</h3>
+                <p>Creates a synchronized editable environment with developer hooks and unit tests configured.</p>
+              </article>
+              <article class="note-card">
+                <h3>Testing Invariants</h3>
+                <p>Never write real passphrases, databases, or provider token payloads into logs or test assets.</p>
+              </article>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- Timeline Releases Section -->
+    <section class="section reveal" id="releases">
+      <div class="section-head">
+        <p class="eyebrow">Release & status history</p>
+        <h2>Proven CLI commands and production releases.</h2>
+        <p>Hermes Vault has an active release trail. The local changelog tracks security fixes, command line updates, and dashboard improvements.</p>
+      </div>
+
+      <div class="release-timeline">
+        <article class="release-featured">
+          <div class="release-badge">Current Release</div>
+          <h3>v0.10.1</h3>
+          <p>Adds explicit OAuth device-code login for headless shell sessions and remote server authorizations.</p>
+        </article>
+
+        <div class="release-list">
+          <article class="release-row">
+            <span class="release-version">v0.10.0</span>
+            <p>Unattended OAuth auto-refresh engines and generic custom verifiers.</p>
+          </article>
+          <article class="release-row">
+            <span class="release-version">v0.9.0</span>
+            <p>Multi-vault profile support, file-based verifier plugins, tags and notes.</p>
+          </article>
+          <article class="release-row">
+            <span class="release-version">v0.8.0</span>
+            <p>Hermes Vault Console local browser dashboard with safe action boundaries.</p>
+          </article>
+          <article class="release-row">
+            <span class="release-version">v0.7.0</span>
+            <p>Policy doctor auditing tool, backup-verify drills, and Systemd integration helpers.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer reveal">
+      <div>
+        <strong>hermesvault.tonysimons.dev</strong>
+        <p>Broker logs, CLI commands, and dashboard captures verified. &copy; <span data-year></span></p>
+      </div>
+      <nav class="footer-links" aria-label="Footer links">
+        <a href="https://github.com/asimons81/hermes-vault" rel="noreferrer noopener" target="_blank">GitHub Repository</a>
+        <a href="https://github.com/asimons81/hermes-vault#readme" rel="noreferrer noopener" target="_blank">README</a>
+        <a href="https://github.com/asimons81/hermes-vault/blob/main/CHANGELOG.md" rel="noreferrer noopener" target="_blank">Changelog</a>
+      </nav>
+    </footer>
+  </main>
+
+  <div class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+  <script src="./app.js"></script>
+</body>
+</html>
