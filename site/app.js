@@ -91,7 +91,7 @@ window.addEventListener('resize', () => {
 if (btnScan) {
   btnScan.addEventListener('click', () => {
     btnScan.disabled = true;
-    btnScan.textContent = 'Scanning...';
+    btnScan.textContent = 'Previewing...';
     btnScan.style.color = 'var(--text-dim)';
     btnScan.style.borderColor = 'var(--border)';
 
@@ -100,7 +100,7 @@ if (btnScan) {
       if (envOpenAI) {
         envOpenAI.classList.remove('danger');
         envOpenAI.classList.add('secured');
-        envOpenAI.innerHTML = 'OPENAI_API_KEY="# imported to vault [alias: primary]"';
+        envOpenAI.innerHTML = 'OPENAI_API_KEY="# imported by bootstrap [alias: openai_api_key]"';
       }
     }, 1000);
 
@@ -108,7 +108,7 @@ if (btnScan) {
       if (envGitHub) {
         envGitHub.classList.remove('danger');
         envGitHub.classList.add('secured');
-        envGitHub.innerHTML = 'GITHUB_TOKEN="# imported to vault [alias: primary]"';
+        envGitHub.innerHTML = 'GITHUB_TOKEN="# imported by bootstrap [alias: github_token]"';
       }
     }, 1800);
 
@@ -144,7 +144,7 @@ if (btnScan) {
       vaultInventory.appendChild(githubCard);
       showToast('Vault: GitHub credential imported securely');
       
-      btnScan.textContent = 'Redacted & Brokered';
+      btnScan.textContent = 'Bootstrap Report Ready';
       btnScan.style.color = 'var(--accent-emerald)';
       btnScan.style.borderColor = 'var(--accent-emerald)';
     }, 2000);

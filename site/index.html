@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hermes Vault — Local Credential Broker for Hermes Agent Operators</title>
-  <meta name="description" content="Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for plaintext secrets, brokers access with per-agent policy, and refreshes OAuth tokens.">
+  <title>Hermes Vault, First Safe Agent Credential Broker</title>
+  <meta name="description" content="Hermes Vault turns plaintext .env files into policy-scoped safe agent access with local encryption, ephemeral env injection, and MCP auth tools.">
   <meta name="theme-color" content="#030407">
   <meta property="og:title" content="Hermes Vault">
-  <meta property="og:description" content="Local-first credential broker and encrypted vault for Hermes agents.">
+  <meta property="og:description" content="From .env to safe agent access for Hermes operators.">
   <meta property="og:image" content="./assets/hermes-vault-promo-image.png">
   <meta name="twitter:card" content="summary_large_image">
   
@@ -25,13 +25,13 @@
         <span class="brand-mark" aria-hidden="true">HV</span>
         <span class="brand-copy">
           <strong>Hermes Vault</strong>
-          <small>credential broker layer</small>
+          <small>first safe agent layer</small>
         </span>
       </a>
 
       <nav class="topnav" aria-label="Primary navigation">
         <a href="#does">What it does</a>
-        <a href="#simulators">Simulators</a>
+        <a href="#simulators">Flow</a>
         <a href="#console">Console</a>
         <a href="#install">Install</a>
       </nav>
@@ -42,10 +42,10 @@
     <!-- Hero Section -->
     <section class="hero section-pad reveal hero-reveal-1">
       <div class="hero-copy">
-        <p class="eyebrow">v0.10.1 &bull; local first &bull; zero-trust broker</p>
-        <h1>Zero-Trust credential brokering for <span>Hermes Agent</span> operators.</h1>
+        <p class="eyebrow">v0.11.0 &bull; first safe agent &bull; local first</p>
+        <h1>From <span>.env</span> to safe agent access.</h1>
         <p class="lede">
-          An encrypted local database, per-agent access policies, ephemeral environment injection, and unattended OAuth refresh. Keep plaintext API keys off your disk and out of autonomous agent contexts.
+          Bootstrap a messy plaintext env file into an encrypted local vault, policy-scoped agent access, generated skill contracts, and browserless OAuth options. Less key sprawl, fewer auth lies, fewer agent mistakes.
         </p>
 
         <div class="cta-row">
@@ -54,17 +54,17 @@
         </div>
 
         <ul class="pill-row" aria-label="Product highlights">
-          <li>Local-first SQLite Vault</li>
-          <li>Per-Agent Policy Doctor</li>
-          <li>Ephemeral Env Injection</li>
-          <li>Device-Code OAuth Login</li>
+          <li>Bootstrap .env safely</li>
+          <li>Policy-scoped access</li>
+          <li>Ephemeral env injection</li>
+          <li>MCP device-login parity</li>
         </ul>
 
         <div class="hero-metrics" aria-label="Release and platform notes">
           <div class="metric-card">
             <span>Current Release</span>
-            <strong>0.10.1</strong>
-            <small>Adds explicit OAuth device-code login for headless terminal sessions.</small>
+            <strong>0.11.0</strong>
+            <small>Adds First Safe Agent bootstrap and MCP device-login parity.</small>
           </div>
           <div class="metric-card">
             <span>Storage Engine</span>
@@ -73,7 +73,7 @@
           </div>
           <div class="metric-card">
             <span>Local State Path</span>
-            <strong>~/.hermes/vault-data</strong>
+            <strong>~/.hermes/hermes-vault-data</strong>
             <small>Redirection supported via the <code>HERMES_VAULT_HOME</code> variable.</small>
           </div>
         </div>
@@ -95,10 +95,10 @@
     <!-- Simulators Section (Draggable Redaction & MCP timelines) -->
     <section class="section reveal hero-reveal-3" id="simulators">
       <div class="section-head">
-        <p class="eyebrow">Interactive Sandboxes</p>
-        <h2>Test the broker lifecycle in real time.</h2>
+        <p class="eyebrow">First Safe Agent Flow</p>
+        <h2>The safe path is now one guided loop.</h2>
         <p>
-          See how Hermes Vault scans plaintext configurations, imports credentials securely, and grants transient access to agents using Model Context Protocol (MCP) tool lifecycles.
+          Preview a plaintext env file, import only the approved entries, generate the agent contract, and broker short-lived access without dumping raw secrets into the agent context.
         </p>
       </div>
 
@@ -110,8 +110,8 @@
             <span class="sim-dot"></span>
             <span class="sim-dot"></span>
           </div>
-          <div class="sim-title">Hacker Scan & Redaction Simulator</div>
-          <button class="sim-action-btn" id="btn-scan" type="button">Scan & Redact</button>
+          <div class="sim-title">Bootstrap Preview & Import Simulator</div>
+          <button class="sim-action-btn" id="btn-scan" type="button">Run Bootstrap Preview</button>
         </header>
         <div class="secrets-simulator">
           <!-- Left Panel: Plaintext .env Editor -->
@@ -120,8 +120,8 @@
             <div class="sim-panel-body" id="editor-body">
 <span class="sim-line"># Local Environment Variables</span>
 <span class="sim-line">DATABASE_URL=postgresql://localhost:5432/main</span>
-<span class="sim-line danger" id="env-line-openai">OPENAI_API_KEY="sk-proj-4a92c88f11d279bc3e8..."</span>
-<span class="sim-line danger" id="env-line-github">GITHUB_TOKEN="ghp_98a7bc72ef81a4b1239c..."</span>
+<span class="sim-line danger" id="env-line-openai">OPENAI_API_KEY="&lt;plaintext demo key&gt;"</span>
+<span class="sim-line danger" id="env-line-github">GITHUB_TOKEN="&lt;plaintext demo token&gt;"</span>
 <span class="sim-line">PORT=4175</span>
             </div>
           </div>
@@ -188,17 +188,17 @@
     <section class="section reveal" id="does">
       <div class="section-head">
         <p class="eyebrow">What it does</p>
-        <h2>A secure boundary between credentials and agent contexts.</h2>
+        <h2>A concrete boundary between plaintext secrets and agent work.</h2>
         <p>
-          Hermes Vault keeps credentials in a central, local database, checking caller policy and providing temporary keys only when needed. Agents can interact programmatically using standard MCP tools.
+          Hermes Vault now gives operators a single onboarding rail: redacted env preview, encrypted local storage, policy doctor checks, skill contract generation, and MCP tools that keep raw secrets out of the chat loop.
         </p>
       </div>
 
       <div class="feature-grid">
         <article class="feature-card">
           <span class="feature-index">01</span>
-          <h3>Local SQLite encryption</h3>
-          <p>Credentials live locally and are encrypted with AES-256-GCM. The salt stays beside the vault, failing closed on mismatch.</p>
+          <h3>First Safe Agent bootstrap</h3>
+          <p><code>bootstrap</code> previews env imports, imports approved credentials, summarizes policy posture, and prints next commands without exposing secret values.</p>
         </article>
         <article class="feature-card">
           <span class="feature-index">02</span>
@@ -212,8 +212,8 @@
         </article>
         <article class="feature-card">
           <span class="feature-index">04</span>
-          <h3>Unattended OAuth engine</h3>
-          <p>Automatically rotates and refreshes OAuth tokens using stored refresh tokens without triggering a browser redirection.</p>
+          <h3>Headless OAuth paths</h3>
+          <p>Use <code>oauth login --headless</code> or MCP <code>oauth_device_login</code> for device-code first login where providers support it.</p>
         </article>
         <article class="feature-card">
           <span class="feature-index">05</span>
@@ -287,7 +287,7 @@
         <p class="eyebrow">Operator installation</p>
         <h2>Safe installations, editable development setups.</h2>
         <p>
-          Hermes Vault requires Python 3.11+. The safest production path is via isolated tool managers.
+          Hermes Vault requires Python 3.11+. Install it, bootstrap your first env file, then let agents request scoped access through policy.
         </p>
       </div>
 
@@ -305,18 +305,19 @@
                 <span>Production Install</span>
                 <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
               </div>
-              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git
-hermes-vault scan --path ~/.hermes
-hermes-vault import --from-env .env</code></pre>
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.11.0
+hermes-vault bootstrap --from-env .env --agent hermes --dry-run
+hermes-vault bootstrap --from-env .env --agent hermes
+hermes-vault oauth login google --alias work --headless</code></pre>
             </div>
             <div class="install-notes">
               <article class="note-card">
                 <h3>Installation Scope</h3>
-                <p>Installs the CLI inside an isolated tool context. Recommends running a scan to flag plaintext secrets instantly.</p>
+                <p>Installs the CLI inside an isolated tool context and starts with a non-mutating bootstrap preview.</p>
               </article>
               <article class="note-card">
-                <h3>Imports</h3>
-                <p>Environment importer imports key variables automatically (e.g. <code>*_API_KEY</code>), skipping public configurations.</p>
+                <h3>Safe bootstrap</h3>
+                <p>The bootstrap report is redacted, policy-aware, and explicit about skipped env names and next steps.</p>
               </article>
             </div>
           </section>
@@ -358,11 +359,15 @@ uv run pytest tests/ -q</code></pre>
       <div class="release-timeline">
         <article class="release-featured">
           <div class="release-badge">Current Release</div>
-          <h3>v0.10.1</h3>
-          <p>Adds explicit OAuth device-code login for headless shell sessions and remote server authorizations.</p>
+          <h3>v0.11.0</h3>
+          <p>First Safe Agent bootstrap, <code>oauth login --headless</code>, and MCP <code>oauth_device_login</code> parity.</p>
         </article>
 
         <div class="release-list">
+          <article class="release-row">
+            <span class="release-version">v0.10.1</span>
+            <p>Explicit OAuth device-code login for headless shell sessions.</p>
+          </article>
           <article class="release-row">
             <span class="release-version">v0.10.0</span>
             <p>Unattended OAuth auto-refresh engines and generic custom verifiers.</p>
