@@ -1,6 +1,6 @@
 # Hermes Vault MCP Server Integration
 
-This document describes how to register `hermes-vault` as a managed MCP server inside Hermes Agent so that MCP-aware tools (e.g. `oauth_login`, `oauth_refresh`) are available to the agent.
+This document describes how to register `hermes-vault` as a managed MCP server inside Hermes Agent so that MCP-aware tools (e.g. `oauth_login`, `oauth_device_login`, `oauth_refresh`) are available to the agent.
 
 ## Prerequisites
 
@@ -49,6 +49,7 @@ When Hermes loads, it reads `mcp_servers` from `config.yaml`.  Any server with `
 | `rotate_credential` | Rotate a credential to a new secret value. |
 | `scan_for_secrets` | Scan filesystem paths for plaintext secrets. |
 | `oauth_login` | Initiate a PKCE OAuth login flow for a provider. |
+| `oauth_device_login` | Initiate a browserless device-code OAuth flow without returning raw tokens. |
 | `oauth_refresh` | Refresh an OAuth access token using a stored refresh token. |
 
 `hermes-vault` also exposes read-only MCP resources:
@@ -93,13 +94,18 @@ To test the OAuth tools specifically, ask Hermes:
 
 > "Use the hermes-vault MCP tool oauth_login for provider google with alias work."
 
-Hermes should call the tool and return an authorization URL.
+Hermes should call the tool and return an authorization URL. For headless first login, ask:
+
+> "Use the hermes-vault MCP tool oauth_device_login for provider google with alias work."
+
+Hermes should return a verification URL and user code, not raw OAuth tokens.
 
 ## 4. Policy considerations
 
-Both `oauth_login` and `oauth_refresh` require policy permissions:
+`oauth_login`, `oauth_device_login`, and `oauth_refresh` require policy permissions:
 
 - `oauth_login` requires `add_credential` action on the target service.
+- `oauth_device_login` requires `add_credential` action on the target service.
 - `oauth_refresh` requires `rotate` action on the target service.
 
 If the agent is denied, the tool returns a policy denial message.
@@ -109,6 +115,7 @@ If the agent is denied, the tool returns a policy denial message.
 - The MCP server uses **stdio transport** (no TCP port), so it runs in-process with Hermes.
 - The `oauth_login` tool spawns an ephemeral HTTP callback server on localhost (OS-assigned ephemeral port) and returns an `authorization_url` to the caller.
 - A background thread awaits the OAuth callback, exchanges the code for tokens, and stores them in the vault atomically.
+- The `oauth_device_login` tool returns verification instructions immediately, polls in the background, and stores tokens after approval without returning raw token material.
 - The `oauth_refresh` tool uses the existing `RefreshEngine` (proactive expiry detection + exponential backoff) to update tokens in-place.
 
 ## Troubleshooting
@@ -117,5 +124,6 @@ If the agent is denied, the tool returns a policy denial message.
 |---------|-----|
 | `hermes mcp list` doesn't show hermes-vault | Check that `command` points to the correct Python binary and that `hermes_vault.mcp_server` is importable. |
 | OAuth login times out | Ensure the browser can reach `127.0.0.1`. The ephemeral port is printed in the URL. |
-| Policy denial on oauth_login | Add `add_credential` to the agent's policy for the provider service. |
-| Refresh fails with "no refresh token" | Re-run `oauth_login` -- the provider may not have issued a refresh token. |
+| Device login says provider unsupported | Use `oauth_login`/`--no-browser` or configure a provider with `device_authorization_endpoint`. |
+| Policy denial on oauth_login or oauth_device_login | Add `add_credential` to the agent's policy for the provider service. |
+| Refresh fails with "no refresh token" | Re-run `oauth_login` or `oauth_device_login`, then retry refresh after the provider issues a refresh token. |

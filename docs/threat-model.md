@@ -112,7 +112,7 @@ Mitigation: A cryptographically random `state` parameter is generated for each l
 
 #### Token leakage in logs or process output
 
-Mitigation: The callback server suppresses HTTP access logging to avoid leaking `code` and `state` in standard logs. Token exchange responses are stored directly in the vault with sanitized metadata only; access tokens and refresh tokens are never printed to stdout except as truncated previews (first 12 chars + `...`). MCP `oauth_refresh` returns only token previews in its response.
+Mitigation: The callback server suppresses HTTP access logging to avoid leaking `code` and `state` in standard logs. Token exchange responses are stored directly in the vault with sanitized metadata only. Device-code flows return the user-facing `user_code` and verification URL but never return the provider `device_code`. Access tokens and refresh tokens are never printed to stdout except as truncated previews (first 12 chars + `...`). MCP `oauth_device_login` never returns raw token material, and MCP `oauth_refresh` returns only token previews in its response.
 
 #### Refresh token theft
 
@@ -136,7 +136,7 @@ Mitigation: `backup-verify` and `restore --dry-run` prove the archive is structu
 
 ### Residual risks
 
-- Browser interaction is still required for initial login because device-code flow is not yet supported.
+- Initial login can use browser PKCE or device-code flow for providers that support it. Device-code support removes the local browser requirement, but the operator still has to approve the login in a provider-controlled browser or device prompt.
 - `oauth refresh` and `maintain` can renew access tokens unattended once a refresh token exists, but they do not remove the need to protect the local machine.
-- Compromise of the operator's local machine (outside the vault) still grants access to the browser session used for OAuth consent
-- The MCP `oauth_login` flow uses a process-level `_pending_oauth` dictionary for state tracking. Concurrent login attempts for the same provider+alias are not isolated and will overwrite each other
+- Compromise of the operator's local machine (outside the vault) still grants access to browser sessions and device-code approval flows used for OAuth consent
+- The MCP `oauth_login` flow uses a process-level `_pending_oauth` dictionary for state tracking. `oauth_device_login` also stores pending device-login state in process memory. Concurrent login attempts for the same provider+alias should be treated as operator-coordinated, not fully isolated automation.

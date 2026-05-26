@@ -96,17 +96,41 @@ hermes-vault update
 export HERMES_VAULT_HOME=~/.hermes/hermes-vault-data
 export HERMES_VAULT_PASSPHRASE='choose-a-strong-local-passphrase'
 hermes-vault --help
-hermes-vault list
-hermes-vault scan --path ~/.hermes
-hermes-vault import --from-env ~/.hermes/.env --dry-run
-hermes-vault import --from-env ~/.hermes/.env
+hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes --dry-run
+hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes
 hermes-vault verify --all
 hermes-vault policy doctor
 hermes-vault generate-skill --all-agents
 hermes-vault dashboard --no-open
 ```
 
-Default runtime state lives in `~/.hermes/hermes-vault-data`. The first `list`, `scan`, or import command initializes the runtime layout and default policy if they don't exist yet. Preview imports and recovery operations before mutating the vault.
+Default runtime state lives in `~/.hermes/hermes-vault-data`. The first `list`, `scan`, import, or bootstrap command initializes the runtime layout and default policy if they don't exist yet. Preview imports and recovery operations before mutating the vault.
+
+## First Safe Agent Bootstrap
+
+v0.11.0 adds the guided path from `.env` to safe agent access:
+
+```bash
+hermes-vault bootstrap --from-env .env --agent hermes --dry-run --json
+hermes-vault bootstrap --from-env .env --agent hermes
+```
+
+The bootstrap report is deliberately redacted. It shows importable env names, skipped env names, policy-doctor summary, generated skill contract path, broker-env next command, and an MCP config snippet. It never prints secret values. `--dry-run` does not mutate the vault or the source `.env` file. Non-dry-run imports mapped credentials into the encrypted local vault, and `--redact-source` comments out only lines that were successfully imported.
+
+Use repeatable `--map ENV_NAME=service:credential_type` when an env name is intentionally non-standard:
+
+```bash
+hermes-vault bootstrap --from-env .env --agent coder --map CUSTOM_VENDOR_TOKEN=custom-vendor:api_key
+```
+
+For browserless first login, use either explicit device login or the unified headless shortcut:
+
+```bash
+hermes-vault oauth device-login google --alias work
+hermes-vault oauth login google --alias work --headless
+```
+
+Providers without device-code support fail closed and tell you to use the browser callback path with `--no-browser` instead.
 
 ## Importing `.env` Files
 

@@ -4,7 +4,7 @@
 
 Hermes Vault is a local-first Python project that centralizes credential scanning, secure storage, brokered access, policy enforcement, verification, auditing, maintenance, and skill generation for Hermes and Hermes sub-agents.
 
-v0.10.1 is the device-code follow-up release: OAuth refresh can still run without a browser after a refresh token exists, and first login now has a browserless device-code path on supported providers. v0.10.0 remains the published partial unattended-refresh release.
+v0.11.0 is the First Safe Agent release: `bootstrap` guides operators from `.env` into encrypted, policy-scoped agent access; OAuth first-login supports browser PKCE and browserless device-code flows; MCP exposes device-login parity without returning raw token material.
 
 ## Major Components
 
@@ -70,6 +70,13 @@ v0.10.1 is the device-code follow-up release: OAuth refresh can still run withou
 - Flags unknown services, unknown capabilities, risky secret access, and stale generated skills
 - Produces suggested YAML patches for least-privilege remediation
 
+### `bootstrap.py`
+
+- Orchestrates the First Safe Agent onboarding report
+- Parses `.env` files through the same detector and mapping rules as import
+- Keeps reports redacted by returning env names, service/type decisions, counts, policy-doctor summary, generated skill next step, broker-env next step, and MCP config snippet
+- Supports dry-run mode without vault or source mutation, and non-dry-run import through the same policy-audited mutation layer
+
 ### `maintenance.py`
 
 - Composes OAuth refresh and health checks into a single scheduled-safe run
@@ -93,10 +100,11 @@ v0.10.1 is the device-code follow-up release: OAuth refresh can still run withou
 ### `mcp_server.py`
 
 - Stdio-based MCP server using the official Python MCP SDK
-- Exposes brokered capabilities as MCP tools: list_services, get_credential_metadata, get_ephemeral_env, verify_credential, rotate_credential, scan_for_secrets
-- **New in 0.6.0:** `oauth_login` initiates PKCE login and returns an authorization URL. A background thread spawns a callback server, waits for the browser redirect, exchanges the code for tokens, and stores them in the vault atomically.
-- **New in 0.6.0:** `oauth_refresh` triggers the `RefreshEngine` to proactively or on-demand refresh expired access tokens.
-- **Current v0.10.1 boundary:** MCP OAuth login supports both callback-based PKCE and device-code login on providers that expose it.
+- Exposes brokered capabilities as MCP tools: list_services, get_credential_metadata, get_ephemeral_env, verify_credential, rotate_credential, scan_for_secrets, oauth_login, oauth_device_login, oauth_refresh
+- `oauth_login` initiates PKCE login and returns an authorization URL. A background thread spawns a callback server, waits for the browser redirect, exchanges the code for tokens, and stores them in the vault atomically.
+- `oauth_device_login` initiates device-code login, returns verification instructions immediately, polls in the background, and stores tokens after approval without exposing raw token material through MCP.
+- `oauth_refresh` triggers the `RefreshEngine` to proactively or on-demand refresh expired access tokens.
+- **Current v0.11.0 boundary:** MCP OAuth login supports callback-based PKCE and device-code login on providers that expose it.
 - Every tool call uses caller-supplied `agent_id` unless the server is launched with `HERMES_VAULT_MCP_ALLOWED_AGENTS` and `HERMES_VAULT_MCP_DEFAULT_AGENT`
 - Bound MCP deployments deny agent IDs outside the allowed set before policy evaluation and audit the binding decision separately
 - MCP access defaults to policy-gated ephemeral env materialization rather than direct raw-secret handling
@@ -105,7 +113,7 @@ v0.10.1 is the device-code follow-up release: OAuth refresh can still run withou
 
 ### `oauth/` subsystem
 
-Introduced in 0.6.0. The OAuth package is self-contained and does not depend on CLI code. The current package covers browser PKCE login, callback handling, token exchange, and unattended refresh. It doesn't include a device-code module yet.
+Introduced in 0.6.0. The OAuth package is self-contained and does not depend on CLI code. The current package covers browser PKCE login, callback handling, device-code login, token exchange, and unattended refresh.
 
 | Module | Responsibility |
 |---|---|

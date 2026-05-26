@@ -84,6 +84,7 @@ def test_list_tools_returns_expected_tools():
         "rotate_credential",
         "scan_for_secrets",
         "oauth_login",
+        "oauth_device_login",
         "oauth_refresh",
     }
     assert names == expected
@@ -562,6 +563,76 @@ def test_oauth_login_returns_authorization_url(vault_with_policy, tmp_path, monk
     assert "code_challenge_method=S256" in url
     assert "state=" in url
     assert "client_id=" in url
+
+
+def test_oauth_device_login_requires_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+    result = _run_async(call_tool("oauth_device_login", {"agent_id": "test-agent"}))
+    assert "Missing required parameter: provider_id" in _text(result)
+
+
+def test_oauth_device_login_denied_without_add_credential_permission(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("oauth_device_login", {
+        "agent_id": "restricted-agent",
+        "provider_id": "openai",
+    }))
+    assert "Denied:" in _text(result)
+
+
+def test_oauth_device_login_reports_unsupported_provider(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("oauth_device_login", {
+        "agent_id": "test-agent",
+        "provider_id": "openai",
+    }))
+    data = _json(result)
+    assert data["success"] is False
+    assert "does not support device-code" in data["error"]
+    assert "google" in data["supported_providers"]
+
+
+def test_oauth_device_login_returns_redacted_device_instructions(vault_with_policy, tmp_path, monkeypatch):
+    import hermes_vault.mcp_server as mcp_mod
+    from hermes_vault.oauth.exchange import DeviceAuthorizationResponse
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    monkeypatch.setenv("HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID", "test-client-123")
+
+    class FakeTokenExchanger:
+        def __init__(self, provider):
+            self.provider = provider
+
+        def request_device_code(self, **kwargs):
+            return DeviceAuthorizationResponse(
+                device_code="device-secret-code",
+                user_code="ABCD-EFGH",
+                verification_uri="https://example.test/device",
+                verification_uri_complete="https://example.test/device?user_code=ABCD-EFGH",
+                expires_in=600,
+                interval=1,
+                message="Visit the URL and enter ABCD-EFGH.",
+            )
+
+        def poll_device_code(self, **kwargs):
+            return type("Poll", (), {"status": "authorization_pending", "retry_after": None, "token_response": None})()
+
+    monkeypatch.setattr(mcp_mod, "TokenExchanger", FakeTokenExchanger)
+    result = _run_async(call_tool("oauth_device_login", {
+        "agent_id": "test-agent",
+        "provider_id": "google",
+        "alias": "work",
+        "timeout_seconds": 0,
+    }))
+    data = _json(result)
+    assert data["success"] is True
+    assert data["user_code"] == "ABCD-EFGH"
+    assert data["raw_tokens_returned"] is False
+    serialized = json.dumps(data)
+    assert "access_token" not in serialized
+    assert "refresh_token" not in serialized
+    assert "device-secret-code" not in serialized
 
 
 # ── oauth_refresh ──────────────────────────────────────────────────────────────

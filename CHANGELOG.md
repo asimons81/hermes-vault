@@ -6,6 +6,25 @@
 
 - Future auth work will focus on provider coverage and browserless initial-login polish.
 
+## 0.11.0 -- First Safe Agent
+
+### Added
+
+- `hermes-vault bootstrap` guides operators from a plaintext `.env` into redacted import preview, encrypted vault import, policy-doctor summary, generated skill contract next steps, broker-env next command, and an MCP config snippet.
+- `hermes-vault oauth login <provider> --headless` routes supported providers through the existing device-code flow while keeping `--no-browser` as browser callback fallback.
+- MCP now exposes `oauth_device_login` so agent-in-the-loop onboarding can initiate device-code login without a callback browser.
+
+### Changed
+
+- Quick-start docs now lead with the First Safe Agent flow instead of a loose scan/import command chain.
+- Version surfaces now report `0.11.0` in `pyproject.toml`, `src/hermes_vault/__init__.py`, and `src/hermes_vault/mcp_server.py`.
+
+### Security
+
+- Bootstrap JSON and human output are redacted by design and never include secret values.
+- MCP device login returns user authorization instructions and pending state only. Raw OAuth access tokens, refresh tokens, and provider token responses are never returned through MCP.
+- `--dry-run` bootstrap does not mutate the vault or source `.env`; `--redact-source` only comments out lines that were successfully imported.
+
 ## 0.10.1 -- Device-Code Login Follow-up
 
 ### Added

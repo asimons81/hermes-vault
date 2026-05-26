@@ -90,8 +90,9 @@ Once registered, tools are prefixed as `mcp_hermes_vault_*`:
 | `mcp_hermes_vault_verify_credential` | Verify a credential against its provider |
 | `mcp_hermes_vault_rotate_credential` | Rotate to a new secret (requires `rotate` permission) |
 | `mcp_hermes_vault_scan_for_secrets` | Scan filesystem paths for plaintext secrets |
-| `mcp_hermes_vault_oauth_login` | **NEW** Initiate PKCE OAuth login |
-| `mcp_hermes_vault_oauth_refresh` | **NEW** Trigger refresh for a stored OAuth token |
+| `mcp_hermes_vault_oauth_login` | Initiate PKCE OAuth login |
+| `mcp_hermes_vault_oauth_device_login` | Initiate headless device-code OAuth login without returning tokens |
+| `mcp_hermes_vault_oauth_refresh` | Trigger refresh for a stored OAuth token |
 
 ## OAuth Tools
 
@@ -122,6 +123,37 @@ Initiates a PKCE login flow for a given provider and returns an authorization UR
 **Prerequisites:**
 - The provider must be defined in `~/.hermes/oauth-providers.yaml`
 - Environment variables like `HERMES_VAULT_OAUTH_<PROVIDER>_CLIENT_ID` must be set if the provider requires a client ID
+
+### `oauth_device_login`
+
+Initiates device-code login for providers with a device authorization endpoint. The tool returns the verification URL, user code, and pending key immediately, starts polling in the background, and stores tokens automatically after the user approves the provider prompt. Raw access tokens, refresh tokens, device codes, and provider token responses are never returned through MCP.
+
+**Arguments:**
+- `agent_id` (required unless the server is bound to an allowed-agent set with a configured default) --- Identity for policy enforcement
+- `provider_id` (required) --- Provider ID with device-code support, for example `google` or `github`
+- `alias` (optional) --- Credential alias, default `default`
+- `scopes` (optional) --- List of OAuth scopes, falls back to provider defaults
+- `timeout_seconds` (optional) --- How long the background poller waits for user approval
+
+**Response:**
+```json
+{
+  "success": true,
+  "provider_id": "google",
+  "alias": "work",
+  "verification_uri": "https://example.com/device",
+  "verification_uri_complete": "https://example.com/device?user_code=ABCD-EFGH",
+  "user_code": "ABCD-EFGH",
+  "expires_in": 600,
+  "interval": 5,
+  "pending_key": "device:default:google:work:...",
+  "raw_tokens_returned": false
+}
+```
+
+**Policy requirement:** The calling agent must have `add_credential` permission on the provider service.
+
+**Prerequisites:** The provider must define `device_authorization_endpoint` and any required client ID or client secret env vars must be set.
 
 ### `oauth_refresh`
 
@@ -164,6 +196,7 @@ mcp_{server_name}_{tool_name}
 
 For Hermes Vault, this becomes:
 - `mcp_hermes_vault_oauth_login`
+- `mcp_hermes_vault_oauth_device_login`
 - `mcp_hermes_vault_oauth_refresh`
 - `mcp_hermes_vault_list_services`
 - etc.

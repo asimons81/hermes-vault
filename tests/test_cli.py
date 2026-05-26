@@ -254,6 +254,70 @@ def test_oauth_device_login_invokes_device_flow(monkeypatch) -> None:
     assert captured["ran"] is True
 
 
+def test_oauth_login_headless_routes_to_device_flow(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeFlow:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run(self):
+            captured["ran"] = True
+
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID", "test-client-id")
+    monkeypatch.setattr("hermes_vault.oauth.device.DeviceLoginFlow", FakeFlow)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["oauth", "login", "google", "--alias", "work", "--headless", "--scope", "openid"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["provider_id"] == "google"
+    assert captured["alias"] == "work"
+    assert captured["scopes"] == ["openid"]
+    assert captured["ran"] is True
+
+
+def test_oauth_login_headless_rejects_unsupported_provider(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["oauth", "login", "openai", "--headless"])
+
+    assert result.exit_code == 1
+    assert "does not support headless device-code login" in result.output
+    assert "Use --no-browser" in result.output
+
+
+def test_bootstrap_json_dry_run_never_prints_secrets(monkeypatch, tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=sk-secret-value\nBOGUS=value\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path / "vault-home"))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["bootstrap", "--from-env", str(env_path), "--agent", "test-agent", "--dry-run", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert "sk-secret-value" not in result.output
+    payload = json.loads(result.output)
+    assert payload["version"] == "first-safe-agent-bootstrap-v1"
+    assert payload["dry_run"] is True
+    assert payload["agent"] == "test-agent"
+    assert payload["import_preview"]["importable_count"] == 1
+    assert payload["import_preview"]["importable"][0]["env_name"] == "OPENAI_API_KEY"
+    assert payload["import_result"]["imported_count"] == 0
+    assert not (tmp_path / "vault-home" / "policy.yaml").exists()
+    assert not (tmp_path / "vault-home" / "vault.db").exists()
+    assert env_path.read_text(encoding="utf-8") == "OPENAI_API_KEY=sk-secret-value\nBOGUS=value\n"
+
+
 def test_oauth_providers_shows_device_code_support(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
 

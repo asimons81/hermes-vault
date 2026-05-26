@@ -11,67 +11,69 @@
 ## Recommended First Run
 
 ```bash
-hermes-vault scan --path ~/.hermes
-hermes-vault import --from-env ~/.hermes/.env --dry-run
-hermes-vault import --from-env ~/.hermes/.env
+hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes --dry-run
+hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes
 hermes-vault verify --all
+hermes-vault policy doctor
 hermes-vault generate-skill --all-agents
 ```
 
-### Env import preview and mapping
+### First Safe Agent bootstrap
 
-Always preview large `.env` imports before mutating the vault:
+`hermes-vault bootstrap` is the v0.11.0 guided path from a normal `.env` to safe agent access. The dry-run report lists importable and skipped env vars, policy-doctor summary, generated skill contract path, broker-env next command, and MCP config snippet. It does not print secret values and does not mutate the vault or source file.
 
 ```bash
-hermes-vault import --from-env ~/.hermes/.env --dry-run
+hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes --dry-run --json
+hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes
 ```
-
-The preview lists importable and skipped env vars without opening or writing the vault. Known service hints and safe suffixes (`*_API_KEY`, `*_TOKEN`, `*_AUTH_TOKEN`, `*_ACCESS_TOKEN`) are imported automatically. Unknown names are skipped with a reason and a `--map` hint.
 
 Use `--map` for intentional custom names:
 
 ```bash
-hermes-vault import --from-env ~/.hermes/.env --map CUSTOM_VENDOR_TOKEN=custom-vendor:personal_access_token
-hermes-vault import --from-env ~/.hermes/.env --map DATABASE_URL=postgres:connection_url
+hermes-vault bootstrap --from-env ~/.hermes/.env --map CUSTOM_VENDOR_TOKEN=custom-vendor:personal_access_token
+hermes-vault bootstrap --from-env ~/.hermes/.env --map DATABASE_URL=postgres:connection_url
 ```
 
 `NEXT_PUBLIC_*` public config stays skipped. Broad DB URLs, passwords, app secrets, JWT secrets, and session secrets also stay skipped unless explicitly mapped. With `--redact-source`, Hermes Vault comments only successfully imported lines and reports how many skipped lines were left unchanged. `--dry-run --redact-source` does not modify the source file.
 
+### Env import preview and mapping
+
+The lower-level importer remains available when you only want import behavior without the wider First Safe Agent report:
+
+```bash
+hermes-vault import --from-env ~/.hermes/.env --dry-run
+hermes-vault import --from-env ~/.hermes/.env --map CUSTOM_VENDOR_TOKEN=custom-vendor:personal_access_token
+```
+
 ## From `.env` to a real agent workflow
 
-If you start with a normal `.env`, this is the real path from “we have some secrets on disk” to “Hermes is using them safely”:
+If you start with a normal `.env`, the fastest safe path is now the bootstrap command:
 
-1. Scan for plaintext secrets
-
-   ```bash
-   hermes-vault scan --path ~/.hermes
-   ```
-
-2. Preview the import before anything changes
+1. Preview the full flow before anything changes
 
    ```bash
-   hermes-vault import --from-env ~/.hermes/.env --dry-run
+   hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes --dry-run --json
    ```
 
-3. Import the approved entries into the vault
+2. Import the approved entries into the encrypted vault
 
    ```bash
-   hermes-vault import --from-env ~/.hermes/.env
+   hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes
    ```
 
-4. Generate the agent skill contract
+3. Generate the agent skill contract
 
    ```bash
    hermes-vault generate-skill --all-agents
    ```
 
-5. Review the generated skill
+4. Review the generated skill
 
    - Generated skills are written under `~/.hermes/hermes-vault-data/generated-skills/<agent>/SKILL.md`
    - The skill embeds a policy hash, so drift is detectable
    - Treat it as a review artifact until you explicitly install it into the live Hermes skill directory
 
-6. Wire Hermes to the vault runtime
+5. Wire Hermes to the vault runtime
 
    - `HERMES_VAULT_HOME=~/.hermes/hermes-vault-data`
    - `HERMES_VAULT_POLICY=~/.hermes/hermes-vault-data/policy.yaml`
@@ -133,7 +135,14 @@ The point isn't “more files.” The point is one canonical secret source, one 
 
 When an agent already has an OAuth access token and matching `refresh:<alias>` record, use `hermes-vault oauth refresh <service> --alias <alias>` or `hermes-vault maintain` for non-interactive renewal. Those paths require `rotate` permission on the service, use the stored refresh token instead of opening a browser, and fail closed if the provider refuses renewal or the refresh token is missing. `policy doctor` will flag the gap and suggest the `rotate` action when an agent should be allowed to refresh.
 
-v0.10.1 adds browserless device-code login for supported providers. Refresh is still unattended once the refresh token exists, and v0.10.0 remains the partial unattended-refresh release.
+For browserless first login, use device-code auth directly or the v0.11.0 headless shortcut:
+
+```bash
+hermes-vault oauth device-login google --alias work
+hermes-vault oauth login google --alias work --headless
+```
+
+`--headless` only works for providers with a device authorization endpoint. Providers without device-code support fail closed and suggest `--no-browser`, which remains the manual browser callback fallback.
 
 ### Remote browser fallback for callback login
 
@@ -764,6 +773,8 @@ For example: `HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID` and `HERMES_VAULT_OAUTH_GITHU
 
 ### Login flow
 
+Browser callback login:
+
 1.  `hermes-vault oauth login <provider> [--alias NAME] [--scope SCOPE ...] [--no-browser]`
 2.  The CLI generates a PKCE code_verifier + code_challenge and a CSRF state nonce.
 3.  An ephemeral callback server starts on `127.0.0.1:0` (OS-assigned port).
@@ -773,6 +784,14 @@ For example: `HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID` and `HERMES_VAULT_OAUTH_GITHU
 7.  The CLI validates state with timing-safe comparison, then POSTs the code to the token endpoint.
 8.  On success, the access token is stored as `oauth_access_token` and the refresh token as `oauth_refresh_token` with alias `refresh:<alias>`.
 9.  If the provider returns `expires_in`, an expiry timestamp is set automatically.
+
+Headless device-code login on supported providers:
+
+1.  `hermes-vault oauth login <provider> --headless` or `hermes-vault oauth device-login <provider>`
+2.  The CLI asks the provider for a device/user code.
+3.  The operator opens the verification URL and enters the user code.
+4.  The CLI polls until the provider approves, denies, expires, or times out.
+5.  On success, tokens are stored with the same vault record shape as browser callback login.
 
 ### Token lifecycle and refresh
 
@@ -806,9 +825,10 @@ The refresh engine:
 
 ### MCP OAuth tools
 
-When Hermes Vault is registered as an MCP server inside Hermes Agent, agents can use `oauth_login` and `oauth_refresh`:
+When Hermes Vault is registered as an MCP server inside Hermes Agent, agents can use `oauth_login`, `oauth_device_login`, and `oauth_refresh`:
 
 - `oauth_login` returns an authorization URL and starts a background callback thread. The operator opens the URL, completes browser consent, and tokens are stored automatically.
+- `oauth_device_login` returns a verification URL and user code, starts background polling, and stores tokens after approval. It does not return raw access tokens, refresh tokens, or provider device codes.
 - `oauth_refresh` triggers the same refresh engine described above, returning the result to the agent.
 
-Both tools require policy permissions (`add_credential` for login, `rotate` for refresh). MCP now also exposes a device-code first-login flow on providers that support it.
+The login tools require `add_credential`; refresh requires `rotate`.

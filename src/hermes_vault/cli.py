@@ -299,6 +299,66 @@ def scan(
     console.print(table)
 
 
+@_typer_app.command()
+def bootstrap(
+    ctx: typer.Context,
+    from_env: Path | None = typer.Option(None, "--from-env", help="Preview or import credentials from a .env file."),
+    agent: str = typer.Option("hermes", "--agent", help="Agent ID the generated contract and next steps should target."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview the First Safe Agent flow without mutating the vault or source file."),
+    format_json: bool = typer.Option(False, "--json", help="Emit a machine-readable bootstrap report."),
+    env_map: list[str] | None = typer.Option(None, "--map", help="Explicit mapping ENV_NAME=service:credential_type. Repeatable."),
+    redact_source: bool = typer.Option(False, "--redact-source", help="Comment out successfully imported env lines after a non-dry-run bootstrap."),
+) -> None:
+    """Guide a plaintext .env toward policy-scoped safe agent access.
+
+    \b
+    Examples:
+      hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes --dry-run
+      hermes-vault bootstrap --from-env .env --agent coder --json
+    """
+    from hermes_vault.bootstrap import run_bootstrap
+
+    if redact_source and dry_run:
+        console.print("[yellow]Dry run: source file will not be redacted.[/yellow]")
+    try:
+        report = run_bootstrap(
+            from_env=from_env,
+            agent=agent,
+            dry_run=dry_run,
+            env_map=env_map,
+            redact_source=redact_source,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    payload = report.as_dict()
+    if format_json:
+        console.print_json(data=payload)
+        return
+
+    table = Table(title="First Safe Agent Bootstrap")
+    table.add_column("Step")
+    table.add_column("Result")
+    table.add_row("Runtime home", payload["runtime_home"])
+    table.add_row("Policy", payload["policy_path"])
+    table.add_row("Importable env vars", str(payload["import_preview"]["importable_count"]))
+    table.add_row("Skipped env vars", str(payload["import_preview"]["skipped_count"]))
+    table.add_row("Imported", str(payload["import_result"]["imported_count"]))
+    table.add_row("Updated", str(payload["import_result"]["updated_count"]))
+    table.add_row("Policy findings", str(payload["policy_doctor_summary"].get("finding_count", 0)))
+    table.add_row("Generated skill path", payload["skill_contract"]["generated_path"])
+    console.print(table)
+    for warning in payload["warnings"]:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+    console.print("[bold]Next steps[/bold]")
+    for step in payload["next_steps"]:
+        console.print(f"- {step}")
+
+
 @_typer_app.command("import")
 def import_credentials(
     ctx: typer.Context,
@@ -2012,19 +2072,53 @@ def oauth_login(
     port: int = typer.Option(0, "--port", help="Callback server port. 0 = OS-assigned ephemeral."),
     timeout: int = typer.Option(120, "--timeout", help="Seconds to wait for the OAuth callback before aborting."),
     no_browser: bool = typer.Option(False, "--no-browser", help="Skip auto-opening browser; print the browser PKCE URL instead (use `oauth device-login` for device-code auth)."),
+    headless: bool = typer.Option(False, "--headless", help="Use device-code login when the provider supports it. Keeps --no-browser as browser-callback fallback."),
     scopes: list[str] = typer.Option(None, "--scope", help="Override requested OAuth scopes (repeatable)."),
 ) -> None:
-    """Log in via browser PKCE and store tokens in the vault.
+    """Log in and store OAuth tokens in the vault.
+
+    Browser PKCE remains the default. Use --headless for device-code login
+    on supported providers, or --no-browser for callback login through a
+    manually opened browser URL.
 
     \b
     Examples:
       hermes-vault oauth login google --alias work
       hermes-vault oauth login github --alias personal --no-browser
+      hermes-vault oauth login google --alias work --headless
       hermes-vault oauth device-login google --alias work
       hermes-vault oauth login google --scope openid --scope email --scope profile
     """
-    from hermes_vault.oauth.flow import LoginFlow
     try:
+        if headless:
+            from hermes_vault.config import get_settings
+            from hermes_vault.oauth.device import DeviceLoginFlow
+            from hermes_vault.oauth.providers import OAuthProviderRegistry
+
+            settings = get_settings()
+            registry = OAuthProviderRegistry(settings.runtime_home / "oauth-providers.yaml")
+            provider_config = registry.get(provider)
+            if provider_config is None:
+                known = ", ".join(registry.list_providers()) or "none"
+                raise ValueError(f"Unknown OAuth provider '{provider}'. Known providers: {known}")
+            if provider_config.device_authorization_endpoint is None:
+                supported = ", ".join(registry.list_device_code_providers()) or "none"
+                raise ValueError(
+                    f"Provider '{provider_config.service_id}' does not support headless device-code login. "
+                    f"Supported providers: {supported}. Use --no-browser for browser callback fallback."
+                )
+            flow = DeviceLoginFlow(
+                provider_id=provider,
+                alias=alias,
+                timeout=timeout,
+                scopes=list(scopes or []),
+                console=console,
+                registry=registry,
+            )
+            flow.run()
+            return
+
+        from hermes_vault.oauth.flow import LoginFlow
         flow = LoginFlow(
             provider_id=provider,
             alias=alias,

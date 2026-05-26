@@ -26,6 +26,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Resource, ResourceTemplate, TextContent, TextResourceContents, Tool
 from pydantic import AnyUrl
+from rich.console import Console
 
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
@@ -37,6 +38,7 @@ from hermes_vault.mutations import OPERATOR_AGENT_ID, VaultMutations
 from hermes_vault.oauth.callback import CallbackServer
 from hermes_vault.oauth.errors import OAuthProviderError
 from hermes_vault.oauth.exchange import TokenExchanger
+from hermes_vault.oauth.flow import _store_oauth_tokens
 from hermes_vault.oauth.oauth_refresh import RefreshEngine, refresh_alias_for
 from hermes_vault.oauth.providers import OAuthProviderRegistry
 from hermes_vault.policy import PolicyEngine
@@ -110,6 +112,17 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "alias": {"type": "string", "description": "Credential alias (default: default)"},
             "scopes": {"type": "array", "items": {"type": "string"}, "description": "Optional OAuth scopes"},
             "port": {"type": "integer", "description": "Callback server port (0 = auto-assigned)"},
+        },
+        "required": ["provider_id"],
+    },
+    "oauth_device_login": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
+            "provider_id": {"type": "string", "description": "OAuth provider ID with device-code support (e.g. google, github)"},
+            "alias": {"type": "string", "description": "Credential alias (default: default)"},
+            "scopes": {"type": "array", "items": {"type": "string"}, "description": "Optional OAuth scopes"},
+            "timeout_seconds": {"type": "integer", "description": "Seconds to wait for user authorization before timing out"},
         },
         "required": ["provider_id"],
     },
@@ -490,10 +503,10 @@ def _preflight_tool_arguments(name: str, arguments: dict[str, Any]) -> str | Non
     if name in {"get_credential_metadata", "get_ephemeral_env", "verify_credential", "rotate_credential"}:
         if _normalize_agent_id(arguments.get("service")) is None:
             return "Missing required parameter: service"
-    if name == "oauth_login":
+    if name in {"oauth_login", "oauth_device_login"}:
         provider = _normalize_agent_id(arguments.get("provider_id") or arguments.get("provider"))
         if provider is None:
-            return "Missing required parameter: provider"
+            return "Missing required parameter: provider_id" if name == "oauth_device_login" else "Missing required parameter: provider"
     if name == "oauth_refresh":
         if _normalize_agent_id(arguments.get("service")) is None:
             return "Missing required parameter: service"
@@ -507,7 +520,7 @@ _pending_oauth: dict[str, dict[str, Any]] = {}
 
 # ── server ─────────────────────────────────────────────────────────────────────
 
-server = Server("hermes-vault", version="0.10.1")
+server = Server("hermes-vault", version="0.11.0")
 
 
 @server.list_tools()
@@ -547,6 +560,11 @@ async def list_tools() -> list[Tool]:
             name="oauth_login",
             description="Initiate PKCE OAuth login for a provider. Returns authorization URL.",
             inputSchema=_TOOL_SCHEMAS["oauth_login"],
+        ),
+        Tool(
+            name="oauth_device_login",
+            description="Initiate headless OAuth device-code login for a provider. Never returns raw tokens.",
+            inputSchema=_TOOL_SCHEMAS["oauth_device_login"],
         ),
         Tool(
             name="oauth_refresh",
@@ -759,6 +777,10 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         # ── OAuth: initiate PKCE login ───────────────────────────────────────
         if name == "oauth_login":
             return _handle_oauth_login(arguments, broker, binding.effective_agent_id or "")
+
+        # ── OAuth: initiate device-code login ────────────────────────────────
+        if name == "oauth_device_login":
+            return _handle_oauth_device_login(arguments, broker, binding.effective_agent_id or "")
 
         # ── OAuth: refresh token ─────────────────────────────────────────────
         if name == "oauth_refresh":
@@ -998,6 +1020,120 @@ def _exchange_and_store(result: Any, pending_key: str) -> None:
         logger.info("OAuth login succeeded and stored for %s record=%s", pending_key, record.id)
     except Exception:
         logger.exception("Storing OAuth tokens failed for %s", pending_key)
+
+
+def _handle_oauth_device_login(arguments: dict[str, Any], broker: Broker, agent_id: str) -> list[TextContent]:
+    """Handle oauth_device_login by starting device-code polling in the background."""
+    provider_id = (arguments.get("provider_id") or arguments.get("provider") or "").strip().lower()
+    alias = arguments.get("alias", "default") or "default"
+    requested_scopes = arguments.get("scopes") or []
+    timeout_seconds = int(arguments.get("timeout_seconds") or 300)
+
+    if not provider_id:
+        return [TextContent(type="text", text="Error: Missing required parameter: provider_id")]
+
+    allowed, reason = broker.policy.can(agent_id, provider_id, ServiceAction.add_credential)
+    if not allowed:
+        return [TextContent(type="text", text=f"Denied: {reason}")]
+
+    try:
+        settings = get_settings()
+        registry = OAuthProviderRegistry(settings.runtime_home / "oauth-providers.yaml")
+        provider = registry.get(provider_id)
+        if provider is None:
+            return [TextContent(type="text", text=_json_text({
+                "success": False,
+                "error": f"Unknown OAuth provider '{provider_id}'. Known providers: {registry.list_providers()}",
+            }))]
+        if provider.device_authorization_endpoint is None:
+            return [TextContent(type="text", text=_json_text({
+                "success": False,
+                "error": f"Provider '{provider_id}' does not support device-code login.",
+                "supported_providers": registry.list_device_code_providers(),
+            }))]
+
+        client_id, client_secret = registry.get_client_credentials(provider)
+        if provider.requires_client_id and not client_id:
+            return [TextContent(type="text", text=_json_text({
+                "success": False,
+                "error": f"Provider '{provider_id}' requires a client_id. Set HERMES_VAULT_OAUTH_{provider_id.upper()}_CLIENT_ID.",
+            }))]
+
+        scopes = requested_scopes if requested_scopes else provider.default_scopes
+        scope_str = provider.scope_separator.join(scopes)
+        exchanger = TokenExchanger(provider)
+        device_response = exchanger.request_device_code(
+            client_id=client_id or "",
+            scope=scope_str,
+            client_secret=client_secret,
+            extra_params=getattr(provider, "device_extra_params", None) or None,
+        )
+        pending_key = f"device:{settings.profile_name}:{provider_id}:{alias}:{secrets.token_urlsafe(8)}"
+        _pending_oauth[pending_key] = {
+            "provider_id": provider_id,
+            "alias": alias,
+            "profile_name": settings.profile_name,
+            "started_at": time.time(),
+        }
+
+        def _poll_and_store() -> None:
+            poll_interval = max(1, device_response.interval or 5)
+            deadline = time.monotonic() + timeout_seconds
+            try:
+                while True:
+                    if time.monotonic() >= deadline:
+                        logger.warning("MCP device login timed out for %s", pending_key)
+                        return
+                    poll = exchanger.poll_device_code(
+                        device_code=device_response.device_code,
+                        client_id=client_id or "",
+                        client_secret=client_secret,
+                    )
+                    if poll.status == "success":
+                        assert poll.token_response is not None
+                        mutations = VaultMutations(vault=broker.vault, policy=broker.policy, audit=broker.audit)
+                        with open(os.devnull, "w") as sink:
+                            _store_oauth_tokens(
+                                provider=provider,
+                                alias=alias,
+                                requested_scopes=scopes,
+                                token_response=poll.token_response,
+                                vault=broker.vault,
+                                mutations=mutations,
+                                console=Console(file=sink),
+                            )
+                        logger.info("MCP device login succeeded for %s", pending_key)
+                        return
+                    if poll.status == "slow_down":
+                        poll_interval += poll.retry_after or 5
+                    elif poll.status in {"access_denied", "expired_token"}:
+                        logger.warning("MCP device login ended with %s for %s", poll.status, pending_key)
+                        return
+                    elif poll.status != "authorization_pending":
+                        logger.warning("MCP device login failed with %s for %s", poll.status, pending_key)
+                        return
+                    time.sleep(min(poll_interval, max(0.1, deadline - time.monotonic())))
+            except Exception:
+                logger.exception("MCP device login polling failed for %s", pending_key)
+            finally:
+                _pending_oauth.pop(pending_key, None)
+
+        threading.Thread(target=_poll_and_store, daemon=True).start()
+        return [TextContent(type="text", text=_json_text({
+            "success": True,
+            "provider_id": provider_id,
+            "alias": alias,
+            "verification_uri": device_response.verification_uri,
+            "verification_uri_complete": device_response.verification_uri_complete,
+            "user_code": device_response.user_code,
+            "expires_in": device_response.expires_in,
+            "interval": device_response.interval,
+            "pending_key": pending_key,
+            "message": device_response.message or "Open verification_uri and enter user_code. Tokens will be stored automatically after approval.",
+            "raw_tokens_returned": False,
+        }))]
+    except Exception as exc:
+        return [TextContent(type="text", text=f"Error: {exc}")]
 
 
 def _handle_oauth_refresh(arguments: dict[str, Any], broker: Broker, agent_id: str) -> list[TextContent]:
