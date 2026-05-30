@@ -108,7 +108,7 @@ Default runtime state lives in `~/.hermes/hermes-vault-data`. The first `list`, 
 
 ## First Safe Agent Bootstrap
 
-v0.11.0 adds the guided path from `.env` to safe agent access:
+Use the guided path from `.env` to safe agent access:
 
 ```bash
 hermes-vault bootstrap --from-env .env --agent hermes --dry-run --json
@@ -232,13 +232,15 @@ The same `policy.yaml` that gates CLI access also gates MCP access. The bound-ag
 | `rotate_credential` | Rotate a credential to a new secret | `can_rotate(service)` |
 | `scan_for_secrets` | Scan filesystem for plaintext secrets | `capability:scan_secrets` |
 | `oauth_login` | Initiate PKCE OAuth login (returns auth URL) | `capability:add_credential` |
+| `oauth_device_login` | Initiate device-code OAuth login for supported providers | `capability:add_credential` |
+| `oauth_provider_status` | Report OAuth provider readiness and safe next commands | MCP binding only |
 | `oauth_refresh` | Refresh an OAuth access token using stored refresh token | `action:rotate` |
 
 MCP access is brokered through policy-gated tools. Prefer `get_ephemeral_env` for TTL-bounded environment materialization instead of direct raw-secret handling.
 
 ### OAuth via MCP
 
-Hermes Vault can broker OAuth logins so agents avoid raw-password handling. `oauth_login` returns an authorization URL and spins up a local callback server -- open the URL in a browser, and tokens are stored automatically. `oauth_refresh` renews existing OAuth tokens proactively before expiry. This is still callback-based PKCE login plus unattended refresh, not device-code or truly browserless first login. See [docs/mcp-server.md](docs/mcp-server.md) for full tool schemas.
+Hermes Vault can broker OAuth logins so agents avoid raw-password handling. `oauth_login` returns an authorization URL and spins up a local callback server, while `oauth_device_login` starts device-code login for providers that support it. `oauth_provider_status` reports provider readiness, missing env vars, and safe next commands without returning token material. `oauth_refresh` renews existing OAuth tokens proactively before expiry. See [docs/mcp-server.md](docs/mcp-server.md) for full tool schemas.
 
 ## Common Commands
 
@@ -262,6 +264,7 @@ hermes-vault verify --all --format table
 hermes-vault verify --all --report ~/.hermes/hermes-vault-data/reports/verify-latest.json
 hermes-vault health
 hermes-vault health --format json
+hermes-vault health --verify-live --service openai
 hermes-vault maintain --dry-run
 hermes-vault maintain
 hermes-vault maintain --print-systemd
@@ -275,9 +278,23 @@ hermes-vault backup --metadata-only --output ~/meta-backup.json
 hermes-vault diff --against ~/meta-backup.json
 hermes-vault rotate-master-key
 hermes-vault oauth login google --alias work
+hermes-vault oauth login google --alias work --headless
+hermes-vault oauth doctor google
 hermes-vault oauth refresh google --alias work
 hermes-vault oauth providers
 ```
+
+## What's New in 0.12.0 - Auth Confidence
+
+v0.12.0 adds an auth-readiness loop for operators and agents. Use `oauth doctor` before first login to see provider support, required env vars, default scopes, and the safest next commands.
+
+```bash
+hermes-vault oauth doctor google
+hermes-vault oauth doctor google --format json
+hermes-vault health --verify-live --service google
+```
+
+MCP gains `oauth_provider_status` so an agent can ask for provider readiness without receiving client secrets, device codes, token responses, or vault secrets. Live health verification stays metadata-only and reports provider result categories such as invalid, network, endpoint, scope, rate limit, or unknown.
 
 ## What's New in 0.10.1 - Device-Code Login
 
@@ -291,12 +308,12 @@ hermes-vault oauth device-login google --alias work
 
 ## What's New in 0.10.0 - Unattended OAuth and Custom Verifiers
 
-v0.10.0 is the published partial unattended-auth release. It ships non-interactive refresh for OAuth credentials that already have a stored `refresh:<alias>` token, plus generic custom verifier endpoints. It doesn't ship browserless first login or OAuth device-code login yet.
+v0.10.0 was the published partial unattended-auth release. It shipped non-interactive refresh for OAuth credentials that already have a stored `refresh:<alias>` token, plus generic custom verifier endpoints. Browserless first login arrived later through device-code support.
 
 ### Unattended OAuth refresh
 `hermes-vault oauth refresh <service>` is the non-interactive renewal path for stored OAuth credentials. It uses the paired `refresh:<alias>` record, requires `rotate` permission on the service, and is also available through `hermes-vault maintain` for scheduled runs. If a refresh token is missing or the provider refuses renewal, the command fails closed instead of guessing.
 
-Initial OAuth authorization still uses browser-based PKCE with a localhost callback. Use `--no-browser` when you need to copy the authorization URL manually, but don't treat that as device-code support.
+For providers without device-code support, initial OAuth authorization still uses browser-based PKCE with a localhost callback. Use `--no-browser` when you need to copy the authorization URL manually.
 
 ### Generic custom verifiers
 `HERMES_VAULT_VERIFY_URL_<SERVICE>` lets you point any service at a custom OpenAI-compatible verification endpoint without writing a plugin. Service names normalize hyphens, dots, and spaces to underscores and are uppercased, so `deepseek` becomes `HERMES_VAULT_VERIFY_URL_DEEPSEEK`.

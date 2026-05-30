@@ -330,6 +330,33 @@ def test_oauth_providers_shows_device_code_support(monkeypatch, tmp_path: Path) 
     assert "github" in result.output
 
 
+def test_oauth_doctor_json_reports_missing_env_without_secret(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID", raising=False)
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["oauth", "doctor", "google", "--format", "json"])
+
+    assert result.exit_code == 1
+    data = json.loads(result.output)
+    assert data["provider"] == "google"
+    assert data["supports_device_code"] is True
+    assert data["missing_env"] == ["HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID"]
+    assert "secret" not in result.output.lower()
+
+
+def test_oauth_doctor_table_reports_ready_provider(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID", "client-id")
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["oauth", "doctor", "google"])
+
+    assert result.exit_code == 0
+    assert "OAuth Provider Readiness" in result.output
+    assert "hermes-vault oauth login google --alias work --headless" in result.output
+
+
 def test_oauth_normalize_json_output(monkeypatch) -> None:
     monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services())
 

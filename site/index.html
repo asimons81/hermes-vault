@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hermes Vault, First Safe Agent Credential Broker</title>
-  <meta name="description" content="Hermes Vault turns plaintext .env files into policy-scoped safe agent access with local encryption, ephemeral env injection, and MCP auth tools.">
+  <title>Hermes Vault, Auth Confidence Credential Broker</title>
+  <meta name="description" content="Hermes Vault turns plaintext .env files into policy-scoped safe agent access with local encryption, ephemeral env injection, auth readiness checks, and MCP auth tools.">
   <meta name="theme-color" content="#030407">
   <meta property="og:title" content="Hermes Vault">
   <meta property="og:description" content="From .env to safe agent access for Hermes operators.">
@@ -25,7 +25,7 @@
         <span class="brand-mark" aria-hidden="true">HV</span>
         <span class="brand-copy">
           <strong>Hermes Vault</strong>
-          <small>first safe agent layer</small>
+          <small>auth confidence layer</small>
         </span>
       </a>
 
@@ -42,10 +42,10 @@
     <!-- Hero Section -->
     <section class="hero section-pad reveal hero-reveal-1">
       <div class="hero-copy">
-        <p class="eyebrow">v0.11.0 &bull; first safe agent &bull; local first</p>
+        <p class="eyebrow">v0.12.0 &bull; auth confidence &bull; local first</p>
         <h1>From <span>.env</span> to safe agent access.</h1>
         <p class="lede">
-          Bootstrap a messy plaintext env file into an encrypted local vault, policy-scoped agent access, generated skill contracts, and browserless OAuth options. Less key sprawl, fewer auth lies, fewer agent mistakes.
+          Bootstrap a messy plaintext env file into an encrypted local vault, policy-scoped agent access, generated skill contracts, browserless OAuth options, and auth readiness checks. Less key sprawl, fewer auth lies, fewer agent mistakes.
         </p>
 
         <div class="cta-row">
@@ -57,14 +57,14 @@
           <li>Bootstrap .env safely</li>
           <li>Policy-scoped access</li>
           <li>Ephemeral env injection</li>
-          <li>MCP device-login parity</li>
+          <li>MCP provider readiness</li>
         </ul>
 
         <div class="hero-metrics" aria-label="Release and platform notes">
           <div class="metric-card">
             <span>Current Release</span>
-            <strong>0.11.0</strong>
-            <small>Adds First Safe Agent bootstrap and MCP device-login parity.</small>
+            <strong>0.12.0</strong>
+            <small>Adds OAuth doctor, live health verification, and MCP provider readiness.</small>
           </div>
           <div class="metric-card">
             <span>Storage Engine</span>
@@ -305,9 +305,10 @@
                 <span>Production Install</span>
                 <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
               </div>
-              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.11.0
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.12.0
 hermes-vault bootstrap --from-env .env --agent hermes --dry-run
 hermes-vault bootstrap --from-env .env --agent hermes
+hermes-vault oauth doctor google
 hermes-vault oauth login google --alias work --headless</code></pre>
             </div>
             <div class="install-notes">
@@ -359,11 +360,15 @@ uv run pytest tests/ -q</code></pre>
       <div class="release-timeline">
         <article class="release-featured">
           <div class="release-badge">Current Release</div>
-          <h3>v0.11.0</h3>
-          <p>First Safe Agent bootstrap, <code>oauth login --headless</code>, and MCP <code>oauth_device_login</code> parity.</p>
+          <h3>v0.12.0</h3>
+          <p>Auth readiness with <code>oauth doctor</code>, live <code>health --verify-live</code>, and MCP <code>oauth_provider_status</code>.</p>
         </article>
 
         <div class="release-list">
+          <article class="release-row">
+            <span class="release-version">v0.11.0</span>
+            <p>First Safe Agent bootstrap, <code>oauth login --headless</code>, and MCP device-login parity.</p>
+          </article>
           <article class="release-row">
             <span class="release-version">v0.10.1</span>
             <p>Explicit OAuth device-code login for headless shell sessions.</p>

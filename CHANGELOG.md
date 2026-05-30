@@ -2,9 +2,29 @@
 
 ## Unreleased
 
+## 0.12.0 -- Auth Confidence
+
 ### Added
 
-- Future auth work will focus on provider coverage and browserless initial-login polish.
+- `hermes-vault oauth doctor [provider] --format table|json` reports provider readiness, PKCE support, device-code support, missing required env vars, default scopes, findings, and safe next commands without token exchange.
+- `hermes-vault health --verify-live --service <name>` runs metadata-only provider verification findings for a narrow auth surface before handing credentials to an agent.
+- MCP now exposes `oauth_provider_status` so agents can inspect provider readiness without receiving raw tokens, device codes, client secrets, or vault secrets.
+
+### Changed
+
+- OAuth device-login failures now include supported providers, missing env var names, provider status metadata, and safe fallback commands.
+- Packaged OAuth defaults now consistently mark Google and GitHub as device-code-capable.
+- README, operator docs, MCP docs, architecture notes, and site copy now describe the current browserless first-login and auth-readiness surface.
+- Version surfaces now report `0.12.0` in `pyproject.toml`, `src/hermes_vault/__init__.py`, and `src/hermes_vault/mcp_server.py`.
+
+### Security
+
+- Auth readiness outputs are metadata-only and never include raw credentials, OAuth token responses, client secrets, device codes, encrypted payloads, or vault secret values.
+- Health JSON output is now machine-readable without the decorative banner prefix.
+
+### Release Ops
+
+- Site release copy and dashboard screenshots were refreshed, with a deploy guardrail script for the Hermes Vault static site.
 
 ## 0.11.0 -- First Safe Agent
 

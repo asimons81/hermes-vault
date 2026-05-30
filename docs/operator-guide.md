@@ -20,7 +20,7 @@ hermes-vault generate-skill --all-agents
 
 ### First Safe Agent bootstrap
 
-`hermes-vault bootstrap` is the v0.11.0 guided path from a normal `.env` to safe agent access. The dry-run report lists importable and skipped env vars, policy-doctor summary, generated skill contract path, broker-env next command, and MCP config snippet. It does not print secret values and does not mutate the vault or source file.
+`hermes-vault bootstrap` is the guided path from a normal `.env` to safe agent access. The dry-run report lists importable and skipped env vars, policy-doctor summary, generated skill contract path, broker-env next command, and MCP config snippet. It does not print secret values and does not mutate the vault or source file.
 
 ```bash
 hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes --dry-run --json
@@ -135,7 +135,14 @@ The point isn't “more files.” The point is one canonical secret source, one 
 
 When an agent already has an OAuth access token and matching `refresh:<alias>` record, use `hermes-vault oauth refresh <service> --alias <alias>` or `hermes-vault maintain` for non-interactive renewal. Those paths require `rotate` permission on the service, use the stored refresh token instead of opening a browser, and fail closed if the provider refuses renewal or the refresh token is missing. `policy doctor` will flag the gap and suggest the `rotate` action when an agent should be allowed to refresh.
 
-For browserless first login, use device-code auth directly or the v0.11.0 headless shortcut:
+Before first login, check provider readiness:
+
+```bash
+hermes-vault oauth doctor google
+hermes-vault oauth doctor google --format json
+```
+
+For browserless first login, use device-code auth directly or the headless shortcut:
 
 ```bash
 hermes-vault oauth device-login google --alias work
@@ -771,6 +778,8 @@ HERMES_VAULT_OAUTH_<PROVIDER>_CLIENT_SECRET
 
 For example: `HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID` and `HERMES_VAULT_OAUTH_GITHUB_CLIENT_SECRET`.
 
+Run `hermes-vault oauth doctor <provider>` after setting these values to confirm readiness without starting a login or token exchange.
+
 ### Login flow
 
 Browser callback login:
@@ -802,6 +811,7 @@ Refresh commands:
 ```bash
 # Refresh a single service
 hermes-vault oauth refresh google --alias work
+hermes-vault health --verify-live --service google
 
 # Refresh all expired or nearly-expired tokens
 hermes-vault oauth refresh --all

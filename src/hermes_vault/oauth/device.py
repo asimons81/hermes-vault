@@ -75,14 +75,17 @@ class DeviceLoginFlow:
             supported = self.registry.list_device_code_providers()
             raise OAuthProviderError(
                 f"Provider '{provider.service_id}' does not support device-code login. "
-                f"Supported providers: {', '.join(supported) or 'none'}"
+                f"Supported providers: {', '.join(supported) or 'none'}. "
+                f"Use `hermes-vault oauth login {provider.service_id} --alias {self.alias} --no-browser` "
+                "for browser callback fallback."
             )
 
         client_id, client_secret = self.registry.get_client_credentials(provider)
         if provider.requires_client_id and not client_id:
             raise OAuthMissingClientIdError(
                 f"Provider '{provider.service_id}' requires a client_id. "
-                f"Set HERMES_VAULT_OAUTH_{provider.service_id.upper()}_CLIENT_ID."
+                f"Set HERMES_VAULT_OAUTH_{provider.service_id.upper()}_CLIENT_ID, "
+                f"then run `hermes-vault oauth doctor {provider.service_id}`."
             )
 
         requested_scopes = self.scopes if self.scopes else provider.default_scopes

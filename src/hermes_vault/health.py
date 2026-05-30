@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from hermes_vault.audit import AuditLogger
-from hermes_vault.models import CredentialStatus, utc_now
+from hermes_vault.models import CredentialStatus, VerificationCategory, utc_now
 from hermes_vault.vault import Vault
 
 
@@ -140,6 +140,7 @@ def run_health(
     expiring_days: int = 7,
     backup_days: int = 30,
     services: set[str] | None = None,
+    verifier: Any | None = None,
 ) -> HealthReport:
     """Produce a read-only health report for the vault.
 
@@ -175,6 +176,11 @@ def run_health(
         verified_live=verify_live,
     )
 
+    if verify_live and verifier is None:
+        from hermes_vault.verifier import Verifier
+
+        verifier = Verifier()
+
     # ── credentials ─────────────────────────────────────────────────
     records = vault.list_credentials()
     if services is not None:
@@ -183,6 +189,7 @@ def run_health(
 
     healthy = 0
     for rec in records:
+        live_failed = False
         # staleness
         is_stale, days_since = _cred_staleness(rec, now, stale_days)
         if is_stale:
@@ -248,10 +255,39 @@ def run_health(
                     detail="credential status is expired",
                 ))
 
+        if verify_live:
+            try:
+                secret = vault.get_secret(rec.id)
+                if secret is None:
+                    raise KeyError("secret not found")
+                live_result = verifier.verify(rec.service, secret.secret)
+            except Exception as exc:
+                live_result = None
+                live_failed = True
+                report.findings.append(HealthFinding(
+                    level="warning",
+                    kind="live_verify_fail",
+                    service=rec.service,
+                    alias=rec.alias,
+                    detail=f"unknown: live verification could not run ({exc.__class__.__name__})",
+                ))
+            if live_result is not None and not live_result.success:
+                live_failed = True
+                if live_result.category is VerificationCategory.invalid_or_expired:
+                    report.invalid_count += 1
+                report.findings.append(HealthFinding(
+                    level="warning",
+                    kind="live_verify_fail",
+                    service=rec.service,
+                    alias=rec.alias,
+                    detail=f"{live_result.category.value}: {live_result.reason}",
+                ))
+
         # count healthy
         if (rec.status in (CredentialStatus.active, CredentialStatus.unknown)
                 and not is_stale and not is_expired and not is_expiring
-                and rec.last_verified_at is not None):
+                and rec.last_verified_at is not None
+                and not live_failed):
             healthy += 1
 
     report.healthy_count = healthy

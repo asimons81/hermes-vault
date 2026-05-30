@@ -1308,7 +1308,8 @@ def verify(
 def health(
     ctx: typer.Context,
     format: str = typer.Option("markdown", "--format", help="Output format: markdown or json."),
-    verify_live: bool = typer.Option(False, "--verify-live", help="Run live provider verification (not implemented yet — reserved)."),
+    verify_live: bool = typer.Option(False, "--verify-live", help="Run live provider verification and include metadata-only findings."),
+    services: list[str] = typer.Option(None, "--service", help="Limit health checks to a service ID (repeatable)."),
     stale_days: int = typer.Option(30, "--stale-days", help="Flag credentials not verified within this many days."),
     expiring_days: int = typer.Option(7, "--expiring-days", help="Flag credentials expiring within this many days."),
     backup_days: int = typer.Option(30, "--backup-days", help="Warn if last backup exceeds this many days."),
@@ -1326,6 +1327,7 @@ def health(
     Examples:
       hermes-vault health
       hermes-vault health --format json
+      hermes-vault health --verify-live --service openai
       hermes-vault health --stale-days 7 --expiring-days 14
     """
     if format not in ("markdown", "json"):
@@ -1339,6 +1341,8 @@ def health(
     vault, _, _, _ = build_services(prompt=True)
     settings = get_settings()
     audit = AuditLogger(settings.db_path)
+    verifier = Verifier(plugin_dir=settings.verifier_plugin_dir) if verify_live else None
+    service_filter = {normalize(service) for service in services} if services else None
 
     report = run_health(
         vault,
@@ -1347,14 +1351,15 @@ def health(
         stale_days=stale_days,
         expiring_days=expiring_days,
         backup_days=backup_days,
+        services=service_filter,
+        verifier=verifier,
     )
 
-    from hermes_vault.ui import banner_health, render_health_report_markdown
-    console.print(banner_health(report.healthy))
-
     if format == "json":
-        console.print_json(data=json.dumps(report.as_dict(exclude_none=False), sort_keys=True))
+        console.print_json(data=report.as_dict(exclude_none=False))
     else:
+        from hermes_vault.ui import banner_health, render_health_report_markdown
+        console.print(banner_health(report.healthy))
         console.print(render_health_report_markdown(report))
 
     if report.healthy:
@@ -2162,6 +2167,53 @@ def oauth_device_login(
     except Exception as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
+
+
+@oauth_app.command("doctor")
+def oauth_doctor(
+    ctx: typer.Context,
+    provider: str | None = typer.Argument(None, help="Optional OAuth provider name to inspect."),
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+) -> None:
+    """Report OAuth provider readiness without performing token exchange."""
+    from hermes_vault.oauth.readiness import all_provider_readiness, provider_readiness
+    from hermes_vault.oauth.providers import OAuthProviderRegistry
+
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=2)
+
+    settings = get_settings()
+    registry = OAuthProviderRegistry(settings.runtime_home / "oauth-providers.yaml")
+    reports = [provider_readiness(registry, provider)] if provider else all_provider_readiness(registry)
+
+    if format == "json":
+        payload = reports[0].as_dict() if provider else [report.as_dict() for report in reports]
+        console.print_json(data=payload)
+        raise typer.Exit(code=0 if all(report.configured for report in reports) else 1)
+
+    table = Table(title="OAuth Provider Readiness")
+    table.add_column("Provider")
+    table.add_column("Configured")
+    table.add_column("PKCE")
+    table.add_column("Device Code")
+    table.add_column("Missing Env")
+    table.add_column("Findings")
+    for report in reports:
+        table.add_row(
+            report.provider,
+            "yes" if report.configured else "no",
+            "yes" if report.supports_pkce else "no",
+            "yes" if report.supports_device_code else "no",
+            ", ".join(report.missing_env) or "-",
+            ", ".join(report.findings) or "-",
+        )
+    console.print(table)
+    for report in reports:
+        console.print(f"[bold]{report.provider} next commands[/bold]")
+        for command in report.recommended_commands:
+            console.print(f"  {command}")
+    raise typer.Exit(code=0 if all(report.configured for report in reports) else 1)
 
 
 @oauth_app.command("providers")

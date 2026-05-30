@@ -4,7 +4,7 @@
 
 Hermes Vault is a local-first Python project that centralizes credential scanning, secure storage, brokered access, policy enforcement, verification, auditing, maintenance, and skill generation for Hermes and Hermes sub-agents.
 
-v0.11.0 is the First Safe Agent release: `bootstrap` guides operators from `.env` into encrypted, policy-scoped agent access; OAuth first-login supports browser PKCE and browserless device-code flows; MCP exposes device-login parity without returning raw token material.
+v0.12.0 is the Auth Confidence release: `bootstrap` still guides operators from `.env` into encrypted, policy-scoped agent access, while OAuth readiness, live health verification, and MCP provider status make supported auth paths and missing configuration explicit without returning raw token material.
 
 ## Major Components
 
@@ -100,11 +100,11 @@ v0.11.0 is the First Safe Agent release: `bootstrap` guides operators from `.env
 ### `mcp_server.py`
 
 - Stdio-based MCP server using the official Python MCP SDK
-- Exposes brokered capabilities as MCP tools: list_services, get_credential_metadata, get_ephemeral_env, verify_credential, rotate_credential, scan_for_secrets, oauth_login, oauth_device_login, oauth_refresh
+- Exposes brokered capabilities as MCP tools: list_services, get_credential_metadata, get_ephemeral_env, verify_credential, rotate_credential, scan_for_secrets, oauth_login, oauth_device_login, oauth_provider_status, oauth_refresh
 - `oauth_login` initiates PKCE login and returns an authorization URL. A background thread spawns a callback server, waits for the browser redirect, exchanges the code for tokens, and stores them in the vault atomically.
 - `oauth_device_login` initiates device-code login, returns verification instructions immediately, polls in the background, and stores tokens after approval without exposing raw token material through MCP.
 - `oauth_refresh` triggers the `RefreshEngine` to proactively or on-demand refresh expired access tokens.
-- **Current v0.11.0 boundary:** MCP OAuth login supports callback-based PKCE and device-code login on providers that expose it.
+- **Current v0.12.0 boundary:** MCP OAuth login supports callback-based PKCE, device-code login on providers that expose it, and provider readiness reporting without token exchange.
 - Every tool call uses caller-supplied `agent_id` unless the server is launched with `HERMES_VAULT_MCP_ALLOWED_AGENTS` and `HERMES_VAULT_MCP_DEFAULT_AGENT`
 - Bound MCP deployments deny agent IDs outside the allowed set before policy evaluation and audit the binding decision separately
 - MCP access defaults to policy-gated ephemeral env materialization rather than direct raw-secret handling

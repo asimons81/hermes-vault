@@ -85,6 +85,7 @@ def test_list_tools_returns_expected_tools():
         "scan_for_secrets",
         "oauth_login",
         "oauth_device_login",
+        "oauth_provider_status",
         "oauth_refresh",
     }
     assert names == expected
@@ -591,6 +592,24 @@ def test_oauth_device_login_reports_unsupported_provider(vault_with_policy, tmp_
     assert data["success"] is False
     assert "does not support device-code" in data["error"]
     assert "google" in data["supported_providers"]
+    assert data["fallback_command"] == "hermes-vault oauth login openai --alias default --no-browser"
+    assert data["provider_status"]["provider"] == "openai"
+
+
+def test_oauth_provider_status_reports_read_only_metadata(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("oauth_provider_status", {
+        "agent_id": "test-agent",
+        "provider_id": "google",
+    }))
+    data = _json(result)
+    assert data["provider"] == "google"
+    assert data["supports_pkce"] is True
+    assert data["supports_device_code"] is True
+    assert data["missing_env"] == ["HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID"]
+    serialized = json.dumps(data)
+    assert "secret" not in serialized.lower()
+    assert "access_token" not in serialized
 
 
 def test_oauth_device_login_returns_redacted_device_instructions(vault_with_policy, tmp_path, monkeypatch):

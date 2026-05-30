@@ -92,6 +92,7 @@ Once registered, tools are prefixed as `mcp_hermes_vault_*`:
 | `mcp_hermes_vault_scan_for_secrets` | Scan filesystem paths for plaintext secrets |
 | `mcp_hermes_vault_oauth_login` | Initiate PKCE OAuth login |
 | `mcp_hermes_vault_oauth_device_login` | Initiate headless device-code OAuth login without returning tokens |
+| `mcp_hermes_vault_oauth_provider_status` | Report provider readiness and safe next commands |
 | `mcp_hermes_vault_oauth_refresh` | Trigger refresh for a stored OAuth token |
 
 ## OAuth Tools
@@ -154,6 +155,33 @@ Initiates device-code login for providers with a device authorization endpoint. 
 **Policy requirement:** The calling agent must have `add_credential` permission on the provider service.
 
 **Prerequisites:** The provider must define `device_authorization_endpoint` and any required client ID or client secret env vars must be set.
+
+### `oauth_provider_status`
+
+Reports OAuth provider readiness without starting login, polling, refresh, or token exchange.
+
+**Arguments:**
+- `agent_id` (required unless the server is bound to an allowed-agent set with a configured default) --- Identity for binding enforcement
+- `provider_id` (required) --- Provider ID to inspect
+
+**Response:**
+```json
+{
+  "provider": "google",
+  "configured": false,
+  "supports_pkce": true,
+  "supports_device_code": true,
+  "missing_env": ["HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID"],
+  "default_scopes": ["openid", "email"],
+  "findings": ["missing_required_env"],
+  "recommended_commands": [
+    "hermes-vault oauth login google --alias work --headless",
+    "hermes-vault oauth device-login google --alias work"
+  ]
+}
+```
+
+**Security boundary:** The response is metadata-only. It never returns raw tokens, device codes, client secrets, provider token responses, encrypted payloads, or vault secret values.
 
 ### `oauth_refresh`
 

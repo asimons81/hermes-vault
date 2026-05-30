@@ -11,7 +11,7 @@ from click.testing import CliRunner
 from hermes_vault.audit import AuditLogger
 from hermes_vault.cli import _hermes_group, build_services as real_build_services
 from hermes_vault.health import HealthReport, run_health
-from hermes_vault.models import AccessLogRecord, CredentialStatus, Decision
+from hermes_vault.models import AccessLogRecord, CredentialStatus, Decision, VerificationCategory, VerificationResult
 from hermes_vault.vault import Vault
 
 
@@ -148,6 +148,33 @@ def test_health_report_version_builtin(vault_with_fresh_creds: Vault) -> None:
     assert d["version"] == "health-v1"
 
 
+def test_health_verify_live_adds_provider_failure_without_secret(vault_with_fresh_creds: Vault) -> None:
+    class FakeVerifier:
+        def verify(self, service: str, secret: str) -> VerificationResult:
+            assert secret
+            return VerificationResult(
+                service=service,
+                category=VerificationCategory.permission_scope_issue,
+                success=False,
+                reason="missing required scope",
+            )
+
+    report = run_health(vault_with_fresh_creds, verify_live=True, verifier=FakeVerifier())
+    assert report.verified_live is True
+    live_findings = [f for f in report.findings if f.kind == "live_verify_fail"]
+    assert live_findings
+    payload = json.dumps(report.as_dict(exclude_none=False))
+    assert "missing required scope" in payload
+    assert "sk-test-1234" not in payload
+    assert "ghp-test-5678" not in payload
+
+
+def test_health_service_filter_scopes_counts(vault_with_fresh_creds: Vault) -> None:
+    report = run_health(vault_with_fresh_creds, services={"github"})
+    assert report.total_credentials == 1
+    assert report.healthy_count == 1
+
+
 def test_health_backup_warning_when_no_backup(empty_vault: Vault, tmp_path: Path) -> None:
     audit = AuditLogger(empty_vault.db_path)
     report = run_health(empty_vault, audit=audit)
@@ -224,6 +251,40 @@ def test_cli_health_json_format(
     assert result.exit_code == 0
     assert "health-v1" in result.output
     assert "generated_at" in result.output
+
+
+def test_cli_health_verify_live_service_filter(
+    cli_runner: CliRunner, vault_with_fresh_creds: Vault, monkeypatch
+) -> None:
+    class FakeVerifier:
+        def __init__(self, **kwargs):
+            pass
+
+        def verify(self, service: str, secret: str) -> VerificationResult:
+            return VerificationResult(
+                service=service,
+                category=VerificationCategory.invalid_or_expired,
+                success=False,
+                reason="provider rejected credential",
+            )
+
+    monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services(vault_with_fresh_creds))
+    monkeypatch.setattr("hermes_vault.cli.Verifier", FakeVerifier)
+    _record_recent_backup(AuditLogger(vault_with_fresh_creds.db_path))
+
+    result = cli_runner.invoke(
+        _hermes_group,
+        ["health", "--format", "json", "--verify-live", "--service", "github"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    data = json.loads(result.output)
+    assert data["verified_live"] is True
+    assert data["total_credentials"] == 1
+    assert data["findings"][0]["service"] == "github"
+    assert "provider rejected credential" in result.output
+    assert "ghp-test-5678" not in result.output
 
 
 def test_cli_health_json_no_secrets(

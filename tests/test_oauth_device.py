@@ -90,6 +90,16 @@ class TestOAuthProviderRegistryDeviceSupport:
         assert "github" in providers
         assert "openai" not in providers
 
+    def test_packaged_default_yaml_lists_device_code_providers(self, tmp_path: Path) -> None:
+        defaults_path = Path(__file__).resolve().parents[1] / "data" / "oauth-default-providers.yaml"
+        registry = OAuthProviderRegistry(tmp_path / "providers.yaml", defaults_path=defaults_path)
+
+        providers = registry.list_device_code_providers()
+
+        assert "google" in providers
+        assert "github" in providers
+        assert "openai" not in providers
+
 
 class TestDeviceCodeExchange:
     def test_request_device_code_builds_payload(self, device_provider: OAuthProvider) -> None:

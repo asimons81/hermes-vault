@@ -100,6 +100,12 @@ Hermes should call the tool and return an authorization URL. For headless first 
 
 Hermes should return a verification URL and user code, not raw OAuth tokens.
 
+To inspect readiness without starting login, ask:
+
+> "Use the hermes-vault MCP tool oauth_provider_status for provider google."
+
+Hermes should return missing environment variables, provider capabilities, and safe next commands only.
+
 ## 4. Policy considerations
 
 `oauth_login`, `oauth_device_login`, and `oauth_refresh` require policy permissions:

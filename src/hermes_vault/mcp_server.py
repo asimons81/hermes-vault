@@ -41,6 +41,7 @@ from hermes_vault.oauth.exchange import TokenExchanger
 from hermes_vault.oauth.flow import _store_oauth_tokens
 from hermes_vault.oauth.oauth_refresh import RefreshEngine, refresh_alias_for
 from hermes_vault.oauth.providers import OAuthProviderRegistry
+from hermes_vault.oauth.readiness import provider_readiness
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.scanner import Scanner
 from hermes_vault.service_ids import normalize
@@ -123,6 +124,14 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "alias": {"type": "string", "description": "Credential alias (default: default)"},
             "scopes": {"type": "array", "items": {"type": "string"}, "description": "Optional OAuth scopes"},
             "timeout_seconds": {"type": "integer", "description": "Seconds to wait for user authorization before timing out"},
+        },
+        "required": ["provider_id"],
+    },
+    "oauth_provider_status": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
+            "provider_id": {"type": "string", "description": "OAuth provider ID to inspect"},
         },
         "required": ["provider_id"],
     },
@@ -503,10 +512,10 @@ def _preflight_tool_arguments(name: str, arguments: dict[str, Any]) -> str | Non
     if name in {"get_credential_metadata", "get_ephemeral_env", "verify_credential", "rotate_credential"}:
         if _normalize_agent_id(arguments.get("service")) is None:
             return "Missing required parameter: service"
-    if name in {"oauth_login", "oauth_device_login"}:
+    if name in {"oauth_login", "oauth_device_login", "oauth_provider_status"}:
         provider = _normalize_agent_id(arguments.get("provider_id") or arguments.get("provider"))
         if provider is None:
-            return "Missing required parameter: provider_id" if name == "oauth_device_login" else "Missing required parameter: provider"
+            return "Missing required parameter: provider_id" if name in {"oauth_device_login", "oauth_provider_status"} else "Missing required parameter: provider"
     if name == "oauth_refresh":
         if _normalize_agent_id(arguments.get("service")) is None:
             return "Missing required parameter: service"
@@ -520,7 +529,7 @@ _pending_oauth: dict[str, dict[str, Any]] = {}
 
 # ── server ─────────────────────────────────────────────────────────────────────
 
-server = Server("hermes-vault", version="0.11.0")
+server = Server("hermes-vault", version="0.12.0")
 
 
 @server.list_tools()
@@ -565,6 +574,11 @@ async def list_tools() -> list[Tool]:
             name="oauth_device_login",
             description="Initiate headless OAuth device-code login for a provider. Never returns raw tokens.",
             inputSchema=_TOOL_SCHEMAS["oauth_device_login"],
+        ),
+        Tool(
+            name="oauth_provider_status",
+            description="Report read-only OAuth provider readiness and safe next commands.",
+            inputSchema=_TOOL_SCHEMAS["oauth_provider_status"],
         ),
         Tool(
             name="oauth_refresh",
@@ -781,6 +795,10 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         # ── OAuth: initiate device-code login ────────────────────────────────
         if name == "oauth_device_login":
             return _handle_oauth_device_login(arguments, broker, binding.effective_agent_id or "")
+
+        # ── OAuth: provider readiness ────────────────────────────────────────
+        if name == "oauth_provider_status":
+            return _handle_oauth_provider_status(arguments)
 
         # ── OAuth: refresh token ─────────────────────────────────────────────
         if name == "oauth_refresh":
@@ -1041,22 +1059,30 @@ def _handle_oauth_device_login(arguments: dict[str, Any], broker: Broker, agent_
         registry = OAuthProviderRegistry(settings.runtime_home / "oauth-providers.yaml")
         provider = registry.get(provider_id)
         if provider is None:
+            readiness = provider_readiness(registry, provider_id)
             return [TextContent(type="text", text=_json_text({
                 "success": False,
                 "error": f"Unknown OAuth provider '{provider_id}'. Known providers: {registry.list_providers()}",
+                "provider_status": readiness.as_dict(),
             }))]
         if provider.device_authorization_endpoint is None:
+            readiness = provider_readiness(registry, provider_id)
             return [TextContent(type="text", text=_json_text({
                 "success": False,
                 "error": f"Provider '{provider_id}' does not support device-code login.",
                 "supported_providers": registry.list_device_code_providers(),
+                "fallback_command": f"hermes-vault oauth login {provider_id} --alias {alias} --no-browser",
+                "provider_status": readiness.as_dict(),
             }))]
 
         client_id, client_secret = registry.get_client_credentials(provider)
         if provider.requires_client_id and not client_id:
+            readiness = provider_readiness(registry, provider_id)
             return [TextContent(type="text", text=_json_text({
                 "success": False,
                 "error": f"Provider '{provider_id}' requires a client_id. Set HERMES_VAULT_OAUTH_{provider_id.upper()}_CLIENT_ID.",
+                "missing_env": readiness.missing_env,
+                "provider_status": readiness.as_dict(),
             }))]
 
         scopes = requested_scopes if requested_scopes else provider.default_scopes
@@ -1134,6 +1160,16 @@ def _handle_oauth_device_login(arguments: dict[str, Any], broker: Broker, agent_
         }))]
     except Exception as exc:
         return [TextContent(type="text", text=f"Error: {exc}")]
+
+
+def _handle_oauth_provider_status(arguments: dict[str, Any]) -> list[TextContent]:
+    provider_id = (arguments.get("provider_id") or arguments.get("provider") or "").strip().lower()
+    if not provider_id:
+        return [TextContent(type="text", text="Error: Missing required parameter: provider_id")]
+    settings = get_settings()
+    registry = OAuthProviderRegistry(settings.runtime_home / "oauth-providers.yaml")
+    report = provider_readiness(registry, provider_id)
+    return [TextContent(type="text", text=_json_text(report.as_dict()))]
 
 
 def _handle_oauth_refresh(arguments: dict[str, Any], broker: Broker, agent_id: str) -> list[TextContent]:

@@ -3,6 +3,7 @@ providers:
     service_id: google
     name: Google
     authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth"
+    device_authorization_endpoint: "https://oauth2.googleapis.com/device/code"
     token_endpoint: "https://oauth2.googleapis.com/token"
     default_scopes:
       - openid
@@ -18,6 +19,7 @@ providers:
     service_id: github
     name: GitHub
     authorization_endpoint: "https://github.com/login/oauth/authorize"
+    device_authorization_endpoint: "https://github.com/login/device/code"
     token_endpoint: "https://github.com/login/oauth/access_token"
     default_scopes:
       - repo
