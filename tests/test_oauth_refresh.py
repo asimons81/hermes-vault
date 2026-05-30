@@ -524,7 +524,10 @@ class TestRefreshFailure:
         # Use invalid_scope which raises OAuthProviderError (caught and logged),
         # NOT invalid_grant which raises RefreshTokenExpiredError (inherits RuntimeError, bypasses log).
         endpoint = MockTokenEndpoint(
-            error_response={"error": "invalid_scope", "error_description": "scope not allowed"},
+            error_response={
+                "error": "invalid_scope",
+                "error_description": "scope not allowed access_token=sk-supersecretvalue1234567890",
+            },
             status_code=400,
         )
 
@@ -536,6 +539,8 @@ class TestRefreshFailure:
         assert len(records) == 1
         assert records[0]["action"] == "refresh_token"
         assert records[0]["decision"] == "deny"
+        assert "sk-supersecretvalue1234567890" not in records[0]["reason"]
+        assert "[redacted]" in records[0]["reason"]
 
     def test_refresh_all_graceful_degradation(self, tmp_vault: Vault, tmp_path: Path):
         """One service fails; the other still succeeds."""

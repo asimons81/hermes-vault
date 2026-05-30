@@ -9,7 +9,7 @@ from typing import Any
 import requests
 
 from hermes_vault.models import CredentialSecret, utc_now
-from hermes_vault.oauth.errors import OAuthNetworkError, OAuthProviderError
+from hermes_vault.oauth.errors import OAuthNetworkError, OAuthProviderError, format_oauth_provider_error
 from hermes_vault.oauth.providers import OAuthProvider
 
 
@@ -137,12 +137,18 @@ class TokenExchanger:
 
         if "error" in data:
             raise OAuthProviderError(
-                f"Token endpoint error: {data.get('error')} — {data.get('error_description', '')}"
+                format_oauth_provider_error(
+                    f"Token endpoint error: {data.get('error')}",
+                    data.get("error_description", ""),
+                )
             )
 
         if not resp.ok:
             raise OAuthProviderError(
-                f"Token endpoint error: HTTP {resp.status_code} — {resp.text}"
+                format_oauth_provider_error(
+                    f"Token endpoint error: HTTP {resp.status_code}",
+                    resp.text,
+                )
             )
 
         access_token = data.get("access_token")
@@ -192,12 +198,18 @@ class TokenExchanger:
         data = _parse_response_payload(resp)
         if "error" in data:
             raise OAuthProviderError(
-                f"Device authorization error: {data.get('error')} — {data.get('error_description', '')}"
+                format_oauth_provider_error(
+                    f"Device authorization error: {data.get('error')}",
+                    data.get("error_description", ""),
+                )
             )
 
         if not resp.ok:
             raise OAuthProviderError(
-                f"Device authorization error: HTTP {resp.status_code} — {resp.text}"
+                format_oauth_provider_error(
+                    f"Device authorization error: HTTP {resp.status_code}",
+                    resp.text,
+                )
             )
 
         device_code = data.get("device_code")
@@ -283,12 +295,18 @@ class TokenExchanger:
             )
         if error:
             raise OAuthProviderError(
-                f"Token endpoint error: {error} — {data.get('error_description', '')}"
+                format_oauth_provider_error(
+                    f"Token endpoint error: {error}",
+                    data.get("error_description", ""),
+                )
             )
 
         if not resp.ok:
             raise OAuthProviderError(
-                f"Token endpoint error: HTTP {resp.status_code} — {resp.text}"
+                format_oauth_provider_error(
+                    f"Token endpoint error: HTTP {resp.status_code}",
+                    resp.text,
+                )
             )
 
         access_token = data.get("access_token")

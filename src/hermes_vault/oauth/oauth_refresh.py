@@ -23,7 +23,12 @@ from hermes_vault.models import (
     MutationResult,
     utc_now,
 )
-from hermes_vault.oauth.errors import OAuthNetworkError, OAuthProviderError
+from hermes_vault.oauth.errors import (
+    OAuthNetworkError,
+    OAuthProviderError,
+    format_oauth_provider_error,
+    sanitize_oauth_error_detail,
+)
 from hermes_vault.oauth.providers import OAuthProvider, OAuthProviderRegistry
 from hermes_vault.service_ids import normalize
 from hermes_vault.vault import Vault
@@ -184,7 +189,7 @@ class RefreshEngine:
                 raise OAuthNetworkError(attempt.reason) from exc
             except (OAuthProviderError, RefreshTokenExpiredError) as exc:
                 # Provider / token errors are generally not retryable
-                attempt.reason = str(exc)
+                attempt.reason = sanitize_oauth_error_detail(exc)
                 self._log_refresh(attempt)
                 raise
 
@@ -232,7 +237,7 @@ class RefreshEngine:
                         service=rec.service,
                         alias=rec.alias,
                         success=False,
-                        reason=str(exc),
+                    reason=sanitize_oauth_error_detail(exc),
                     )
                 )
         return results
@@ -336,15 +341,24 @@ class RefreshEngine:
             description = data.get("error_description", "")
             if error_code in ("invalid_grant", "invalid_request"):
                 raise RefreshTokenExpiredError(
-                    f"Refresh token rejected by provider: {error_code} — {description}"
+                    format_oauth_provider_error(
+                        f"Refresh token rejected by provider: {error_code}",
+                        description,
+                    )
                 )
             raise OAuthProviderError(
-                f"Token endpoint error on refresh: {error_code} — {description}"
+                format_oauth_provider_error(
+                    f"Token endpoint error on refresh: {error_code}",
+                    description,
+                )
             )
 
         if not resp.ok:
             raise OAuthProviderError(
-                f"Token endpoint error on refresh: HTTP {resp.status_code} — {resp.text}"
+                format_oauth_provider_error(
+                    f"Token endpoint error on refresh: HTTP {resp.status_code}",
+                    resp.text,
+                )
             )
 
         access_token = data.get("access_token")

@@ -36,7 +36,7 @@ from hermes_vault.health import run_health
 from hermes_vault.models import AccessLogRecord, AgentCapability, CredentialSecret, CredentialStatus, Decision, ServiceAction
 from hermes_vault.mutations import OPERATOR_AGENT_ID, VaultMutations
 from hermes_vault.oauth.callback import CallbackServer
-from hermes_vault.oauth.errors import OAuthProviderError
+from hermes_vault.oauth.errors import OAuthProviderError, sanitize_oauth_error_detail
 from hermes_vault.oauth.exchange import TokenExchanger
 from hermes_vault.oauth.flow import _store_oauth_tokens
 from hermes_vault.oauth.oauth_refresh import RefreshEngine, refresh_alias_for
@@ -529,7 +529,7 @@ _pending_oauth: dict[str, dict[str, Any]] = {}
 
 # ── server ─────────────────────────────────────────────────────────────────────
 
-server = Server("hermes-vault", version="0.12.0")
+server = Server("hermes-vault", version="0.12.1")
 
 
 @server.list_tools()
@@ -703,7 +703,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     try:
         binding = _resolve_mcp_binding(settings, arguments, name)
     except ValueError as exc:
-        return [TextContent(type="text", text=f"Error: {exc}")]
+        return [TextContent(type="text", text=f"Error: {sanitize_oauth_error_detail(exc)}")]
 
     broker = _get_broker()
 
@@ -807,10 +807,10 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
     except ValueError as exc:
-        return [TextContent(type="text", text=f"Error: {exc}")]
+        return [TextContent(type="text", text=f"Error: {sanitize_oauth_error_detail(exc)}")]
     except Exception as exc:
         logger.exception("Unhandled error in tool %s", name)
-        return [TextContent(type="text", text=f"Internal error: {exc}")]
+        return [TextContent(type="text", text=f"Internal error: {sanitize_oauth_error_detail(exc)}")]
 
 
 # ── OAuth tool implementations ───────────────────────────────────────────────
@@ -844,7 +844,7 @@ def _handle_oauth_login(arguments: dict[str, Any], broker: Broker, agent_id: str
             settings.runtime_home / "oauth-providers.yaml",
         )
     except Exception as exc:
-        return [TextContent(type="text", text=f"Error: {exc}")]
+        return [TextContent(type="text", text=f"Error: {sanitize_oauth_error_detail(exc)}")]
 
     provider = registry.get(provider_id)
     if provider is None:
@@ -1159,7 +1159,7 @@ def _handle_oauth_device_login(arguments: dict[str, Any], broker: Broker, agent_
             "raw_tokens_returned": False,
         }))]
     except Exception as exc:
-        return [TextContent(type="text", text=f"Error: {exc}")]
+        return [TextContent(type="text", text=f"Error: {sanitize_oauth_error_detail(exc)}")]
 
 
 def _handle_oauth_provider_status(arguments: dict[str, Any]) -> list[TextContent]:
@@ -1194,9 +1194,11 @@ def _handle_oauth_refresh(arguments: dict[str, Any], broker: Broker, agent_id: s
             "success": attempt.success,
             "service": attempt.service,
             "alias": attempt.alias,
-            "reason": attempt.reason,
+            "reason": sanitize_oauth_error_detail(attempt.reason),
             "new_access_token_preview": (attempt.new_access_token[:12] + "...") if attempt.new_access_token else None,
             "new_refresh_token_preview": (attempt.new_refresh_token[:12] + "...") if attempt.new_refresh_token else None,
+            "access_token_rotated": bool(attempt.new_access_token),
+            "refresh_token_rotated": bool(attempt.new_refresh_token),
             "expires_in": attempt.expires_in,
             "scopes": attempt.scopes,
             "retry_count": attempt.retry_count,
@@ -1205,7 +1207,7 @@ def _handle_oauth_refresh(arguments: dict[str, Any], broker: Broker, agent_id: s
         exc_str = str(exc).lower()
         if "no credential" in exc_str or "refresh token" in exc_str:
             return [TextContent(type="text", text=f"Error: No refresh token found for '{service}'. Use oauth_login to re-authenticate.")]
-        return [TextContent(type="text", text=f"Error: {exc}")]
+        return [TextContent(type="text", text=f"Error: {sanitize_oauth_error_detail(exc)}")]
 
 
 # ── entrypoint ─────────────────────────────────────────────────────────────────

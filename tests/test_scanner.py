@@ -70,3 +70,35 @@ def test_scanner_does_not_flag_placeholder_like_values_without_detector_match(tm
     findings = scanner.scan()
 
     assert not any(finding.kind == "plaintext_secret" for finding in findings)
+
+
+def test_scanner_checks_common_secret_dotfiles(tmp_path: Path) -> None:
+    secrets_dir = tmp_path / "hermes"
+    secrets_dir.mkdir()
+    for name in (".env.local", ".netrc", ".npmrc"):
+        (secrets_dir / name).write_text("OPENAI_API_KEY=sk-testsecretvalue1234567890\n", encoding="utf-8")
+
+    settings = AppSettings(runtime_home=tmp_path / "runtime", default_scan_roots=[secrets_dir])
+    scanner = Scanner(settings)
+    findings = scanner.scan()
+
+    plaintext_paths = {Path(finding.path).name for finding in findings if finding.kind == "plaintext_secret"}
+    assert {".env.local", ".netrc", ".npmrc"}.issubset(plaintext_paths)
+
+
+def test_scanner_reports_large_secret_bearing_file_skips(tmp_path: Path) -> None:
+    secrets_dir = tmp_path / "hermes"
+    secrets_dir.mkdir()
+    target = secrets_dir / ".env.local"
+    target.write_text(
+        "OPENAI_API_KEY=sk-testsecretvalue1234567890\n" + ("A" * 513_000),
+        encoding="utf-8",
+    )
+
+    settings = AppSettings(runtime_home=tmp_path / "runtime", default_scan_roots=[secrets_dir])
+    scanner = Scanner(settings)
+    findings = scanner.scan()
+
+    skipped = [finding for finding in findings if finding.kind == "skipped_large_file"]
+    assert len(skipped) == 1
+    assert skipped[0].path == str(target)

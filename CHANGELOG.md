@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.12.1 -- Security Hardening Patch
+
+### Changed
+
+- `maintain --format json` and MCP OAuth refresh responses now replace raw refreshed OAuth tokens with short previews and rotation booleans.
+- Broker environment materialization now requires the `get_env` action for policy v2 agents while preserving legacy service-list policy behavior.
+- Aliasless broker environment requests now fail closed when a service has multiple matching credentials.
+
+### Security
+
+- OAuth provider errors are sanitized before they can reach exception messages, audit reasons, MCP responses, CLI output, or maintenance reports.
+- Master-key rotation now writes a durable salt-rotation journal and recovers deterministically if interrupted after database re-encryption.
+- Secret scanning now includes common token-bearing dotfiles and reports large secret-like files as warning findings instead of skipping them silently.
+
+### Verification
+
+- Full release validation passed with `uv run pytest` on the 0.12.1 release candidate.
+- Version surfaces now report `0.12.1` in `pyproject.toml`, `src/hermes_vault/__init__.py`, `src/hermes_vault/mcp_server.py`, and `uv.lock`.
+
 ## 0.12.0 -- Auth Confidence
 
 ### Added

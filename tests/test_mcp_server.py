@@ -403,6 +403,14 @@ def test_get_ephemeral_env_denied_for_unauthorized_service(vault_with_policy, tm
     assert "Denied:" in _text(result)
 
 
+def test_get_ephemeral_env_denied_without_get_env_action(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(call_tool("get_ephemeral_env", {"agent_id": "metadata-agent", "service": "openai"}))
+    text = _text(result)
+    assert "Denied:" in text
+    assert "get_env" in text
+
+
 def test_get_ephemeral_env_returns_env(vault_with_policy, tmp_path):
     os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
     result = _run_async(call_tool("get_ephemeral_env", {"agent_id": "test-agent", "service": "openai"}))
@@ -424,6 +432,20 @@ def test_get_ephemeral_env_with_alias_succeeds(vault_with_policy, tmp_path):
     data = _json(result)
     assert "env" in data
     assert "OPENAI_API_KEY" in data["env"]
+
+
+def test_get_ephemeral_env_requires_alias_when_service_has_multiple_credentials(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    vault_with_policy.vault.add_credential(
+        service="openai",
+        secret="secondary-openai-key",
+        credential_type="api_key",
+        alias="secondary",
+    )
+    result = _run_async(call_tool("get_ephemeral_env", {"agent_id": "test-agent", "service": "openai"}))
+    text = _text(result)
+    assert "Denied:" in text
+    assert "specify credential ID or service+alias" in text
 
 
 def test_get_ephemeral_env_with_alias_denied_for_unauthorized_service(vault_with_policy, tmp_path):
@@ -692,6 +714,34 @@ def test_oauth_refresh_returns_error_when_no_refresh_token(vault_with_policy, tm
     assert "re-authentication" in text.lower() or "Use oauth_login" in text or "No refresh token" in text
 
 
+def test_oauth_refresh_redacts_provider_error_text(vault_with_policy, tmp_path, monkeypatch):
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+
+    class FakeRefreshEngine:
+        def __init__(self, vault):
+            self.vault = vault
+
+        def set_audit(self, audit):
+            self.audit = audit
+
+        def refresh(self, **kwargs):
+            raise RuntimeError("provider failed access_token=sk-supersecretvalue123456")
+
+    monkeypatch.setattr(mcp_mod, "RefreshEngine", FakeRefreshEngine)
+
+    result = _run_async(call_tool("oauth_refresh", {
+        "agent_id": "test-agent",
+        "service": "openai",
+        "alias": "primary",
+    }))
+
+    text = _text(result)
+    assert "sk-supersecretvalue123456" not in text
+    assert "[redacted]" in text
+
+
 # ── fixtures ───────────────────────────────────────────────────────────────────
 
 
@@ -765,6 +815,16 @@ agents:
       openai:
         actions:
           - get_env
+    capabilities:
+      - list_credentials
+    max_ttl_seconds: 3600
+    raw_secret_access: false
+    ephemeral_env_only: true
+  metadata-agent:
+    services:
+      openai:
+        actions:
+          - metadata
     capabilities:
       - list_credentials
     max_ttl_seconds: 3600

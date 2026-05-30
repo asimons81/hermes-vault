@@ -83,7 +83,7 @@ class FakeRefreshEngine:
                 alias="primary",
                 success=True,
                 reason="Token refresh simulated (dry-run)" if dry_run else "Token refreshed successfully",
-                new_access_token="sk-new",
+                new_access_token="sk-new-access-token-secret-123456",
                 new_refresh_token=None,
                 expires_in=3600,
                 scopes=["openid"],
@@ -111,6 +111,24 @@ def test_run_maintenance_dry_run_does_not_mutate_vault(monkeypatch, vault: Vault
     assert report.refresh_summary["failed"] == 0
     assert report.audit_recorded is True
     assert report.recommended_exit_code == 0
+
+
+def test_run_maintenance_report_uses_token_previews(monkeypatch, vault: Vault) -> None:
+    monkeypatch.setattr("hermes_vault.maintenance.RefreshEngine", FakeRefreshEngine)
+    monkeypatch.setattr("hermes_vault.maintenance.run_health", lambda *args, **kwargs: _healthy_report())
+
+    report = run_maintenance(vault, audit=None, dry_run=True)
+    data = report.as_dict(exclude_none=False)
+    serialized = str(data)
+    refresh_result = data["refresh_results"][0]
+
+    assert "sk-new-access-token-secret-123456" not in serialized
+    assert "new_access_token" not in refresh_result
+    assert "new_refresh_token" not in refresh_result
+    assert refresh_result["new_access_token_preview"] == "sk-new-acces..."
+    assert refresh_result["new_refresh_token_preview"] is None
+    assert refresh_result["access_token_rotated"] is True
+    assert refresh_result["refresh_token_rotated"] is False
 
 
 def test_run_maintenance_refresh_summary_counts(monkeypatch, vault: Vault) -> None:

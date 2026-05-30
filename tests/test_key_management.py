@@ -7,7 +7,7 @@ import pytest
 
 from hermes_vault.config import AppSettings
 from hermes_vault.crypto import CorruptKeyMaterialError, MissingKeyMaterialError
-from hermes_vault.vault import Vault
+from hermes_vault.vault import RotationRecoveryError, Vault
 
 
 def test_missing_salt_after_restore_raises(tmp_path: Path) -> None:
@@ -98,6 +98,44 @@ def test_rotate_master_key_with_backup(tmp_path: Path) -> None:
     )
     assert result["re_encrypted"] == 2
     assert backup_path.exists()
+
+
+def test_rotate_master_key_recovers_after_salt_finalization_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "vault.db"
+    salt = tmp_path / "salt.bin"
+    vault = Vault(db, salt, "old-pass")
+    vault.add_credential("openai", "sk-test-1234", "api_key", alias="primary")
+    original_replace = Vault._replace_salt_durable
+
+    def fail_replace(self: Vault, new_salt: bytes) -> None:
+        raise OSError("simulated salt write failure")
+
+    monkeypatch.setattr(Vault, "_replace_salt_durable", fail_replace)
+    with pytest.raises(OSError, match="simulated salt write failure"):
+        vault.rotate_master_key("old-pass", "new-pass")
+
+    assert vault.rotation_journal_path.exists()
+    monkeypatch.setattr(Vault, "_replace_salt_durable", original_replace)
+
+    recovered = Vault(db, salt, "new-pass")
+    secret = recovered.get_secret("openai")
+
+    assert secret is not None
+    assert secret.secret == "sk-test-1234"
+    assert not recovered.rotation_journal_path.exists()
+
+
+def test_corrupt_rotation_journal_raises(tmp_path: Path) -> None:
+    db = tmp_path / "vault.db"
+    salt = tmp_path / "salt.bin"
+    Vault(db, salt, "old-pass")
+    journal = salt.with_name(f"{salt.name}.rotation.json")
+    journal.write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(RotationRecoveryError, match="journal"):
+        Vault(db, salt, "old-pass")
 
 
 def test_rotate_master_key_no_secrets_in_audit(tmp_path: Path) -> None:

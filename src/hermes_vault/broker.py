@@ -20,7 +20,7 @@ from hermes_vault.mutations import VaultMutations
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.service_ids import get_env_var_map, normalize
 from hermes_vault.verifier import Verifier
-from hermes_vault.vault import Vault
+from hermes_vault.vault import AmbiguousTargetError, Vault
 
 
 def _verification_is_unsupported(result: VerificationResult) -> bool:
@@ -69,20 +69,17 @@ class Broker:
 
     def get_ephemeral_env(self, service: str, agent_id: str, ttl: int, alias: str | None = None) -> BrokerDecision:
         canonical = normalize(service)
-        allowed, reason = self.policy.can_access_service(agent_id, canonical)
+        allowed, reason = self.policy.can(agent_id, canonical, ServiceAction.get_env)
         if not allowed:
             return self._deny(agent_id, canonical, "get_ephemeral_env", reason, ttl_seconds=ttl)
         ttl_ok, ttl_reason, effective_ttl = self.policy.enforce_ttl(agent_id, ttl, service=canonical)
         if not ttl_ok:
             return self._deny(agent_id, canonical, "get_ephemeral_env", ttl_reason, ttl_seconds=ttl)
-        if alias:
-            try:
-                record = self.vault.resolve_credential(service, alias=alias)
-            except KeyError as exc:
-                return self._deny(agent_id, canonical, "get_ephemeral_env", str(exc), ttl_seconds=effective_ttl)
-            secret = self.vault.get_secret(record.id)
-        else:
-            secret = self.vault.get_secret(canonical)
+        try:
+            record = self.vault.resolve_credential(canonical, alias=alias)
+        except (AmbiguousTargetError, KeyError) as exc:
+            return self._deny(agent_id, canonical, "get_ephemeral_env", str(exc), ttl_seconds=effective_ttl)
+        secret = self.vault.get_secret(record.id)
         if not secret:
             return self._deny(agent_id, canonical, "get_ephemeral_env", "credential not found in vault", ttl_seconds=effective_ttl)
         env_template = get_env_var_map(canonical)

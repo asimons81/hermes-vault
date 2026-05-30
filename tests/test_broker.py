@@ -9,6 +9,8 @@ from hermes_vault.models import (
     AgentPolicy,
     CredentialStatus,
     PolicyConfig,
+    ServiceAction,
+    ServicePolicyEntry,
     VerificationCategory,
     VerificationResult,
 )
@@ -84,6 +86,83 @@ def test_broker_enforces_policy_and_returns_env(tmp_path: Path) -> None:
     assert decision.allowed is True
     assert decision.ttl_seconds == 600
     assert decision.env["OPENAI_API_KEY"] == "sk-secret-1234567890"
+
+
+def test_broker_denies_env_when_get_env_action_missing(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-secret-1234567890", "api_key")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "dwight": AgentPolicy(
+                    services=["openai"],
+                    service_actions={
+                        "openai": ServicePolicyEntry(actions=[ServiceAction.metadata]),
+                    },
+                    raw_secret_access=False,
+                    ephemeral_env_only=True,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+
+    decision = broker.get_ephemeral_env("openai", "dwight", ttl=900)
+
+    assert decision.allowed is False
+    assert "get_env" in decision.reason
+
+
+def test_broker_denies_aliasless_env_when_service_is_ambiguous(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-primary", "api_key", alias="primary")
+    vault.add_credential("openai", "sk-admin", "api_key", alias="admin")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "dwight": AgentPolicy(
+                    services=["openai"],
+                    service_actions={
+                        "openai": ServicePolicyEntry(actions=[ServiceAction.get_env]),
+                    },
+                    raw_secret_access=False,
+                    ephemeral_env_only=True,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+
+    decision = broker.get_ephemeral_env("openai", "dwight", ttl=900)
+
+    assert decision.allowed is False
+    assert "specify credential ID or service+alias" in decision.reason
+
+
+def test_broker_explicit_alias_env_still_succeeds_when_service_has_multiple_aliases(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-primary", "api_key", alias="primary")
+    vault.add_credential("openai", "sk-admin", "api_key", alias="admin")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "dwight": AgentPolicy(
+                    services=["openai"],
+                    service_actions={
+                        "openai": ServicePolicyEntry(actions=[ServiceAction.get_env]),
+                    },
+                    raw_secret_access=False,
+                    ephemeral_env_only=True,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+
+    decision = broker.get_ephemeral_env("openai", "dwight", ttl=900, alias="primary")
+
+    assert decision.allowed is True
+    assert decision.env["OPENAI_API_KEY"] == "sk-primary"
 
 
 def test_broker_denies_raw_secret_when_env_only(tmp_path: Path) -> None:

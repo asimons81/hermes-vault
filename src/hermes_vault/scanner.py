@@ -32,6 +32,17 @@ TEXT_SUFFIXES = {
     ".zshrc",
     ".profile",
 }
+SECRET_TEXT_FILENAMES = {
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    "credentials",
+}
+SECRET_TEXT_PATTERNS = (
+    ".env.*",
+    ".aws/credentials",
+    ".docker/config.json",
+)
 MAX_FILE_BYTES = 512_000
 COMMENT_PREFIXES = ("#", "//", ";", "--")
 
@@ -77,7 +88,17 @@ class Scanner:
             return []
         try:
             if path.stat().st_size > MAX_FILE_BYTES:
-                return []
+                return [
+                    FindingRecord(
+                        severity=FindingSeverity.medium,
+                        kind="skipped_large_file",
+                        path=str(path),
+                        recommendation=(
+                            "Review this large secret-bearing text file manually or split it so Hermes Vault can scan it."
+                        ),
+                        detail=f"File exceeds scanner size limit of {MAX_FILE_BYTES} bytes.",
+                    )
+                ]
             content = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             return []
@@ -125,6 +146,11 @@ class Scanner:
 
     def _looks_like_text(self, path: Path) -> bool:
         if path.suffix.lower() in TEXT_SUFFIXES:
+            return True
+        if path.name in SECRET_TEXT_FILENAMES:
+            return True
+        normalized = path.as_posix()
+        if any(fnmatch.fnmatch(path.name, pattern) or normalized.endswith(pattern) for pattern in SECRET_TEXT_PATTERNS):
             return True
         return any(path.name.endswith(suffix) for suffix in TEXT_SUFFIXES)
 

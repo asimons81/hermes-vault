@@ -12,11 +12,18 @@ from typing import Any
 from hermes_vault.audit import AuditLogger
 from hermes_vault.health import run_health
 from hermes_vault.models import AccessLogRecord, Decision, utc_now
+from hermes_vault.oauth.errors import sanitize_oauth_error_detail
 from hermes_vault.oauth.oauth_refresh import RefreshAttempt, RefreshEngine
 from hermes_vault.vault import Vault
 
 
 REPORT_VERSION = "maintain-v1"
+
+
+def _token_preview(token: str | None) -> str | None:
+    if not token:
+        return None
+    return token[:12] + "..."
 
 
 def _health_to_dict(health: Any) -> dict[str, Any]:
@@ -32,9 +39,11 @@ def _refresh_attempt_to_dict(attempt: RefreshAttempt) -> dict[str, Any]:
         "service": attempt.service,
         "alias": attempt.alias,
         "success": attempt.success,
-        "reason": attempt.reason,
-        "new_access_token": attempt.new_access_token,
-        "new_refresh_token": attempt.new_refresh_token,
+        "reason": sanitize_oauth_error_detail(attempt.reason),
+        "new_access_token_preview": _token_preview(attempt.new_access_token),
+        "new_refresh_token_preview": _token_preview(attempt.new_refresh_token),
+        "access_token_rotated": bool(attempt.new_access_token),
+        "refresh_token_rotated": bool(attempt.new_refresh_token),
         "expires_in": attempt.expires_in,
         "scopes": list(attempt.scopes),
         "retry_count": attempt.retry_count,

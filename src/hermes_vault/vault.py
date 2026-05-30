@@ -31,13 +31,22 @@ class AmbiguousTargetError(RuntimeError):
     pass
 
 
+class RotationRecoveryError(RuntimeError):
+    """Raised when an interrupted master-key rotation cannot be recovered."""
+
+
 class Vault:
     def __init__(self, db_path: Path, salt_path: Path, passphrase: str) -> None:
         self.db_path = db_path
         self.salt_path = salt_path
+        self._recover_rotation_journal(passphrase)
         self._prepare_storage()
         self.key = derive_key(passphrase, load_or_create_salt(salt_path, create_if_missing=not db_path.exists()))
         self.initialize()
+
+    @property
+    def rotation_journal_path(self) -> Path:
+        return self.salt_path.with_name(f"{self.salt_path.name}.rotation.json")
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,6 +127,94 @@ class Vault:
             raise CorruptKeyMaterialError(
                 f"Salt file {self.salt_path} is corrupted or the wrong size."
             )
+
+    @staticmethod
+    def _write_bytes_durable(path: Path, content: bytes, mode: int = 0o600) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        path.chmod(mode)
+
+    @staticmethod
+    def _write_text_durable(path: Path, content: str, mode: int = 0o600) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        path.chmod(mode)
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def _write_rotation_journal(self, payload: dict[str, Any]) -> None:
+        self._write_text_durable(
+            self.rotation_journal_path,
+            json.dumps(payload, sort_keys=True),
+        )
+        self._fsync_directory(self.rotation_journal_path.parent)
+
+    def _replace_salt_durable(self, salt: bytes) -> None:
+        tmp_salt = self.salt_path.with_suffix(".tmp")
+        self._write_bytes_durable(tmp_salt, salt)
+        os.replace(tmp_salt, self.salt_path)
+        self.salt_path.chmod(0o600)
+        self._fsync_directory(self.salt_path.parent)
+
+    def _first_encrypted_payload(self) -> str | None:
+        if not self.db_path.exists():
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT encrypted_payload FROM credentials ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+        return row[0] if row else None
+
+    def _payload_decrypts_with_salt(self, passphrase: str, salt: bytes, payload: str) -> bool:
+        try:
+            decrypt_secret(payload, derive_key(passphrase, salt))
+            return True
+        except Exception:
+            return False
+
+    def _recover_rotation_journal(self, passphrase: str) -> None:
+        journal_path = self.rotation_journal_path
+        if not journal_path.exists():
+            return
+        try:
+            journal = json.loads(journal_path.read_text(encoding="utf-8"))
+            old_salt = bytes.fromhex(journal["old_salt"])
+            new_salt = bytes.fromhex(journal["new_salt"])
+        except Exception as exc:
+            raise RotationRecoveryError(
+                f"Master-key rotation journal at {journal_path} is unreadable."
+            ) from exc
+
+        payload = self._first_encrypted_payload()
+        if payload is None:
+            recovered_salt = new_salt if journal.get("status") == "db_committed" else old_salt
+        elif self._payload_decrypts_with_salt(passphrase, new_salt, payload):
+            recovered_salt = new_salt
+        elif self._payload_decrypts_with_salt(passphrase, old_salt, payload):
+            recovered_salt = old_salt
+        else:
+            raise RotationRecoveryError(
+                "Interrupted master-key rotation could not be recovered with either journaled salt."
+            )
+
+        self._replace_salt_durable(recovered_salt)
+        journal_path.unlink()
+        self._fsync_directory(journal_path.parent)
 
     def _secure_storage_files(self) -> None:
         if self.db_path.exists():
@@ -764,7 +861,8 @@ class Vault:
         or if any credential fails re-encryption.
         """
         # Verify old passphrase by trying to decrypt at least one credential
-        old_key = derive_key(old_passphrase, load_or_create_salt(self.salt_path))
+        old_salt = load_or_create_salt(self.salt_path)
+        old_key = derive_key(old_passphrase, old_salt)
         test_records = self.list_credentials()
         if test_records:
             try:
@@ -784,6 +882,14 @@ class Vault:
 
         new_salt = os.urandom(SALT_SIZE)
         new_key = derive_key(new_passphrase, new_salt)
+        journal = {
+            "version": "rotation-journal-v1",
+            "status": "started",
+            "old_salt": old_salt.hex(),
+            "new_salt": new_salt.hex(),
+            "created_at": utc_now().isoformat(),
+        }
+        self._write_rotation_journal(journal)
 
         re_encrypted = 0
         all_records = self.list_credentials()
@@ -803,11 +909,12 @@ class Vault:
                 conn.rollback()
                 raise
 
-        # Atomically write new salt
-        tmp_salt = self.salt_path.with_suffix(".tmp")
-        tmp_salt.write_bytes(new_salt)
-        os.replace(tmp_salt, self.salt_path)
-        self.salt_path.chmod(0o600)
+        journal["status"] = "db_committed"
+        journal["committed_at"] = utc_now().isoformat()
+        self._write_rotation_journal(journal)
+        self._replace_salt_durable(new_salt)
+        self.rotation_journal_path.unlink(missing_ok=True)
+        self._fsync_directory(self.rotation_journal_path.parent)
 
         self.key = new_key
         return {"re_encrypted": re_encrypted, "failed": 0}

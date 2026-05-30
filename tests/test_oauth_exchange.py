@@ -173,6 +173,26 @@ class TestTokenExchangerErrors:
                 )
         assert "HTTP 500" in str(exc_info.value)
 
+    def test_token_endpoint_http_error_redacts_response_body_tokens(self, test_provider):
+        exchanger = TokenExchanger(test_provider)
+        fake_resp = MagicMock()
+        fake_resp.ok = False
+        fake_resp.json.return_value = {}
+        fake_resp.status_code = 500
+        fake_resp.text = "debug access_token=sk-supersecretvalue1234567890"
+
+        with patch("hermes_vault.oauth.exchange.requests.post", return_value=fake_resp):
+            with pytest.raises(OAuthProviderError) as exc_info:
+                exchanger.exchange(
+                    code="c",
+                    redirect_uri="http://127.0.0.1:1/callback",
+                    code_verifier="v",
+                )
+
+        message = str(exc_info.value)
+        assert "sk-supersecretvalue1234567890" not in message
+        assert "[redacted]" in message
+
     def test_missing_access_token_raises(self, test_provider):
         exchanger = TokenExchanger(test_provider)
         fake_resp = MagicMock()
