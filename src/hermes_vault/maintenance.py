@@ -95,12 +95,32 @@ def _recommended_exit_code(health: Any, refresh_summary: dict[str, Any]) -> int:
     return 0 if healthy and failed == 0 else 1
 
 
+def _lifecycle_next_step(health: Any, refresh_summary: dict[str, Any]) -> str:
+    healthy = bool(getattr(health, "healthy", True))
+    failed = int(refresh_summary.get("failed", 0) or 0)
+    if healthy and failed == 0:
+        return (
+            "Refresh and health are clean, but lifecycle assurance is still incomplete. "
+            "Run `hermes-vault policy doctor`, then prove recovery with `hermes-vault "
+            "backup-verify --input <backup>` and `hermes-vault restore --dry-run --input <backup>`."
+        )
+    return (
+        "Fix the refresh and health findings first, then run `hermes-vault policy doctor` "
+        "and prove recovery with `hermes-vault backup-verify --input <backup>` plus "
+        "`hermes-vault restore --dry-run --input <backup>`."
+    )
+
+
 @dataclass
 class MaintenanceReport:
     version: str = REPORT_VERSION
     generated_at: str = field(default_factory=lambda: utc_now().isoformat())
     dry_run: bool = False
     margin_seconds: int = 300
+    lifecycle_scope: str = "refresh + health only"
+    policy_drift_checked: bool = False
+    recovery_proven: bool = False
+    next_step_hint: str = ""
     health: dict[str, Any] = field(default_factory=dict)
     refresh_results: list[dict[str, Any]] = field(default_factory=list)
     refresh_summary: dict[str, Any] = field(default_factory=dict)
@@ -113,6 +133,10 @@ class MaintenanceReport:
             "generated_at": self.generated_at,
             "dry_run": self.dry_run,
             "margin_seconds": self.margin_seconds,
+            "lifecycle_scope": self.lifecycle_scope,
+            "policy_drift_checked": self.policy_drift_checked,
+            "recovery_proven": self.recovery_proven,
+            "next_step_hint": self.next_step_hint,
             "health": self.health,
             "refresh_results": self.refresh_results,
             "refresh_summary": self.refresh_summary,
@@ -171,6 +195,7 @@ def run_maintenance(
     report = MaintenanceReport(
         dry_run=dry_run,
         margin_seconds=margin,
+        next_step_hint=_lifecycle_next_step(health, refresh_summary),
         health=_health_to_dict(health),
         refresh_results=refresh_dicts,
         refresh_summary=refresh_summary,

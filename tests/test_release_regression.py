@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 
 import pytest
 import yaml
 
+import hermes_vault
 from hermes_vault.audit import AuditLogger
 from hermes_vault.models import (
     AgentCapability,
@@ -18,6 +20,29 @@ from hermes_vault.models import (
 )
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.vault import Vault
+
+
+def test_release_version_surfaces_align() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+
+    from hermes_vault.mcp_server import server
+
+    assert pyproject["project"]["version"] == "0.13.0"
+    assert hermes_vault.__version__ == "0.13.0"
+    assert server.version == hermes_vault.__version__
+
+
+def test_release_story_mentions_lifecycle_and_recovery() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+    changelog = (repo_root / "CHANGELOG.md").read_text(encoding="utf-8")
+    operator_guide = (repo_root / "docs" / "operator-guide.md").read_text(encoding="utf-8")
+
+    assert "Credential Lifecycle & Recovery" in changelog
+    assert "policy drift" in readme.lower()
+    assert "backup-verify" in operator_guide
+    assert "restore --dry-run" in operator_guide
 
 
 # ── TTL enforcement edge cases ────────────────────────────────────────

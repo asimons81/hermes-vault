@@ -106,6 +106,12 @@ def test_run_maintenance_dry_run_does_not_mutate_vault(monkeypatch, vault: Vault
     assert after is not None
     assert after.secret == before.secret
     assert report.dry_run is True
+    assert report.lifecycle_scope == "refresh + health only"
+    assert report.policy_drift_checked is False
+    assert report.recovery_proven is False
+    assert "policy doctor" in report.next_step_hint
+    assert "backup-verify" in report.next_step_hint
+    assert "restore --dry-run" in report.next_step_hint
     assert report.refresh_summary["attempted"] == 1
     assert report.refresh_summary["succeeded"] == 1
     assert report.refresh_summary["failed"] == 0
@@ -179,6 +185,10 @@ def test_run_maintenance_exit_code_warns_on_health_findings(monkeypatch, vault: 
 
     assert report.health["healthy"] is False
     assert report.health["findings"]
+    assert report.policy_drift_checked is False
+    assert report.recovery_proven is False
+    assert "policy doctor" in report.next_step_hint
+    assert "restore --dry-run" in report.next_step_hint
     assert report.recommended_exit_code == 1
 
 

@@ -174,6 +174,10 @@ def test_maintain_json_output(monkeypatch) -> None:
             return {
                 "version": "maintain-v1",
                 "dry_run": True,
+                "lifecycle_scope": "refresh + health only",
+                "policy_drift_checked": False,
+                "recovery_proven": False,
+                "next_step_hint": "Run policy doctor, then backup-verify and restore --dry-run.",
                 "refresh_summary": {"attempted": 0, "succeeded": 0, "failed": 0},
                 "health": {"healthy": True, "findings": []},
                 "audit_recorded": False,
@@ -189,6 +193,10 @@ def test_maintain_json_output(monkeypatch) -> None:
     payload = json.loads(result.output)
     assert payload["version"] == "maintain-v1"
     assert payload["dry_run"] is True
+    assert payload["lifecycle_scope"] == "refresh + health only"
+    assert payload["policy_drift_checked"] is False
+    assert payload["recovery_proven"] is False
+    assert "backup-verify" in payload["next_step_hint"]
 
 
 def test_maintain_table_uses_recommended_exit_code(monkeypatch) -> None:
@@ -199,6 +207,10 @@ def test_maintain_table_uses_recommended_exit_code(monkeypatch) -> None:
         refresh_summary = {"attempted": 1, "succeeded": 0, "failed": 1}
         health = {"healthy": False, "findings": []}
         audit_recorded = True
+        lifecycle_scope = "refresh + health only"
+        policy_drift_checked = False
+        recovery_proven = False
+        next_step_hint = "Fix refresh and health, then run policy doctor and backup-verify."
         refresh_results = [
             {
                 "service": "google",
@@ -216,6 +228,8 @@ def test_maintain_table_uses_recommended_exit_code(monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert "Hermes Vault Maintenance" in result.output
+    assert "Lifecycle scope" in result.output
+    assert "policy doctor" in result.output
     assert "Refresh Failures" in result.output
 
 

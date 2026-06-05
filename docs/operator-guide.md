@@ -552,7 +552,7 @@ This avoids refresh-token collisions when one operator stores multiple identitie
 
 ## Backup Verification and Drill
 
-v0.7.0 adds a non-mutating recovery drill so operators can prove a backup is usable before an incident.
+v0.13.0 makes the lifecycle split explicit: `maintain` covers refresh + health only. Use `policy doctor` for drift diagnosis, then `backup-verify` and `restore --dry-run` to prove recovery before calling the vault fully assured.
 
 ```bash
 hermes-vault backup-verify --input ~/vault-backup.json
