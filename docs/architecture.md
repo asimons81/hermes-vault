@@ -4,7 +4,14 @@
 
 Hermes Vault is a local-first Python project that centralizes credential scanning, secure storage, brokered access, policy enforcement, verification, auditing, maintenance, and skill generation for Hermes and Hermes sub-agents.
 
-v0.12.0 is the Auth Confidence release: `bootstrap` still guides operators from `.env` into encrypted, policy-scoped agent access, while OAuth readiness, live health verification, and MCP provider status make supported auth paths and missing configuration explicit without returning raw token material.
+v0.13.0 is the Credential Lifecycle & Recovery release: `bootstrap` still guides operators from `.env` into encrypted, policy-scoped agent access, while lifecycle maintenance, policy drift visibility, and backup verification / restore drills make recovery something you can prove instead of assume.
+
+## v0.13.0 release posture
+
+- Scheduled maintenance is documented as lifecycle assurance. It composes refresh and health, but it doesn't prove recovery by itself.
+- `policy_doctor.py` is part of the operator loop because drift and stale generated skills are lifecycle issues, not side quests.
+- `backup.py` keeps recovery proof separate from backup age: `backup-verify` proves decryptability, and `restore --dry-run` exercises restore semantics without mutating the live vault.
+- `vault.py` keeps master-key rotation explicit and auditable, with the pre-rotation backup and rollback path still intact.
 
 ## Major Components
 

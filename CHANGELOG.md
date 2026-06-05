@@ -4,16 +4,25 @@
 
 ## 0.13.0 -- Credential Lifecycle & Recovery
 
+### Added
+
+- A top-level 0.13.0 release framing in the README so the product story now opens with lifecycle and recovery instead of older auth-readiness language.
+- A lifecycle and recovery runbook in the operator guide that separates freshness checks, live health verification, scheduled maintenance, policy drift review, and recovery proof.
+
 ### Changed
 
 - `maintain` now says it only covers refresh + health and points operators to `policy doctor`, `backup-verify`, and `restore --dry-run` for the missing assurance.
+- `maintain` is documented as lifecycle assurance, not as a substitute for backup verification or restore drills.
+- Recovery guidance now treats `backup-verify` and `restore --dry-run` as the proof path, and backup age as a warning, not proof.
 - README and operator guide now frame Hermes Vault v0.13.0 as the lifecycle and recovery release.
 - Policy doctor wording keeps refresh permissions separate from rotation expectations instead of blurring them together.
+- Architecture and credential-lifecycle notes now match the new release story.
 - Version surfaces now report `0.13.0` in `pyproject.toml`, `src/hermes_vault/__init__.py`, `src/hermes_vault/mcp_server.py`, and `uv.lock`.
 
 ### Verification
 
 - Full test suite passed with `uv run pytest`.
+- Updated docs were checked against the shipped `maintain`, `policy doctor`, `backup-verify`, `restore --dry-run`, and `rotate-master-key` surfaces.
 
 ## 0.12.1 -- Security Hardening Patch
 

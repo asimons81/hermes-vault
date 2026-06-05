@@ -8,6 +8,27 @@
 4. Edit `~/.hermes/hermes-vault-data/policy.yaml` for the real agent allowlists.
 5. Back up both `vault.db` and `master_key_salt.bin` together. Losing the salt makes the vault unreadable.
 
+## v0.13.0 lifecycle and recovery runbook
+
+This release is about keeping the vault healthy on its own after credentials already exist. Use the tools in this order when you want the honest picture:
+
+```bash
+hermes-vault status
+hermes-vault health --verify-live --service openai
+hermes-vault maintain --dry-run
+hermes-vault policy doctor
+hermes-vault backup-verify --input ~/vault-backup.json
+hermes-vault restore --dry-run --input ~/vault-backup.json
+hermes-vault rotate-master-key
+```
+
+- `status` is the freshness readout.
+- `health` is the current operator posture, and `--verify-live` checks a real provider when you need it.
+- `maintain` runs the scheduled refresh plus health loop, but it doesn't prove recoverability on its own.
+- `policy doctor` catches drift, legacy grants, stale generated skills, and other lifecycle paper cuts.
+- `backup-verify` and `restore --dry-run` are the recovery proof path. Backup age is a clue, not evidence.
+- `rotate-master-key` is the deliberate rekey path, not a maintenance shortcut.
+
 ## Recommended First Run
 
 ```bash
