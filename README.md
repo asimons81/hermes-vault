@@ -2,7 +2,7 @@
 
 ![Hermes Vault promo image](assets/hermes-vault-promo-image.png)
 
-Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and generates skill contracts that keep agents on the same workflow.
+Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and generates skill contracts that keep agents on the same workflow. v0.13.0 tightens that story into lifecycle and recovery: maintenance, policy drift, and backup proof are operator surfaces, not folklore.
 
 ## What It Does
 
@@ -283,6 +283,26 @@ hermes-vault oauth doctor google
 hermes-vault oauth refresh google --alias work
 hermes-vault oauth providers
 ```
+
+## What's New in 0.13.0 - Credential Lifecycle & Recovery
+
+v0.13.0 is the release that stops pretending maintenance alone is proof. The operator loop is now: inspect freshness, check live health, run maintenance, surface policy drift, and prove recovery with a real backup drill.
+
+```bash
+hermes-vault status
+hermes-vault health --verify-live --service openai
+hermes-vault maintain --dry-run
+hermes-vault policy doctor
+hermes-vault backup-verify --input ~/vault-backup.json
+hermes-vault restore --dry-run --input ~/vault-backup.json
+hermes-vault rotate-master-key
+```
+
+- `status` tells you what's stale, invalid, or expiring.
+- `health` tells you whether the vault is actually healthy, with live verification when you need it.
+- `maintain` composes refresh and health, but it doesn't replace recovery proof.
+- `policy doctor` surfaces drift, legacy grants, and stale generated skills before they turn into a mess.
+- `backup-verify` and `restore --dry-run` prove decryptability and restore semantics without mutating the live vault.
 
 ## What's New in 0.12.0 - Auth Confidence
 

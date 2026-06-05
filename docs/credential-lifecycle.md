@@ -1,5 +1,7 @@
 # Credential Lifecycle
 
+v0.13.0 treats this doc as the operator loop behind the release story. The vault has to stay healthy on its own, explain drift clearly, and prove it can recover from a real backup, not just look freshly touched.
+
 ## 1. Discovery
 
 - Hermes Vault scans approved Hermes-relevant paths
@@ -66,3 +68,10 @@ v0.4.0 adds visibility into credential state and access history:
 
 These commands do not change credential security properties. No secrets are
 ever exposed in audit, status, or verification output.
+
+## 9. Recovery proof
+
+- `hermes-vault backup-verify --input <backup-file>` proves a backup decrypts with the current vault key.
+- `hermes-vault restore --dry-run --input <backup-file>` exercises restore semantics without mutating the live vault.
+- Metadata-only backups are inspection artifacts, not recovery proofs.
+- Backup age is a warning signal, not evidence that recovery will work.

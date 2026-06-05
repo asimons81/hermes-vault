@@ -2,7 +2,7 @@
 
 Hermes Vault is a local-first credential broker. Its job is to find risky plaintext secrets, store credentials encrypted at rest, enforce per-agent policy before access, materialize short-lived environment variables, verify credentials, and expose safe operator views through the CLI, MCP, and local dashboard.
 
-This page is a contributor map. For the release-oriented architecture narrative, see `docs/architecture.md`.
+This page is a contributor map. For the release-oriented architecture and lifecycle narrative, see `docs/architecture.md` and `docs/credential-lifecycle.md`.
 
 ## System boundaries
 
