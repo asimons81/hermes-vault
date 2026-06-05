@@ -1381,6 +1381,9 @@ def maintain(
 ) -> None:
     """Run scheduled-safe OAuth refresh and vault health maintenance.
 
+    This covers refresh + health only. Use policy doctor and backup verification
+    when you need lifecycle assurance.
+
     Exit codes:
       0 = all clear
       1 = completed with warnings or refresh failures
@@ -1419,6 +1422,10 @@ def maintain(
     table.add_row("OAuth refresh attempted", str(report.refresh_summary.get("attempted", 0)))
     table.add_row("OAuth refresh succeeded", str(report.refresh_summary.get("succeeded", 0)))
     table.add_row("OAuth refresh failed", str(report.refresh_summary.get("failed", 0)))
+    table.add_row("Lifecycle scope", report.lifecycle_scope)
+    table.add_row("Policy drift checked", "yes" if report.policy_drift_checked else "no")
+    table.add_row("Recovery proven", "yes" if report.recovery_proven else "no")
+    table.add_row("Next step", report.next_step_hint)
     table.add_row("Health", "healthy" if report.health.get("healthy") else "warnings")
     table.add_row("Audit recorded", "yes" if report.audit_recorded else "no")
     table.add_row("Exit code", str(report.recommended_exit_code))

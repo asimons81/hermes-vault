@@ -4,6 +4,8 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and generates skill contracts that keep agents on the same workflow.
 
+v0.13.0 is the Credential Lifecycle & Recovery release. `maintain` reports refresh and health honestly, `policy doctor` handles drift diagnosis, and `backup-verify` plus `restore --dry-run` prove recovery instead of assuming it.
+
 ## What It Does
 
 - Scans Hermes-relevant files for plaintext secrets, duplicates, and insecure permissions
