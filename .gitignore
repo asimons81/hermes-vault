@@ -19,3 +19,9 @@ dmypy.json
 typescript
 launch-video/*.mp4
 .DS_Store
+
+# Kanban release scaffolding (worktree-local, not part of the release)
+/dpapi-brief.md
+/proof/
+/specs/
+/surveys/

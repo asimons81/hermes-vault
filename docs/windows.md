@@ -55,10 +55,9 @@ $env:HERMES_VAULT_POLICY = "C:\Users\me\.hermes\hermes-vault-data\policy.yaml"
 
 `HERMES_VAULT_HOME` is the highest-priority override on every platform.
 
-## Passphrase
+## Passphrase and DPAPI
 
-Hermes Vault is **passphrase-based** on all platforms (Windows, Linux, macOS).
-This release does not use Windows DPAPI. The passphrase is set via:
+Hermes Vault is **passphrase-based** on all platforms (Windows, Linux, macOS). The legacy passphrase-only path is unchanged. With `pywin32` installed and `HERMES_VAULT_DPAPI=1` set, the master key is wrapped with DPAPI on write and unwrapped transparently on read. The passphrase is still required to derive the 32-byte key that DPAPI wraps. DPAPI is an at-rest protection, not a passphrase replacement.
 
 ```powershell
 $env:HERMES_VAULT_PASSPHRASE = "your-strong-passphrase"
@@ -171,11 +170,13 @@ Hermes Vault uses **best-effort file security checks** on Windows:
 - On **all platforms**, no raw secrets are ever output in logs, CLI output,
   dashboard responses, errors, or markdown reports.
 
+With DPAPI enabled, the master-key salt file is replaced by a DPAPI envelope that only your Windows user account can unwrap. Copying the envelope to another machine or another user account will fail at vault-open time. This is by design: DPAPI is a portability boundary, not a portability feature.
+
 ## Known Limitations
 
 | Feature | Status | Details |
 |---|---|---|
-| DPAPI | Not implemented | This release is passphrase-based on all platforms. |
+| DPAPI | Opt-in (Windows + pywin32) | Set `HERMES_VAULT_DPAPI=1` to wrap the master key with DPAPI. Falls back to legacy passphrase-only when pywin32 is not installed. |
 | Windows ACL checks | Best-effort | Install `pywin32` for full ACL checking. |
 | Directory fsync | Not available | `os.fsync` on directories has limited support on Windows. |
 | Auto-update | Tool-dependent | Requires `pipx` or `uv` to be in PATH. |

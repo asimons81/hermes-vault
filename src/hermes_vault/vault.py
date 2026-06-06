@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 from typing import Any
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from hermes_vault.crypto import (
     decrypt_secret,
     derive_key,
     encrypt_secret,
+    load_or_create_master_key,
     load_or_create_salt,
 )
 from hermes_vault.models import CredentialRecord, CredentialSecret, CredentialStatus, utc_now
@@ -42,7 +44,34 @@ class Vault:
         self.salt_path = salt_path
         self._recover_rotation_journal(passphrase)
         self._prepare_storage()
-        self.key = derive_key(passphrase, load_or_create_salt(salt_path, create_if_missing=not db_path.exists()))
+        # DPAPI opt-in: enabled when the env var is set AND we are
+        # creating a fresh salt (the file does not exist yet). When a
+        # salt file already exists the format is detected by magic
+        # header inside load_or_create_master_key, so existing legacy
+        # vaults continue to work without any env-var trickery.
+        # When the env var is set but DPAPI is not actually usable on
+        # this process (e.g. POSIX), downgrade silently to the legacy
+        # path with a one-line stderr warning. This is the soft
+        # opt-in described in spec §8 risk #1.
+        from hermes_vault import dpapi  # deferred import keeps the cold path clean
+
+        if (
+            not salt_path.exists()
+            and os.environ.get("HERMES_VAULT_DPAPI", "").strip() == "1"
+        ):
+            if dpapi.is_available():
+                enable_dpapi = True
+            else:
+                print(
+                    "DPAPI requested but not available; falling back to legacy path.",
+                    file=sys.stderr,
+                )
+                enable_dpapi = False
+        else:
+            enable_dpapi = False
+        self.key = load_or_create_master_key(
+            salt_path, passphrase, enable_dpapi=enable_dpapi,
+        )
         self.initialize()
 
     @property
@@ -124,10 +153,22 @@ class Vault:
             raise MissingKeyMaterialError(
                 f"Vault database exists at {self.db_path} but salt file {self.salt_path} is missing."
             )
-        if self.salt_path.exists() and self.salt_path.stat().st_size != SALT_SIZE:
-            raise CorruptKeyMaterialError(
-                f"Salt file {self.salt_path} is corrupted or the wrong size."
-            )
+        # The salt file is either a 16-byte legacy salt or a DPAPI
+        # envelope (4-byte magic header + wrapped bytes). Reject only
+        # the formats that are neither. The DPAPI module is the
+        # single source of truth for envelope detection; importing it
+        # here keeps the rule in one place.
+        if self.salt_path.exists():
+            from hermes_vault import dpapi  # deferred import keeps the cold path clean
+
+            raw = self.salt_path.read_bytes()
+            if dpapi.should_use_dpapi(self.salt_path):
+                # DPAPI envelope present -- accept any size > 4 bytes.
+                return
+            if len(raw) != SALT_SIZE:
+                raise CorruptKeyMaterialError(
+                    f"Salt file {self.salt_path} is corrupted or the wrong size."
+                )
 
     @staticmethod
     def _write_bytes_durable(path: Path, content: bytes, mode: int = 0o600) -> None:
@@ -154,6 +195,28 @@ class Vault:
         os.replace(tmp_salt, self.salt_path)
         _platform.secure_file(self.salt_path)
         self._fsync_directory(self.salt_path.parent)
+
+    def _write_master_key_durable(self, derivation_salt: bytes, master_key: bytes) -> None:
+        """Write the new master-key durable form. The format is decided
+        by the HERMES_VAULT_DPAPI opt-in env var (and whether DPAPI is
+        actually available on this process). When opt-in is active the
+        *master_key* is wrapped with DPAPI; otherwise the
+        *derivation_salt* is written verbatim (legacy behaviour).
+        """
+        from hermes_vault import dpapi  # deferred: keeps win32crypt off the cold path
+
+        if os.environ.get("HERMES_VAULT_DPAPI", "").strip() == "1":
+            if dpapi.is_available():
+                payload = dpapi.protect_master_key(master_key)
+            else:
+                print(
+                    "DPAPI requested but not available; falling back to legacy path.",
+                    file=sys.stderr,
+                )
+                payload = derivation_salt
+        else:
+            payload = derivation_salt
+        self._replace_salt_durable(payload)
 
     def _first_encrypted_payload(self) -> str | None:
         if not self.db_path.exists():
@@ -842,9 +905,14 @@ class Vault:
         Raises ValueError if the old passphrase does not match the current key
         or if any credential fails re-encryption.
         """
-        # Verify old passphrase by trying to decrypt at least one credential
-        old_salt = load_or_create_salt(self.salt_path)
-        old_key = derive_key(old_passphrase, old_salt)
+        # Read the existing master key (format-agnostic: 16-byte salt
+        # or DPAPI envelope). load_or_create_master_key returns the
+        # 32-byte master key bytes directly, regardless of which
+        # on-disk format is in use. enable_dpapi=False ensures we
+        # never accidentally write a DPAPI envelope during this read.
+        old_key = load_or_create_master_key(
+            self.salt_path, old_passphrase, enable_dpapi=False,
+        )
         test_records = self.list_credentials()
         if test_records:
             try:
@@ -867,10 +935,17 @@ class Vault:
         journal = {
             "version": "rotation-journal-v1",
             "status": "started",
-            "old_salt": old_salt.hex(),
+            "old_salt": new_salt.hex(),  # placeholder; replaced below
             "new_salt": new_salt.hex(),
             "created_at": utc_now().isoformat(),
         }
+        # The journal records the existing durable form (16-byte salt
+        # for legacy vaults, DPAPI envelope bytes for DPAPI vaults)
+        # under "old_salt" and the new derivation salt under "new_salt".
+        # DPAPI wrapping happens at the durable write, not in the
+        # journal (per spec §2.3 / §5.3 test 20).
+        existing_durable = self.salt_path.read_bytes() if self.salt_path.exists() else b""
+        journal["old_salt"] = existing_durable.hex() if existing_durable else new_salt.hex()
         self._write_rotation_journal(journal)
 
         re_encrypted = 0
@@ -894,7 +969,12 @@ class Vault:
         journal["status"] = "db_committed"
         journal["committed_at"] = utc_now().isoformat()
         self._write_rotation_journal(journal)
-        self._replace_salt_durable(new_salt)
+        # DPAPI-aware write: when HERMES_VAULT_DPAPI=1 is set, the
+        # new master key is wrapped with DPAPI on write. Otherwise the
+        # legacy 16-byte derivation salt is written verbatim. No
+        # silent migration: a legacy vault with no opt-in continues to
+        # write the legacy salt format.
+        self._write_master_key_durable(new_salt, new_key)
         self.rotation_journal_path.unlink(missing_ok=True)
         self._fsync_directory(self.rotation_journal_path.parent)
 
