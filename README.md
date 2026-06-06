@@ -44,9 +44,13 @@ pipx install git+https://github.com/asimons81/hermes-vault.git@v0.13.0
 
 # Or with pip (editable dev install)
 python -m venv .venv
-.venv\Scriptsctivate
+.venv\Scripts\activate
 python -m pip install -e '.[dev]'
 ```
+
+#### DPAPI master-key protection
+
+On Windows, Hermes Vault can wrap the derived master key with the OS-level Data Protection API so the on-disk form is bound to your user account. Install `pywin32` (`uv pip install 'hermes-vault[windows]'`) and opt in with `$env:HERMES_VAULT_DPAPI = "1"`. The passphrase is still required. DPAPI protects the salt file at rest, not the in-memory key.
 
 Default vault location: `%LOCALAPPDATA%\HermesVault`
 

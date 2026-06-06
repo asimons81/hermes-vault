@@ -189,6 +189,23 @@ def _check_windows_file_ownership(path: Path) -> bool:
         return True
 
 
+def dpapi_available() -> bool:
+    """True iff DPAPI is usable on this process (Windows + pywin32 importable).
+
+    Single source of truth for the DPAPI availability rule. Used by
+    :mod:`hermes_vault.dpapi` so the rule lives in one place. The
+    ``import win32crypt`` is deferred and guarded so the import error
+    is swallowed here without leaking into callers.
+    """
+    if not _is_windows():
+        return False
+    try:
+        import win32crypt  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def write_bytes_durable(path: Path, content: bytes) -> None:
     """Write bytes durably, with platform-appropriate permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)

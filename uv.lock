@@ -301,7 +301,7 @@ wheels = [
 
 [[package]]
 name = "hermes-vault"
-version = "0.13.0"
+version = "0.14.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -319,6 +319,9 @@ dev = [
     { name = "mcp" },
     { name = "pytest" },
 ]
+windows = [
+    { name = "pywin32" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -328,12 +331,13 @@ requires-dist = [
     { name = "pathspec", specifier = ">=0.12.1" },
     { name = "pydantic", specifier = ">=2.7.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pywin32", marker = "extra == 'windows'", specifier = ">=306" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "requests", specifier = ">=2.31.0" },
     { name = "rich", specifier = ">=13.7.0" },
     { name = "typer", specifier = ">=0.12.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "windows"]
 
 [[package]]
 name = "httpcore"

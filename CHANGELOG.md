@@ -1,6 +1,32 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 -- Native Windows + DPAPI Master-Key Protection
+
+### Added
+
+- DPAPI-based master-key wrapping on Windows, opt-in via `HERMES_VAULT_DPAPI=1` and the new `pywin32` extra. Backward compatible: existing vaults continue to use the legacy passphrase-only path with no migration.
+- New `_platform.py` abstraction layer that centralizes every OS-dependent call site (default vault home, default scan roots, file permissions, durable writes, command formatting, browser opening, DPAPI availability) so Windows behavior is consistent and POSIX behavior is unchanged.
+- New `docs/windows.md` install, path, CLI, OAuth, backup, scheduled-maintenance, security, and known-limitations guide for Windows users.
+- New `tests/test_platform.py` covers Windows code paths via `monkeypatch` of `_is_windows` and `_platform.dpapi_available`, matching the existing test idiom.
+- New `tests/test_dpapi.py` covers lazy import failure, DPAPI protect/unprotect roundtrip, Windows monkeypatch, non-Windows no-op, mixed passphrase + DPAPI, and the legacy-vault migration path (20 new test cases).
+- Constructor opt-in via `HERMES_VAULT_DPAPI=1` with stderr warning and legacy fallback when DPAPI is unavailable.
+- Rotation uses format-agnostic read plus a DPAPI-aware write path.
+- Magic-header detection (`b"HVDP"`) so legacy 16-byte salt vaults continue to work without intervention.
+
+### Changed
+
+- `src/hermes_vault/crypto.py` gained the `load_or_create_master_key(salt_path, passphrase, *, enable_dpapi=True)` wrapper that auto-detects the on-disk format and raises a clear error when DPAPI is requested but unavailable.
+- `src/hermes_vault/vault.py` constructor and `rotate-master-key` path now wrap the master key with DPAPI on Windows when enabled.
+- `src/hermes_vault/_platform.py` is the single source of truth for platform behavior. `dpapi_available()` is the only public DPAPI helper.
+- `pyproject.toml` adds a `[windows]` optional extra declaring `pywin32`.
+- `docs/windows.md` "Known Limitations" table now lists DPAPI as supported when `pywin32` is installed, with the passphrase still required.
+- Version surfaces now report `0.14.0` in `pyproject.toml`, `src/hermes_vault/__init__.py`, `src/hermes_vault/mcp_server.py`, and `uv.lock`.
+
+### Verification
+
+- Full test suite: 676 passed, 0 failed (656 baseline + 20 new DPAPI tests).
+- All CLI commands cited in the new Windows docs were checked against `python -m hermes_vault.cli --help`.
+- DPAPI is opt-in and the legacy passphrase path is exercised on every test run for backward-compat assurance.
 
 ## 0.13.0 -- Credential Lifecycle & Recovery
 
