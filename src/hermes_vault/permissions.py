@@ -4,15 +4,22 @@ import os
 import stat
 from pathlib import Path
 
+from hermes_vault import _platform
+
 from hermes_vault.models import FindingRecord, FindingSeverity
 
 
 def mode_is_insecure(path: Path) -> bool:
-    mode = stat.S_IMODE(path.stat().st_mode)
-    return bool(mode & (stat.S_IRWXG | stat.S_IRWXO))
+    return _platform.mode_is_insecure(path)
 
 
 def permission_finding(path: Path) -> FindingRecord | None:
+    if _is_windows := __import__("hermes_vault._platform", fromlist=["platform"]).current_platform() == "windows":
+        from hermes_vault._platform import permission_finding as _plat_finding
+        result = _plat_finding(path)
+        if result is not None and hasattr(result, "model_dump"):
+            return FindingRecord.model_validate(result.model_dump())
+        return result
     try:
         if not path.exists():
             return None
@@ -30,5 +37,5 @@ def permission_finding(path: Path) -> FindingRecord | None:
 
 
 def set_owner_only(path: Path) -> None:
-    os.chmod(path, 0o600)
+    _platform.set_owner_only(path)
 

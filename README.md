@@ -31,6 +31,30 @@ uv tool install git+https://github.com/asimons81/hermes-vault.git@vX.Y.Z
 pipx install git+https://github.com/asimons81/hermes-vault.git@vX.Y.Z
 ```
 
+### Windows
+
+Hermes Vault runs natively on Windows -- no WSL required.
+
+```powershell
+# Install with uv (recommended)
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.13.0
+
+# Or with pipx
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.13.0
+
+# Or with pip (editable dev install)
+python -m venv .venv
+.venv\Scriptsctivate
+python -m pip install -e '.[dev]'
+```
+
+Default vault location: `%LOCALAPPDATA%\HermesVault`
+
+All CLI commands work from PowerShell. See [docs/windows.md](docs/windows.md)
+for the full Windows guide, including Task Scheduler setup, PowerShell examples,
+and known limitations.
+
+
 For local development, use `uv` or editable `pip`:
 
 ```bash

@@ -5,6 +5,8 @@ import re
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
+
+from hermes_vault import _platform
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -49,7 +51,7 @@ def _parse_optional_env(name: str) -> str | None:
 def _base_home() -> tuple[Path, Literal["env", "default"]]:
     raw_home = os.environ.get("HERMES_VAULT_HOME")
     source: Literal["env", "default"] = "env" if raw_home else "default"
-    return Path(raw_home or "~/.hermes/hermes-vault-data").expanduser(), source
+    return Path(raw_home).expanduser() if raw_home else _platform.default_vault_home(), source
 
 
 def validate_profile_name(name: str) -> str:
@@ -161,13 +163,7 @@ class AppSettings(BaseModel):
     ignore_filename: str = "scan.ignore"
     salt_filename: str = "master_key_salt.bin"
     default_scan_roots: list[Path] = Field(
-        default_factory=lambda: [
-            Path("~/.hermes").expanduser(),
-            Path("~/.config/hermes").expanduser(),
-            Path("~/.bashrc").expanduser(),
-            Path("~/.zshrc").expanduser(),
-            Path("~/.profile").expanduser(),
-        ]
+        default_factory=lambda: _platform.default_scan_roots()
     )
     expiry_warning_days: int = Field(
         default_factory=lambda: int(os.environ.get("HERMES_VAULT_EXPIRY_WARNING_DAYS", "7"))
@@ -231,18 +227,10 @@ class AppSettings(BaseModel):
         self._secure_directory(self.verifier_plugin_dir)
 
     def secure_file(self, path: Path, mode: int = 0o600) -> None:
-        if path.exists():
-            try:
-                os.chmod(path, mode)
-            except OSError:
-                pass
+        _platform.secure_file(path)
 
     def _secure_directory(self, path: Path) -> None:
-        if path.exists():
-            try:
-                os.chmod(path, 0o700)
-            except OSError:
-                pass
+        _platform.secure_directory(path)
 
 
 def get_settings(profile: str | None = None) -> AppSettings:

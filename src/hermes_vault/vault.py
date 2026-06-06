@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
+from hermes_vault import _platform
 from hermes_vault.crypto import (
     CRYPTO_VERSION,
     CorruptKeyMaterialError,
@@ -130,32 +131,15 @@ class Vault:
 
     @staticmethod
     def _write_bytes_durable(path: Path, content: bytes, mode: int = 0o600) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        path.chmod(mode)
+        _platform.write_bytes_durable(path, content)
 
     @staticmethod
     def _write_text_durable(path: Path, content: str, mode: int = 0o600) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        path.chmod(mode)
+        _platform.write_text_durable(path, content)
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:
-        try:
-            fd = os.open(path, os.O_RDONLY)
-        except OSError:
-            return
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        _platform.fsync_directory(path)
 
     def _write_rotation_journal(self, payload: dict[str, Any]) -> None:
         self._write_text_durable(
@@ -168,7 +152,7 @@ class Vault:
         tmp_salt = self.salt_path.with_suffix(".tmp")
         self._write_bytes_durable(tmp_salt, salt)
         os.replace(tmp_salt, self.salt_path)
-        self.salt_path.chmod(0o600)
+        _platform.secure_file(self.salt_path)
         self._fsync_directory(self.salt_path.parent)
 
     def _first_encrypted_payload(self) -> str | None:
@@ -217,10 +201,8 @@ class Vault:
         self._fsync_directory(journal_path.parent)
 
     def _secure_storage_files(self) -> None:
-        if self.db_path.exists():
-            self.db_path.chmod(0o600)
-        if self.salt_path.exists():
-            self.salt_path.chmod(0o600)
+        _platform.secure_file(self.db_path)
+        _platform.secure_file(self.salt_path)
 
     def add_credential(
         self,

@@ -332,7 +332,7 @@ a {
 
 .hero-metrics {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 16px;
   margin-top: 48px;
   border-top: 1px solid var(--border);

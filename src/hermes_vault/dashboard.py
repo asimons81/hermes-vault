@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from hermes_vault import _platform
 from hermes_vault.audit import AuditLogger
 from hermes_vault.backup import restore_dry_run, verify_backup_file
 from hermes_vault.broker import Broker
@@ -217,7 +218,7 @@ def runtime_metadata(ctx: DashboardContext) -> dict[str, Any]:
         "key_validation": validate_vault_key(ctx),
         "passphrase_source": ctx.passphrase_source or "unknown",
         "home_source": ctx.settings.profile_home_source,
-        "is_temp_runtime": str(ctx.settings.runtime_home).startswith("/tmp/"),
+        "is_temp_runtime": _platform.temp_path_check(ctx.settings.runtime_home) if hasattr(_platform, 'temp_path_check') else False,
         "profile": ctx.settings.profile_name,
         "profile_source": ctx.settings.profile_source,
         "profile_home": str(ctx.settings.runtime_home),

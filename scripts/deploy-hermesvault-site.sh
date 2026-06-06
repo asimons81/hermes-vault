@@ -10,7 +10,7 @@ PROJECT_JSON="$SITE_DIR/.vercel/project.json"
 cd "$SITE_DIR"
 
 if [[ -f "$PROJECT_JSON" ]]; then
-  linked_project="$(python - <<'PY'
+linked_project="$(python3 - <<'PY'
 import json
 from pathlib import Path
 print(json.loads(Path('.vercel/project.json').read_text()).get('projectName', ''))
@@ -31,11 +31,11 @@ EOF
   fi
 else
   echo "No site/.vercel/project.json found; linking to $EXPECTED_PROJECT first."
-  vercel link --yes --project "$EXPECTED_PROJECT"
+  npx --yes vercel link --yes --project "$EXPECTED_PROJECT"
 fi
 
 echo "Deploying $EXPECTED_PROJECT from $SITE_DIR"
-output="$(vercel deploy --prod --yes --project "$EXPECTED_PROJECT")"
+output="$(npx --yes vercel deploy --prod --yes --project "$EXPECTED_PROJECT")"
 printf '%s\n' "$output"
 
 deploy_url="$(printf '%s\n' "$output" | awk '/^https:\/\/hermesvault-site-[^[:space:]]+\.vercel\.app$/ { url=$0 } END { print url }')"
@@ -46,6 +46,6 @@ if [[ -z "$deploy_url" ]]; then
 fi
 
 echo "Aliasing $CUSTOM_DOMAIN -> $deploy_url"
-vercel alias set "$deploy_url" "$CUSTOM_DOMAIN"
+npx --yes vercel alias set "$deploy_url" "$CUSTOM_DOMAIN"
 
 echo "Done: $CUSTOM_DOMAIN"

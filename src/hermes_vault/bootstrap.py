@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from hermes_vault import _platform
 from hermes_vault.config import AppSettings, get_settings, resolve_profile
 from hermes_vault.detectors import EnvImportDecision, classify_env_name, parse_env_map
 from hermes_vault.policy import PolicyEngine
@@ -248,7 +249,7 @@ def run_bootstrap(
                     for idx, line in enumerate(source_lines)
                 ]
                 from_env.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
-                from_env.chmod(0o600)
+                _platform.secure_file(from_env)
     elif redact_source:
         report.warnings.append("--redact-source only applies when --from-env is provided.")
 
