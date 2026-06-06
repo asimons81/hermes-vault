@@ -14,6 +14,7 @@ import typer.main as typer_main
 from rich.console import Console
 from rich.table import Table
 
+from hermes_vault import _platform
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings, reset_active_profile, set_active_profile
@@ -77,9 +78,9 @@ def _dashboard_runtime_warning() -> str | None:
         return None
     runtime_home = Path(raw_home).expanduser()
     try:
-        is_tmp = runtime_home.resolve().is_relative_to(Path("/tmp").resolve())
+        is_tmp = _platform.temp_path_check(runtime_home)
     except OSError:
-        is_tmp = str(runtime_home).startswith("/tmp/")
+        is_tmp = _platform.temp_path_check(runtime_home)
     if not is_tmp:
         return None
     real_db = Path("~/.hermes/hermes-vault-data/vault.db").expanduser()
@@ -1396,7 +1397,10 @@ def maintain(
         console.print("[red]Thresholds must be positive integers; --margin may be 0 or greater[/red]")
         raise typer.Exit(code=2)
     if print_systemd:
-        console.print(_render_maintain_systemd_unit())
+        if _platform.current_platform() == _platform.PlatformKind.WINDOWS:
+            console.print(_render_maintain_task_scheduler())
+        else:
+            console.print(_render_maintain_systemd_unit())
         raise typer.Exit(code=0)
 
     vault, _, broker, _ = build_services(prompt=True)
@@ -1490,6 +1494,11 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 """
+
+
+def _render_maintain_task_scheduler() -> str:
+    """Return Windows Task Scheduler creation instructions."""
+    return _platform.render_task_scheduler_template()
 
 
 @policy_app.command("doctor")

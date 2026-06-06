@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from hermes_vault import _platform
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
 
@@ -75,7 +76,7 @@ class OAuthProviderRegistry:
             defaults_text = DEFAULT_PROVIDERS_YAML
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(defaults_text, encoding="utf-8")
-        self._path.chmod(0o600)
+        _platform.secure_file(self._path)
 
     def get(self, service: str) -> OAuthProvider | None:
         """Look up a provider by canonical service ID."""

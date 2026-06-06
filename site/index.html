@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hermes Vault, Auth Confidence Credential Broker</title>
-  <meta name="description" content="Hermes Vault turns plaintext .env files into policy-scoped safe agent access with local encryption, ephemeral env injection, auth readiness checks, and MCP auth tools.">
+  <title>Hermes Vault, Lifecycle and Recovery Credential Broker</title>
+  <meta name="description" content="Hermes Vault turns plaintext .env files into policy-scoped safe agent access with local encryption, ephemeral env injection, lifecycle and recovery checks, and MCP auth tools.">
   <meta name="theme-color" content="#030407">
   <meta property="og:title" content="Hermes Vault">
-  <meta property="og:description" content="From .env to safe agent access for Hermes operators.">
+  <meta property="og:description" content="Credential lifecycle and recovery for Hermes operators.">
   <meta property="og:image" content="./assets/hermes-vault-promo-image.png">
   <meta name="twitter:card" content="summary_large_image">
   
@@ -25,7 +25,7 @@
         <span class="brand-mark" aria-hidden="true">HV</span>
         <span class="brand-copy">
           <strong>Hermes Vault</strong>
-          <small>auth confidence layer</small>
+          <small>lifecycle and recovery layer</small>
         </span>
       </a>
 
@@ -42,10 +42,10 @@
     <!-- Hero Section -->
     <section class="hero section-pad reveal hero-reveal-1">
       <div class="hero-copy">
-        <p class="eyebrow">v0.12.0 &bull; auth confidence &bull; local first</p>
+        <p class="eyebrow">v0.13.0 &bull; lifecycle & recovery &bull; local first</p>
         <h1>From <span>.env</span> to safe agent access.</h1>
         <p class="lede">
-          Bootstrap a messy plaintext env file into an encrypted local vault, policy-scoped agent access, generated skill contracts, browserless OAuth options, and auth readiness checks. Less key sprawl, fewer auth lies, fewer agent mistakes.
+          Bootstrap a messy plaintext env file into an encrypted local vault, policy-scoped agent access, generated skill contracts, browserless OAuth options, and a release loop that proves freshness, drift, and recovery. Less key sprawl, fewer auth lies, fewer agent mistakes.
         </p>
 
         <div class="cta-row">
@@ -63,8 +63,13 @@
         <div class="hero-metrics" aria-label="Release and platform notes">
           <div class="metric-card">
             <span>Current Release</span>
-            <strong>0.12.0</strong>
-            <small>Adds OAuth doctor, live health verification, and MCP provider readiness.</small>
+            <strong>0.13.0</strong>
+            <small>Credential lifecycle and recovery: maintain, policy doctor, backup-verify, and restore drills.</small>
+          </div>
+          <div class="metric-card">
+            <span>Operator Loop</span>
+            <strong>Prove recovery</strong>
+            <small>Maintenance reports refresh + health, while recovery proof lives in backup verification and restore drills.</small>
           </div>
           <div class="metric-card">
             <span>Storage Engine</span>
@@ -287,7 +292,7 @@
         <p class="eyebrow">Operator installation</p>
         <h2>Safe installations, editable development setups.</h2>
         <p>
-          Hermes Vault requires Python 3.11+. Install it, bootstrap your first env file, then let agents request scoped access through policy.
+          Hermes Vault requires Python 3.11+. Install it, bootstrap your first env file, then let agents request scoped access through policy and recovery checks.
         </p>
       </div>
 
@@ -305,7 +310,7 @@
                 <span>Production Install</span>
                 <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
               </div>
-              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.12.0
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.13.0
 hermes-vault bootstrap --from-env .env --agent hermes --dry-run
 hermes-vault bootstrap --from-env .env --agent hermes
 hermes-vault oauth doctor google
@@ -314,7 +319,7 @@ hermes-vault oauth login google --alias work --headless</code></pre>
             <div class="install-notes">
               <article class="note-card">
                 <h3>Installation Scope</h3>
-                <p>Installs the CLI inside an isolated tool context and starts with a non-mutating bootstrap preview.</p>
+                <p>Installs the CLI inside an isolated tool context and starts with a non-mutating bootstrap preview on the latest release.</p>
               </article>
               <article class="note-card">
                 <h3>Safe bootstrap</h3>
@@ -354,17 +359,21 @@ uv run pytest tests/ -q</code></pre>
       <div class="section-head">
         <p class="eyebrow">Release & status history</p>
         <h2>Proven CLI commands and production releases.</h2>
-        <p>Hermes Vault has an active release trail. The local changelog tracks security fixes, command line updates, and dashboard improvements.</p>
+        <p>Hermes Vault has an active release trail. The local changelog tracks security fixes, command line updates, dashboard improvements, and recovery proof.</p>
       </div>
 
       <div class="release-timeline">
         <article class="release-featured">
           <div class="release-badge">Current Release</div>
-          <h3>v0.12.0</h3>
-          <p>Auth readiness with <code>oauth doctor</code>, live <code>health --verify-live</code>, and MCP <code>oauth_provider_status</code>.</p>
+          <h3>v0.13.0</h3>
+          <p>Credential lifecycle and recovery with <code>maintain</code>, <code>policy doctor</code>, <code>backup-verify</code>, and <code>restore --dry-run</code>.</p>
         </article>
 
         <div class="release-list">
+          <article class="release-row">
+            <span class="release-version">v0.12.0</span>
+            <p>OAuth readiness with <code>oauth doctor</code>, live <code>health --verify-live</code>, and MCP <code>oauth_provider_status</code>.</p>
+          </article>
           <article class="release-row">
             <span class="release-version">v0.11.0</span>
             <p>First Safe Agent bootstrap, <code>oauth login --headless</code>, and MCP device-login parity.</p>

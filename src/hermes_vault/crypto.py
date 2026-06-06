@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from hermes_vault import _platform
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -94,7 +95,7 @@ def load_or_create_salt(path: Path, create_if_missing: bool = False) -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
     salt = os.urandom(SALT_SIZE)
     path.write_bytes(salt)
-    path.chmod(0o600)
+    _platform.secure_file(path)
     return salt
 
 

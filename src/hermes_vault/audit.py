@@ -5,6 +5,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from hermes_vault import _platform
+
 from hermes_vault.models import AccessLogRecord
 
 
@@ -44,7 +46,7 @@ class AuditLogger:
             )
             conn.commit()
         if self.db_path.exists():
-            self.db_path.chmod(0o600)
+            _platform.secure_file(self.db_path)
 
     def record(self, record: AccessLogRecord) -> None:
         self.initialize()
