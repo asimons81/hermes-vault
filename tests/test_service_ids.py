@@ -76,6 +76,7 @@ def test_new_common_services_are_canonical() -> None:
         "fal",
         "replicate",
         "elevenlabs",
+        "evolink",
         "resend",
         "tavily",
         "brave-search",
@@ -98,6 +99,8 @@ def test_new_common_aliases_normalize() -> None:
     assert normalize("brave_search") == "brave-search"
     assert normalize("brave") == "brave-search"
     assert normalize("cloudflare_api") == "cloudflare"
+    assert normalize("evo_link") == "evolink"
+    assert normalize("evo-link") == "evolink"
     assert normalize("x_ai") == "xai"
 
 
@@ -107,6 +110,7 @@ def test_get_env_var_map_new_services() -> None:
         "fal": ["FAL_KEY", "FAL_API_KEY"],
         "replicate": ["REPLICATE_API_TOKEN"],
         "elevenlabs": ["ELEVENLABS_API_KEY"],
+        "evolink": ["EVOLINK_API_KEY"],
         "resend": ["RESEND_API_KEY"],
         "tavily": ["TAVILY_API_KEY"],
         "brave-search": ["BRAVE_SEARCH_API_KEY"],

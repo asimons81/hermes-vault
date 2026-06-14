@@ -11,6 +11,7 @@ REQUIRED_HINTS = {
     "FAL_API_KEY": ("fal", "api_key"),
     "REPLICATE_API_TOKEN": ("replicate", "personal_access_token"),
     "ELEVENLABS_API_KEY": ("elevenlabs", "api_key"),
+    "EVOLINK_API_KEY": ("evolink", "api_key"),
     "RESEND_API_KEY": ("resend", "api_key"),
     "TAVILY_API_KEY": ("tavily", "api_key"),
     "BRAVE_SEARCH_API_KEY": ("brave-search", "api_key"),

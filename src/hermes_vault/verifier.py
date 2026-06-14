@@ -282,6 +282,7 @@ class Verifier:
     def _register_builtins(self) -> None:
         self.register("openai", self._verify_openai, source="builtin")
         self.register("anthropic", self._verify_anthropic, source="builtin")
+        self.register("evolink", self._verify_evolink, source="builtin")
         self.register("minimax", self._verify_minimax, source="builtin")
         self.register("github", self._verify_github, source="builtin")
         self.register("supabase", self._verify_supabase, source="builtin")
@@ -487,6 +488,13 @@ class Verifier:
                 "x-api-key": secret,
                 "anthropic-version": "2023-06-01",
             },
+        ))
+
+    def _verify_evolink(self, secret: str) -> VerificationResult:
+        return self._http_verify(ProviderVerifierConfig(
+            service="evolink",
+            url="https://direct.evolink.ai/v1/models",
+            headers={"Authorization": f"Bearer {secret}"},
         ))
 
     def _verify_minimax(self, secret: str) -> VerificationResult:
