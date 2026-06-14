@@ -158,7 +158,7 @@ class Scanner:
         if not self.settings.ignore_path.exists():
             return []
         return [
-            line.strip()
+            line.strip().replace("\\", "/")
             for line in self.settings.ignore_path.read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.strip().startswith("#")
         ]
@@ -166,9 +166,11 @@ class Scanner:
     def _is_ignored(self, path: Path, patterns: list[str]) -> bool:
         if not patterns:
             return False
-        text = str(path)
+        text = path.as_posix()
+        if any(text == pattern for pattern in patterns):
+            return True
         if pathspec is not None:
-            spec = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+            spec = pathspec.PathSpec.from_lines("gitignore", patterns)
             return spec.match_file(text)
         return any(fnmatch.fnmatch(text, pattern) for pattern in patterns)
 

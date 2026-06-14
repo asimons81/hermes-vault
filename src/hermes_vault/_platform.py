@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import tempfile
 import webbrowser
 from enum import StrEnum
 from pathlib import Path
@@ -244,15 +245,21 @@ def temp_path_check(path: Path) -> bool:
     if _is_windows():
         try:
             resolved = path.resolve()
-            for var in ("TEMP", "TMP", "USERPROFILE"):
+            candidates: list[Path] = []
+            for var in ("TEMP", "TMP"):
                 val = os.environ.get(var)
                 if val:
-                    td = Path(val).resolve()
-                    try:
-                        resolved.relative_to(td)
-                        return True
-                    except ValueError:
-                        continue
+                    candidates.append(Path(val).resolve())
+            try:
+                candidates.append(Path(tempfile.gettempdir()).resolve())
+            except OSError:
+                pass
+            for td in candidates:
+                try:
+                    resolved.relative_to(td)
+                    return True
+                except ValueError:
+                    continue
             return False
         except OSError:
             return False

@@ -8,7 +8,7 @@
 4. Edit `~/.hermes/hermes-vault-data/policy.yaml` for the real agent allowlists.
 5. Back up both `vault.db` and `master_key_salt.bin` together. Losing the salt makes the vault unreadable.
 
-## v0.13.0 lifecycle and recovery runbook
+## v0.14.0 Windows-native release runbook
 
 This release is about keeping the vault healthy on its own after credentials already exist. Use the tools in this order when you want the honest picture:
 
@@ -573,7 +573,7 @@ This avoids refresh-token collisions when one operator stores multiple identitie
 
 ## Backup Verification and Drill
 
-v0.13.0 makes the lifecycle split explicit: `maintain` covers refresh + health only. Use `policy doctor` for drift diagnosis, then `backup-verify` and `restore --dry-run` to prove recovery before calling the vault fully assured.
+v0.14.0 makes the platform split explicit: `maintain` still covers refresh + health only, but the release also brings Windows-native support and DPAPI-backed master-key protection. Use `policy doctor` for drift diagnosis, then `backup-verify` and `restore --dry-run` to prove recovery before calling the vault fully assured.
 
 ```bash
 hermes-vault backup-verify --input ~/vault-backup.json

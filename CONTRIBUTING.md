@@ -99,7 +99,7 @@ If you change dashboard assets, confirm the wheel and sdist include `hermes_vaul
 | Dashboard action | `src/hermes_vault/dashboard.py`, `src/hermes_vault/dashboard_static/` | dashboard tests, screenshots if UI changes |
 | OAuth provider/flow | `src/hermes_vault/oauth/` | OAuth tests, threat model notes |
 
-See `docs/ARCHITECTURE.md` for the contributor-oriented module map and data flows.
+See `docs/contributor-architecture.md` for the contributor-oriented module map and data flows.
 
 ## Security-sensitive areas
 

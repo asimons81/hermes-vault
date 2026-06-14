@@ -1,7 +1,6 @@
 # Hermes Vault on Windows
 
-Hermes Vault runs natively on Windows -- no WSL required. This document covers
-installation, configuration, CLI usage, and known limitations for Windows.
+Hermes Vault runs natively on Windows -- no WSL required. This document tracks the v0.14.0 release line and covers installation, configuration, CLI usage, and known limitations for Windows.
 
 ## Install
 
@@ -13,13 +12,13 @@ installation, configuration, CLI usage, and known limitations for Windows.
 ### Install with uv (recommended)
 
 ```powershell
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.13.0
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.14.0
 ```
 
 ### Install with pipx
 
 ```powershell
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.13.0
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.14.0
 ```
 
 ### Install with pip (editable/dev)

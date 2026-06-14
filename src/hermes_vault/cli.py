@@ -83,7 +83,7 @@ def _dashboard_runtime_warning() -> str | None:
         is_tmp = _platform.temp_path_check(runtime_home)
     if not is_tmp:
         return None
-    real_db = Path("~/.hermes/hermes-vault-data/vault.db").expanduser()
+    real_db = _platform.default_vault_home() / "vault.db"
     if not real_db.exists():
         return None
     try:

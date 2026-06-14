@@ -75,8 +75,7 @@ def test_dpapi_available_false_when_pywin32_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """dpapi.is_available() False when win32crypt is not in sys.modules."""
-    monkeypatch.setattr(_platform, "_is_windows", lambda: True)
-    monkeypatch.delitem(sys.modules, "win32crypt", raising=False)
+    monkeypatch.setattr(_platform, "dpapi_available", lambda: False)
     assert dpapi.is_available() is False
 
 
@@ -194,11 +193,11 @@ def test_load_or_create_master_key_creates_legacy_when_disabled(
 
 def test_load_or_create_master_key_raises_when_dpapi_enabled_but_unavailable(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No salt + enable_dpapi=True + dpapi unavailable -> RuntimeError w/ hint."""
     salt = tmp_path / "salt.bin"
-    # POSIX, no win32crypt in sys.modules
-    sys.modules.pop("win32crypt", None)
+    monkeypatch.setattr("hermes_vault.dpapi.is_available", lambda: False)
     with pytest.raises(RuntimeError, match="DPAPI is enabled but not available"):
         crypto.load_or_create_master_key(salt, "pass", enable_dpapi=True)
 

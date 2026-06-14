@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-
 import pytest
 
+from hermes_vault import _platform
 from hermes_vault.config import (
     AppSettings,
     get_settings,
@@ -146,5 +146,5 @@ def test_resolve_profile_default_home_without_env(monkeypatch: pytest.MonkeyPatc
     profile = resolve_profile()
 
     assert profile.name == "default"
-    assert profile.profile_home == Path("~/.hermes/hermes-vault-data").expanduser()
+    assert profile.profile_home == _platform.default_vault_home()
     assert profile.home_source == "default"

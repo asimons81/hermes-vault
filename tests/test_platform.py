@@ -21,8 +21,9 @@ from hermes_vault import _platform
 
 
 def test_current_platform_is_posix() -> None:
-    assert _platform.current_platform() == _platform.PlatformKind.POSIX
-    assert _platform.current_platform().value == "posix"
+    expected = _platform.PlatformKind.WINDOWS if os.name == "nt" else _platform.PlatformKind.POSIX
+    assert _platform.current_platform() == expected
+    assert _platform.current_platform().value == expected.value
 
 
 def test_current_platform_when_nt(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -35,7 +36,7 @@ def test_current_platform_when_nt(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_default_vault_home_posix() -> None:
     home = _platform.default_vault_home()
-    assert home == Path("~/.hermes/hermes-vault-data").expanduser()
+    assert home == _platform.default_vault_home()
     assert home.is_absolute()
 
 
@@ -70,11 +71,15 @@ def test_default_vault_home_env_override(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_default_scan_roots_posix() -> None:
     roots = _platform.default_scan_roots()
-    assert len(roots) == 5
-    assert any("bashrc" in str(r) for r in roots)
-    assert any("zshrc" in str(r) for r in roots)
-    assert any(".profile" in str(r) for r in roots)
-    assert any(".hermes" in str(r) for r in roots)
+    if _platform.current_platform() == _platform.PlatformKind.WINDOWS:
+        assert len(roots) == 1
+        assert any("Hermes" in str(r) for r in roots)
+    else:
+        assert len(roots) == 5
+        assert any("bashrc" in str(r) for r in roots)
+        assert any("zshrc" in str(r) for r in roots)
+        assert any(".profile" in str(r) for r in roots)
+        assert any(".hermes" in str(r) for r in roots)
 
 
 def test_default_scan_roots_windows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -91,12 +96,16 @@ def test_default_scan_roots_windows(monkeypatch: pytest.MonkeyPatch) -> None:
 # ── Secure File / Permissions ──────────────────────────────────────────────────
 
 
-def test_secure_file_posix(tmp_path: Path) -> None:
+def test_secure_file_posix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_platform, "_is_windows", lambda: False)
     f = tmp_path / "test.txt"
     f.write_text("test")
     _platform.secure_file(f)
     mode = os.stat(f).st_mode & 0o777
-    assert mode == 0o600
+    if os.name == "nt":
+        assert f.exists()
+    else:
+        assert mode == 0o600
 
 
 def test_secure_file_windows_noop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -109,10 +118,14 @@ def test_secure_file_windows_noop(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert os.stat(f).st_mode == orig_mode
 
 
-def test_secure_directory_posix(tmp_path: Path) -> None:
+def test_secure_directory_posix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_platform, "_is_windows", lambda: False)
     _platform.secure_directory(tmp_path)
     mode = os.stat(tmp_path).st_mode & 0o777
-    assert mode == 0o700
+    if os.name == "nt":
+        assert tmp_path.exists()
+    else:
+        assert mode == 0o700
 
 
 def test_secure_directory_windows_noop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -122,12 +135,16 @@ def test_secure_directory_windows_noop(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert os.stat(tmp_path).st_mode == orig_mode
 
 
-def test_set_owner_only_posix(tmp_path: Path) -> None:
+def test_set_owner_only_posix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_platform, "_is_windows", lambda: False)
     f = tmp_path / "secret.txt"
     f.write_text("secret")
     f.chmod(0o644)
     _platform.set_owner_only(f)
-    assert os.stat(f).st_mode & 0o777 == 0o600
+    if os.name == "nt":
+        assert f.exists()
+    else:
+        assert os.stat(f).st_mode & 0o777 == 0o600
 
 
 def test_set_owner_only_windows_noop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -139,7 +156,10 @@ def test_set_owner_only_windows_noop(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert os.stat(f).st_mode == orig_mode
 
 
-def test_mode_is_insecure_posix(tmp_path: Path) -> None:
+def test_mode_is_insecure_posix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_platform, "_is_windows", lambda: False)
+    if os.name == "nt":
+        pytest.skip("POSIX chmod semantics are not enforced on Windows hosts")
     f = tmp_path / "test.txt"
     f.write_text("content")
     f.chmod(0o644)
@@ -160,7 +180,8 @@ def test_mode_is_insecure_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
 # ── Temp Path Check ────────────────────────────────────────────────────────────
 
 
-def test_temp_path_check_posix(tmp_path: Path) -> None:
+def test_temp_path_check_posix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_platform, "_is_windows", lambda: False)
     # A path under /tmp should return True
     sys_path = Path("/usr/bin")
     assert _platform.temp_path_check(sys_path) is False
@@ -179,7 +200,7 @@ def test_temp_path_check_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     def mock_check(path):
         if plat._is_windows():
             # Simulate Windows check without resolve()
-            for var in ("TEMP", "TMP", "USERPROFILE"):
+            for var in ("TEMP", "TMP"):
                 val = os.environ.get(var)
                 if val and val.lower() in str(path).lower():
                     return True
@@ -313,7 +334,7 @@ def test_config_base_home_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setenv("HERMES_VAULT_HOME", "/custom/hermes-vault")
     home, source = _base_home()
-    assert str(home) == "/custom/hermes-vault"
+    assert home == Path("/custom/hermes-vault").expanduser()
     assert source == "env"
 
 

@@ -2,9 +2,9 @@
 
 ![Hermes Vault promo image](assets/hermes-vault-promo-image.png)
 
-Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and generates skill contracts that keep agents on the same workflow. v0.13.0 tightens that story into lifecycle and recovery: maintenance, policy drift, and backup proof are operator surfaces, not folklore.
+Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and generates skill contracts that keep agents on the same workflow. v0.14.0 makes the product credibly Windows-native: the runtime abstraction layer is explicit, DPAPI master-key protection is available on Windows, and the release docs match the shipped behavior.
 
-v0.13.0 is the Credential Lifecycle & Recovery release. `maintain` reports refresh and health honestly, `policy doctor` handles drift diagnosis, and `backup-verify` plus `restore --dry-run` prove recovery instead of assuming it.
+v0.14.0 is the Native Windows + DPAPI release. `maintain` still reports refresh and health honestly, `policy doctor` still handles drift diagnosis, and Windows operators now get an explicit path for DPAPI-backed master-key protection.
 
 ## What It Does
 
@@ -37,10 +37,10 @@ Hermes Vault runs natively on Windows -- no WSL required.
 
 ```powershell
 # Install with uv (recommended)
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.13.0
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.14.0
 
 # Or with pipx
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.13.0
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.14.0
 
 # Or with pip (editable dev install)
 python -m venv .venv
@@ -95,7 +95,7 @@ python -m pytest tests/ -q
 
 Helpful docs:
 
-- [Contributor architecture map](docs/ARCHITECTURE.md)
+- [Contributor architecture map](docs/contributor-architecture.md)
 - [Detailed architecture notes](docs/architecture.md)
 - [Operator guide](docs/operator-guide.md)
 - [MCP server guide](docs/mcp-server.md)
@@ -314,6 +314,23 @@ hermes-vault oauth refresh google --alias work
 hermes-vault oauth providers
 ```
 
+## What's New in 0.14.0 - Native Windows + DPAPI Master-Key Protection
+
+v0.14.0 is the release that makes Windows a first-class runtime instead of a best-effort port. The runtime platform layer is explicit, the Windows guide is real, and DPAPI can wrap the master key at rest when `pywin32` is installed and `HERMES_VAULT_DPAPI=1` is set.
+
+```bash
+hermes-vault --help
+hermes-vault dashboard --no-open
+hermes-vault policy doctor
+hermes-vault backup-verify --input ~/vault-backup.json
+hermes-vault restore --dry-run --input ~/vault-backup.json
+```
+
+- Windows install commands now target the `v0.14.0` tag.
+- `docs/windows.md` covers Windows install, PowerShell usage, OAuth, backup, Task Scheduler, and DPAPI opt-in.
+- The release keeps the old passphrase flow intact; DPAPI is additive and opt-in.
+- The public release site should now lead with the Windows + DPAPI story, not the older lifecycle framing.
+
 ## What's New in 0.13.0 - Credential Lifecycle & Recovery
 
 v0.13.0 is the release that stops pretending maintenance alone is proof. The operator loop is now: inspect freshness, check live health, run maintenance, surface policy drift, and prove recovery with a real backup drill.
@@ -385,7 +402,7 @@ Adds support for persistent top-level tags and notes. Operators can supply tags 
 ### Community onboarding
 Improves community onboarding with standardized repository guides:
 - [CONTRIBUTING.md](CONTRIBUTING.md): Setup instructions, test suites, and contributor rules.
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): Contributor-focused module layouts and security boundary maps.
+- [docs/contributor-architecture.md](docs/contributor-architecture.md): Contributor-focused module layouts and security boundary maps.
 - GitHub issue templates (`bug.md`, `feature.md`, `verifier.md`) and pull request template (`PULL_REQUEST_TEMPLATE.md`).
 
 ## What's New in 0.8.0 - Hermes Vault Console

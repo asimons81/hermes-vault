@@ -6,6 +6,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from hermes_vault import _platform
 from hermes_vault.cli import _dashboard_runtime_warning, _hermes_group, app
 from hermes_vault.models import BrokerDecision, MutationResult
 from hermes_vault.vault import Vault
@@ -234,6 +235,7 @@ def test_maintain_table_uses_recommended_exit_code(monkeypatch) -> None:
 
 
 def test_maintain_print_systemd(monkeypatch) -> None:
+    monkeypatch.setattr(_platform, "current_platform", lambda: _platform.PlatformKind.POSIX)
     runner = CliRunner()
     result = runner.invoke(_hermes_group, ["maintain", "--print-systemd"])
 
@@ -1210,7 +1212,10 @@ def test_verify_report_chmod_0600(monkeypatch, tmp_path) -> None:
 
     assert result.exit_code == 0
     mode = stat.S_IMODE(report.stat().st_mode)
-    assert mode == 0o600
+    if _platform.current_platform() == _platform.PlatformKind.WINDOWS:
+        assert report.exists()
+    else:
+        assert mode == 0o600
 
 
 def test_verify_report_with_table_format(monkeypatch, tmp_path) -> None:
@@ -1249,7 +1254,12 @@ def test_verify_expands_tilde_in_report_path(monkeypatch, tmp_path) -> None:
 
 def test_dashboard_runtime_warning_flags_temp_home_with_populated_default(monkeypatch, tmp_path: Path) -> None:
     home = tmp_path / "home"
-    default_runtime = home / ".hermes" / "hermes-vault-data"
+    if _platform.current_platform() == _platform.PlatformKind.WINDOWS:
+        localappdata = home / "AppData" / "Local"
+        monkeypatch.setenv("LOCALAPPDATA", str(localappdata))
+    else:
+        monkeypatch.setenv("HOME", str(home))
+    default_runtime = _platform.default_vault_home()
     default_runtime.mkdir(parents=True)
     Vault(default_runtime / "vault.db", default_runtime / "salt.bin", "test-passphrase").add_credential(
         "openai",
@@ -1259,7 +1269,6 @@ def test_dashboard_runtime_warning_flags_temp_home_with_populated_default(monkey
     )
     temp_runtime = tmp_path / "dashboard-demo"
     temp_runtime.mkdir()
-    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("HERMES_VAULT_HOME", str(temp_runtime))
 
     warning = _dashboard_runtime_warning()
@@ -1272,7 +1281,11 @@ def test_dashboard_runtime_warning_flags_temp_home_with_populated_default(monkey
 
 def test_dashboard_runtime_warning_ignores_non_temp_home(monkeypatch, tmp_path: Path) -> None:
     home = tmp_path / "home"
-    monkeypatch.setenv("HOME", str(home))
+    if _platform.current_platform() == _platform.PlatformKind.WINDOWS:
+        localappdata = home / "AppData" / "Local"
+        monkeypatch.setenv("LOCALAPPDATA", str(localappdata))
+    else:
+        monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("HERMES_VAULT_HOME", "relative-runtime")
 
     assert _dashboard_runtime_warning() is None

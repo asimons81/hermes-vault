@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_vault import _platform
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
 from hermes_vault.dashboard import (
@@ -579,7 +580,7 @@ def test_dashboard_overview_reports_runtime_diagnostics(tmp_path: Path) -> None:
     assert payload["runtime"]["policy_exists"] is True
     assert payload["runtime"]["salt_exists"] is True
     assert payload["runtime"]["credential_count"] == 1
-    assert payload["runtime"]["is_temp_runtime"] is str(tmp_path).startswith("/tmp/")
+    assert payload["runtime"]["is_temp_runtime"] is _platform.temp_path_check(tmp_path)
 
 
 def test_dashboard_unknown_action_denied(tmp_path: Path) -> None:
