@@ -57,6 +57,26 @@ def test_verifier_minimax_uses_configured_endpoint(monkeypatch) -> None:
     assert captured["authorization"] == "Bearer secret-value"
 
 
+def test_verifier_evolink_uses_direct_models_endpoint(monkeypatch) -> None:
+    verifier = Verifier()
+
+    captured: dict[str, str] = {}
+
+    def fake_http_verify(config):
+        captured["service"] = config.service
+        captured["url"] = config.url
+        captured["authorization"] = config.headers["Authorization"]
+        return verifier._classify_transport_error("evolink", urllib.error.URLError(os.strerror(0)))
+
+    monkeypatch.setattr(verifier, "_http_verify", fake_http_verify)
+
+    verifier._verify_evolink("secret-value")
+
+    assert captured["service"] == "evolink"
+    assert captured["url"] == "https://direct.evolink.ai/v1/models"
+    assert captured["authorization"] == "Bearer secret-value"
+
+
 def test_verifier_unknown_service_keeps_unsupported_result() -> None:
     verifier = Verifier(load_file_plugins=False, load_entry_points=False)
 
