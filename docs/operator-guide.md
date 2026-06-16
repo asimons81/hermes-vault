@@ -571,6 +571,62 @@ hermes-vault oauth refresh google --alias personal
 
 This avoids refresh-token collisions when one operator stores multiple identities for the same provider.
 
+## OAuth Freshness at Handoff
+
+v0.15.0 introduces automatic OAuth token freshness at broker handoff. When an agent requests an ephemeral environment, near-expiry OAuth tokens are refreshed before delivery — reducing stale-token failures in agent workflows.
+
+### What changed for operators
+
+- `hermes-vault broker env <service> --agent <agent>` now includes `oauth_refresh` metadata in its JSON output, showing whether the token was refreshed (`true`), still fresh (`false`), or had no expiry (`null`).
+- Agents that should receive live-refreshed OAuth tokens at handoff need the `rotate` action in their policy v2 entry for that service.
+
+### Policy requirement
+
+Live OAuth refresh requires the existing `rotate` service action. The `get_env` action alone does NOT authorize vault mutation. If an agent only has `get_env` and the OAuth token is hard-expired, the broker denies the request with a clear policy reason.
+
+Example policy entry with refresh permission:
+
+```yaml
+agents:
+  my-agent:
+    services:
+      google:
+        actions: [get_env, rotate]   # rotate needed for live refresh at handoff
+    max_ttl_seconds: 900
+```
+
+### How to verify
+
+Run `hermes-vault broker env <service> --agent <agent>` and inspect the `oauth_refresh` metadata:
+
+```json
+{
+  "allowed": true,
+  "service": "google",
+  "agent_id": "my-agent",
+  "env": { "GOOGLE_API_KEY": "..." },
+  "oauth_refresh": {
+    "refreshed": true,
+    "reason": "Token was expired; successfully refreshed"
+  }
+}
+```
+
+### Failure scenarios
+
+| Scenario | Behavior |
+|----------|----------|
+| Token is far from expiry | Passes through untouched; `oauth_refresh.refreshed = false` |
+| Token near expiry, refresh succeeds | Refreshed token delivered; `oauth_refresh.refreshed = true` |
+| Token hard-expired, refresh fails | Request denied with clean error; `oauth_refresh.refreshed = false` and failure reason |
+| Near-expiry, refresh fails | Warning returned but existing token still delivered (agent may still succeed) |
+| Agent lacks `rotate` permission | Policy denial with reason about missing `rotate` action |
+| Non-OAuth credential | `oauth_refresh.refreshed = null` (no-op) |
+
+### Dashboard boundary
+
+Dashboard OAuth refresh remains dry-run-only. Live token mutation at handoff is exclusive to CLI and MCP broker paths.
+
 ## Backup Verification and Drill
 
 v0.14.0 makes the platform split explicit: `maintain` still covers refresh + health only, but the release also brings Windows-native support and DPAPI-backed master-key protection. Use `policy doctor` for drift diagnosis, then `backup-verify` and `restore --dry-run` to prove recovery before calling the vault fully assured.

@@ -314,6 +314,28 @@ hermes-vault oauth refresh google --alias work
 hermes-vault oauth providers
 ```
 
+## What's New in 0.15.0 - Agent OAuth Freshness
+
+v0.15.0 introduces **Agent OAuth Freshness**: brokered credentials are automatically refreshed before agent handoff. When an agent requests an ephemeral environment via `broker env` or MCP `get_ephemeral_env`, near-expiry OAuth tokens are silently refreshed using their stored refresh tokens — so the agent never receives a token that's about to fail.
+
+```bash
+hermes-vault broker env google --agent my-agent
+```
+
+- **How it works**: The broker checks OAuth token expiry during `get_ephemeral_env`. Tokens far from expiry pass through untouched with `oauth_refresh: {refreshed: false}`. Near-expiry tokens (within 5 minutes) trigger a live refresh via the `RefreshEngine`. Successfully refreshed tokens return with `oauth_refresh: {refreshed: true}`.
+- **Policy gate**: Live refresh requires the `rotate` service action on the agent's policy v2 entry. `get_env` alone does NOT authorize vault mutation. If an agent lacks `rotate` and the token is hard-expired, the request is denied with a clear policy reason.
+- **Dashboard boundary**: The dashboard OAuth refresh remains dry-run-only. Live token mutation at handoff is exclusive to the CLI and MCP broker paths.
+- **Failure modes**:
+  - **Expired + refresh failure** → denied with clean error, no raw token leakage.
+  - **Near-expiry + refresh failure** → warning returned but existing token still delivered (agent may still succeed).
+- **Refresh cooldown**: 30 seconds per credential prevents provider rate-limit abuse from rapid handoff sequences.
+
+### What changed for operators
+
+- `hermes-vault broker env <service> --agent <agent>` JSON output now includes an `oauth_refresh` metadata field with refresh status.
+- Agents configured in `policy.yaml` need the `rotate` action on services where live OAuth refresh at handoff is expected.
+- MCP `get_ephemeral_env` responses include a `metadata` field with `oauth_refresh`.
+
 ## What's New in 0.14.0 - Native Windows + DPAPI Master-Key Protection
 
 v0.14.0 is the release that makes Windows a first-class runtime instead of a best-effort port. The runtime platform layer is explicit, the Windows guide is real, and DPAPI can wrap the master key at rest when `pywin32` is installed and `HERMES_VAULT_DPAPI=1` is set.

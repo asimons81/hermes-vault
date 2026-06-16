@@ -413,3 +413,63 @@ class TestAuditCLi:
         parsed = json.loads(result.output)
         assert len(parsed) == 1
         assert parsed[0]["timestamp"].startswith("2026-04-20T18:30:00")
+
+
+# ── OAuth refresh audit tests ──────────────────────────────
+
+
+def test_oauth_refresh_audit_action_broker_env_oauth_refresh(tmp_path: Path) -> None:
+    """Audit records from refresh-at-handoff must contain the action 'broker_env_oauth_refresh'."""
+    audit = AuditLogger(tmp_path / "audit.db")
+    audit.initialize()
+    audit.record(
+        _make_record(
+            agent_id="dwight",
+            service="openai",
+            action="broker_env_oauth_refresh",
+            decision=Decision.allow,
+        ).model_copy(
+            update={
+                "metadata": {
+                    "oauth_refresh": {"refreshed": True},
+                }
+            }
+        )
+    )
+
+    results = audit.list_recent(limit=10, action="broker_env_oauth_refresh")
+
+    assert len(results) >= 1
+    assert results[0]["action"] == "broker_env_oauth_refresh"
+    assert results[0]["decision"] == "allow"
+
+
+def test_oauth_refresh_audit_no_raw_token_leakage(tmp_path: Path) -> None:
+    """Audit records from refresh-at-handoff must not contain raw tokens."""
+    audit = AuditLogger(tmp_path / "audit.db")
+    audit.initialize()
+    audit.record(
+        _make_record(
+            agent_id="dwight",
+            service="openai",
+            action="broker_env_oauth_refresh",
+            decision=Decision.deny,
+        ).model_copy(
+            update={
+                "reason": "Token refresh failed: invalid_grant - provider rejected the refresh token",
+                "metadata": {
+                    "oauth_refresh": {"refreshed": False, "error": "invalid_grant"},
+                },
+            }
+        )
+    )
+
+    results = audit.list_recent(limit=10, action="broker_env_oauth_refresh")
+
+    assert len(results) >= 1
+    # The reason should explain the failure without raw token material
+    assert "refresh" in results[0]["reason"].lower()
+    # Verify no raw token values leaked into reason or metadata
+    assert "ya29" not in results[0]["reason"]
+    assert "access_token" not in results[0].get("metadata", {}).get("oauth_refresh", {})
+    assert "old_access" not in results[0]["reason"]

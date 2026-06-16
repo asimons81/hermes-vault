@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from click.testing import CliRunner
 
 from hermes_vault import _platform
 from hermes_vault.cli import _dashboard_runtime_warning, _hermes_group, app
-from hermes_vault.models import BrokerDecision, MutationResult
+from hermes_vault.models import BrokerDecision, MutationResult, utc_now
+from hermes_vault.policy import PolicyEngine
 from hermes_vault.vault import Vault
 
 
@@ -1339,3 +1342,119 @@ def _fake_vault():
                 ),
             ]
     return FakeVault()
+
+
+# ── broker env OAuth freshness tests ─────────────────────────────────────
+
+
+def test_broker_env_cli_shows_oauth_refresh_metadata(monkeypatch, tmp_path: Path) -> None:
+    """CLI broker env must include oauth_refresh metadata for current OAuth tokens."""
+    home = tmp_path
+    db_path = home / "vault.db"
+    salt_path = home / "master_key_salt.bin"
+    policy_path = home / "policy.yaml"
+
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(home))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+    monkeypatch.setenv("HERMES_VAULT_POLICY", str(policy_path))
+
+    # Create vault with OAuth token
+    salt_path.write_bytes(os.urandom(16))
+    vault = Vault(db_path, salt_path, "test-passphrase")
+    vault.initialize()
+
+    future = utc_now() + timedelta(hours=24)
+    rec = vault.add_credential(
+        service="google",
+        secret="test-google-oauth-token",
+        credential_type="oauth_access_token",
+        alias="default",
+        replace_existing=True,
+    )
+    vault.set_expiry(rec.id, future)
+
+    # Create policy granting test-agent get_env access to google
+    policy_yaml = """\
+agents:
+  test-agent:
+    services:
+      google:
+        actions:
+          - get_env
+    max_ttl_seconds: 3600
+    raw_secret_access: false
+    ephemeral_env_only: true
+"""
+    policy_path.write_text(policy_yaml, encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["--no-banner", "broker", "env", "google", "--agent", "test-agent"],
+    )
+
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    data = json.loads(result.output)
+    assert "oauth_refresh" in data.get("metadata", {}), (
+        f"Expected oauth_refresh in metadata, got: {data}"
+    )
+    assert data["metadata"]["oauth_refresh"]["refreshed"] is False
+
+
+def test_broker_env_cli_denies_with_sanitized_reason(monkeypatch, tmp_path: Path) -> None:
+    """CLI broker env must deny expired OAuth tokens without refresh token, with sanitized reason."""
+    home = tmp_path
+    db_path = home / "vault.db"
+    salt_path = home / "master_key_salt.bin"
+    policy_path = home / "policy.yaml"
+
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(home))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+    monkeypatch.setenv("HERMES_VAULT_POLICY", str(policy_path))
+
+    # Create vault with expired OAuth token — no refresh token
+    salt_path.write_bytes(os.urandom(16))
+    vault = Vault(db_path, salt_path, "test-passphrase")
+    vault.initialize()
+
+    past = utc_now() - timedelta(seconds=10)
+    rec = vault.add_credential(
+        service="google",
+        secret="expired-oauth-token",
+        credential_type="oauth_access_token",
+        alias="default",
+        replace_existing=True,
+    )
+    vault.set_expiry(rec.id, past)
+    # Deliberately no refresh token
+
+    # Create policy granting test-agent get_env access to google
+    policy_yaml = """\
+agents:
+  test-agent:
+    services:
+      google:
+        actions:
+          - get_env
+          - rotate
+    max_ttl_seconds: 3600
+    raw_secret_access: false
+    ephemeral_env_only: true
+"""
+    policy_path.write_text(policy_yaml, encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["--no-banner", "broker", "env", "google", "--agent", "test-agent"],
+    )
+
+    assert result.exit_code == 1, (
+        f"Expected exit code 1, got {result.exit_code}: {result.output}"
+    )
+    data = json.loads(result.output)
+    assert "reason" in data
+    # No raw token leaked in reason
+    assert "expired-oauth-token" not in data["reason"], (
+        f"Raw token leaked in reason: {data['reason']}"
+    )

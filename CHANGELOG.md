@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.15.0 -- Agent OAuth Freshness
+
+### Added
+
+- Agent OAuth Freshness: broker/MCP env handoff auto-refreshes near-expiry OAuth tokens before the credential reaches the agent, reducing stale-token failures.
+- New `oauth_refresh` metadata field in `BrokerDecision` surfaced through CLI and MCP responses, enabling agent-visible freshness status.
+- Refresh cooldown of 30 seconds per credential prevents provider rate-limit abuse from repeated handoffs.
+- Sanitized failure handling: expired + unrecoverable OAuth tokens are denied with a clean error — no raw token leakage.
+- Policy gate: live refresh requires the existing `rotate` service action permission; `get_env` alone does not authorize vault mutation.
+- CLI `broker env` JSON output now includes `oauth_refresh` metadata.
+- MCP `get_ephemeral_env` response includes a `metadata` field with `oauth_refresh` status.
+
+### Changed
+
+- Dashboard live refresh remains dry-run-only; live token mutation is CLI-only.
+- Version surfaces now report `0.15.0` in `pyproject.toml`, `src/hermes_vault/__init__.py`, and `src/hermes_vault/mcp_server.py`.
+
+### Verification
+
+- Full test suite: 687 passed, 1 skipped (includes 8 broker, 2 CLI, and 2 MCP OAuth freshness tests, plus policy and audit verification tests).
+
 ## 0.14.0 -- Native Windows + DPAPI Master-Key Protection
 
 ### Added

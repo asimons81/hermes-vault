@@ -24,6 +24,7 @@ v0.13.0 treats this doc as the operator loop behind the release story. The vault
 - Policy v2 determines whether access is allowed based on per-service action permissions
 - Agent-level capabilities gate non-service-scoped actions (list, scan, export, import)
 - Broker prefers ephemeral environment materialization for downstream task execution
+- **v0.15.0: OAuth Freshness at Handoff** — Near-expiry OAuth tokens are automatically refreshed during `get_ephemeral_env` before the credential reaches the agent. The `rotate` permission is required for this live refresh; `get_env` alone does not authorize vault mutation. A 30-second per-credential cooldown prevents provider rate-limit abuse.
 - All broker decisions are recorded in the audit log
 
 ## 4. Verification

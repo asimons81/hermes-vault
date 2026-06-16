@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
 from hermes_vault.models import (
     AgentCapability,
     AgentPolicy,
+    CredentialRecord,
     CredentialStatus,
     PolicyConfig,
     ServiceAction,
     ServicePolicyEntry,
     VerificationCategory,
     VerificationResult,
+    utc_now,
 )
+from hermes_vault.oauth.oauth_refresh import RefreshEngine
+from hermes_vault.oauth.providers import OAuthProviderRegistry
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.vault import Vault
 
@@ -520,3 +526,354 @@ def test_broker_import_allowed_legacy_agent(tmp_path: Path) -> None:
     decision = broker.import_credentials("hermes", backup)
     assert decision.allowed is True
     assert decision.metadata["imported_count"] == 1
+
+
+# ── OAuth freshness helpers (inlined for test independence) ─────────────
+
+
+class MockTokenEndpoint:
+    """A programmable mock token endpoint for refresh flows.
+
+    Usage:
+        endpoint = MockTokenEndpoint(success_tokens={...})
+        with patch("hermes_vault.oauth.oauth_refresh.requests.post", side_effect=endpoint.handler):
+            ...
+    """
+
+    def __init__(
+        self,
+        success_tokens: dict | None = None,
+        error_response: dict | None = None,
+        status_code: int = 200,
+        fail_count: int = 0,
+    ):
+        self.calls: list[dict] = []
+        self.success_tokens = success_tokens or {
+            "access_token": "new_access_token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "new_refresh_token",
+            "scope": "openid email",
+        }
+        self.error_response = error_response
+        self.status_code = status_code
+        self.fail_count = fail_count
+        self._call_count = 0
+
+    def handler(self, url, data=None, headers=None, timeout=None, **kwargs):
+        self._call_count += 1
+        if isinstance(data, dict):
+            parsed = data
+        elif data:
+            parsed = dict(p.split("=", 1) for p in data.split("&"))
+        else:
+            parsed = {}
+        self.calls.append({"url": str(url), "data": parsed})
+
+        mock_resp = MagicMock()
+        if self._call_count <= self.fail_count:
+            from requests import RequestException
+
+            raise RequestException(f"Simulated failure #{self._call_count}")
+
+        if self.error_response:
+            mock_resp.ok = False
+            mock_resp.status_code = self.status_code
+            mock_resp.json.return_value = self.error_response
+            mock_resp.text = str(self.error_response)
+            return mock_resp
+
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = self.success_tokens
+        mock_resp.text = str(self.success_tokens)
+        return mock_resp
+
+
+def _add_credential(
+    vault: Vault,
+    service: str,
+    secret: str,
+    credential_type: str,
+    alias: str = "default",
+    expiry: datetime | None = None,
+) -> CredentialRecord:
+    rec = vault.add_credential(
+        service=service,
+        secret=secret,
+        credential_type=credential_type,
+        alias=alias,
+        replace_existing=True,
+    )
+    if expiry is not None:
+        vault.set_expiry(rec.id, expiry)
+    return rec
+
+
+def _seed_tokens(
+    vault: Vault,
+    service: str,
+    expiry: datetime | None = None,
+    access_alias: str = "default",
+    refresh_alias: str = "refresh",
+    refresh_secret: str = "old_refresh",
+) -> None:
+    if expiry is None:
+        expiry = utc_now() - timedelta(seconds=10)
+    _add_credential(
+        vault, service, "old_access", "oauth_access_token",
+        alias=access_alias, expiry=expiry,
+    )
+    vault.add_credential(
+        service=service,
+        secret=refresh_secret,
+        credential_type="oauth_refresh_token",
+        alias=refresh_alias,
+        replace_existing=True,
+    )
+
+
+def _make_registry(tmp_path: Path) -> OAuthProviderRegistry:
+    path = tmp_path / "providers.yaml"
+    path.write_text(
+        "providers:\n"
+        "  openai:\n    name: OpenAI\n"
+        "    authorization_endpoint: https://example.com/auth\n"
+        "    token_endpoint: https://example.com/token\n"
+    )
+    return OAuthProviderRegistry(path)
+
+
+def _oauth_policy(actions: list[ServiceAction] | None = None) -> PolicyEngine:
+    if actions is None:
+        actions = [ServiceAction.get_env, ServiceAction.rotate]
+    return PolicyEngine(
+        PolicyConfig(
+            agents={
+                "dwight": AgentPolicy(
+                    services=["openai"],
+                    service_actions={
+                        "openai": ServicePolicyEntry(actions=actions),
+                    },
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+
+
+# ── OAuth freshness tests ──────────────────────────────────────────────
+
+
+def test_get_ephemeral_env_api_key_unchanged_for_oauth_refresh(tmp_path: Path) -> None:
+    """API-key credentials must produce no oauth_refresh metadata."""
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-sec...7890", "api_key")
+    policy = _oauth_policy()
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+
+    decision = broker.get_ephemeral_env("openai", "dwight", ttl=900)
+
+    assert decision.allowed is True
+    assert decision.env["OPENAI_API_KEY"] == "sk-sec...7890"
+    # No oauth_refresh metadata for non-OAuth credentials
+    assert "oauth_refresh" not in decision.metadata
+
+
+def test_get_ephemeral_env_oauth_current_token_no_refresh(tmp_path: Path) -> None:
+    """A current (non-expired) OAuth token must be returned as-is."""
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    future = utc_now() + timedelta(seconds=3600)
+    _seed_tokens(vault, "openai", expiry=future)
+    policy = _oauth_policy()
+    broker = Broker(vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+
+    decision = broker.get_ephemeral_env("openai", "dwight", ttl=900, alias="default")
+
+    assert decision.allowed is True
+    assert decision.env["OPENAI_API_KEY"] == "old_access"
+    assert decision.metadata.get("oauth_refresh") == {"refreshed": False}
+
+
+def test_get_ephemeral_env_oauth_expired_refreshes_success(tmp_path: Path) -> None:
+    """An expired OAuth token must be refreshed before handoff."""
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    past = utc_now() - timedelta(seconds=10)
+    _seed_tokens(vault, "openai", expiry=past)
+
+    registry = _make_registry(tmp_path)
+    refresh_engine = RefreshEngine(vault=vault, registry=registry)
+    policy = _oauth_policy()
+    broker = Broker(
+        vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"),
+        refresh_engine=refresh_engine,
+    )
+
+    endpoint = MockTokenEndpoint(success_tokens={
+        "access_token": "fresh_access",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "refresh_token": "fresh_refresh",
+        "scope": "openid",
+    })
+
+    with patch("hermes_vault.oauth.oauth_refresh.requests.post", side_effect=endpoint.handler):
+        decision = broker.get_ephemeral_env("openai", "dwight", ttl=900, alias="default")
+
+    assert decision.allowed is True
+    assert decision.metadata["oauth_refresh"]["refreshed"] is True
+    assert decision.env["OPENAI_API_KEY"] == "fresh_access"
+
+    # Verify the vault was actually updated
+    re_record = vault.resolve_credential("openai", alias="default")
+    re_secret = vault.get_secret(re_record.id)
+    assert re_secret is not None
+    assert re_secret.secret == "fresh_access"
+
+
+def test_get_ephemeral_env_oauth_expired_no_refresh_token_denies(tmp_path: Path) -> None:
+    """Expired OAuth token without a refresh token must be denied with a sanitised reason."""
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    past = utc_now() - timedelta(seconds=10)
+    _add_credential(
+        vault, "openai", "old_access", "oauth_access_token",
+        alias="default", expiry=past,
+    )
+    # Deliberately no refresh token
+
+    registry = _make_registry(tmp_path)
+    refresh_engine = RefreshEngine(vault=vault, registry=registry)
+    policy = _oauth_policy()
+    broker = Broker(
+        vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"),
+        refresh_engine=refresh_engine,
+    )
+
+    decision = broker.get_ephemeral_env("openai", "dwight", ttl=900)
+
+    assert decision.allowed is False
+    assert "refresh token" in decision.reason.lower() or "Refresh token" in decision.reason
+    # Verify it is NOT an OAuthProviderError — should be a clean string
+    assert "OAuthProviderError" not in repr(decision.reason)
+    # No raw token leaked
+    assert "old_access" not in decision.reason
+
+
+def test_get_ephemeral_env_oauth_refresh_fails_token_still_valid_returns_with_warning(tmp_path: Path) -> None:
+    """Near-expiry token with failed refresh should still be returned (still valid)."""
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    near_expiry = utc_now() + timedelta(seconds=120)  # < OAUTH_REFRESH_MARGIN_SECONDS (300)
+    _seed_tokens(vault, "openai", expiry=near_expiry)
+
+    registry = _make_registry(tmp_path)
+    refresh_engine = RefreshEngine(vault=vault, registry=registry)
+    policy = _oauth_policy()
+    broker = Broker(
+        vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"),
+        refresh_engine=refresh_engine,
+    )
+
+    endpoint = MockTokenEndpoint(
+        error_response={"error": "invalid_grant", "error_description": "Token revoked"},
+        status_code=400,
+    )
+
+    with patch("hermes_vault.oauth.oauth_refresh.requests.post", side_effect=endpoint.handler):
+        decision = broker.get_ephemeral_env("openai", "dwight", ttl=900, alias="default")
+
+    assert decision.allowed is True
+    assert decision.metadata["oauth_refresh"]["refreshed"] is False
+    assert "error" in decision.metadata["oauth_refresh"]
+    # Still returns the original token
+    assert decision.env["OPENAI_API_KEY"] == "old_access"
+
+
+def test_get_ephemeral_env_oauth_expired_refresh_fails_denies(tmp_path: Path) -> None:
+    """Expired token whose refresh fails must be denied with sanitised message."""
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    past = utc_now() - timedelta(seconds=10)
+    _seed_tokens(vault, "openai", expiry=past)
+
+    registry = _make_registry(tmp_path)
+    refresh_engine = RefreshEngine(vault=vault, registry=registry)
+    policy = _oauth_policy()
+    broker = Broker(
+        vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"),
+        refresh_engine=refresh_engine,
+    )
+
+    endpoint = MockTokenEndpoint(
+        error_response={"error": "invalid_grant", "error_description": "Token revoked"},
+        status_code=400,
+    )
+
+    with patch("hermes_vault.oauth.oauth_refresh.requests.post", side_effect=endpoint.handler):
+        decision = broker.get_ephemeral_env("openai", "dwight", ttl=900)
+
+    assert decision.allowed is False
+    assert decision.reason  # should have a sanitised reason
+    # No raw token leaked
+    assert "old_access" not in decision.reason
+    assert "raw_response" not in str(decision.metadata)
+
+
+def test_get_ephemeral_env_oauth_refresh_needs_rotate_permission(tmp_path: Path) -> None:
+    """Expired token without rotate permission must be denied, mentioning policy."""
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    past = utc_now() - timedelta(seconds=10)
+    _seed_tokens(vault, "openai", expiry=past)
+
+    # Grant get_env but NOT rotate
+    policy = _oauth_policy(actions=[ServiceAction.get_env])
+
+    registry = _make_registry(tmp_path)
+    refresh_engine = RefreshEngine(vault=vault, registry=registry)
+    broker = Broker(
+        vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"),
+        refresh_engine=refresh_engine,
+    )
+
+    decision = broker.get_ephemeral_env("openai", "dwight", ttl=900, alias="default")
+
+    assert decision.allowed is False
+    assert "rotate" in decision.reason.lower() or "denied" in decision.reason.lower()
+    assert decision.metadata.get("oauth_refresh", {}).get("refreshed") is False
+
+
+def test_get_ephemeral_env_oauth_refresh_cooldown_respected(tmp_path: Path) -> None:
+    """Multiple calls within cooldown must not re-hit the token endpoint."""
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    past = utc_now() - timedelta(seconds=10)
+    _seed_tokens(vault, "openai", expiry=past)
+
+    registry = _make_registry(tmp_path)
+    refresh_engine = RefreshEngine(vault=vault, registry=registry)
+    policy = _oauth_policy()
+    broker = Broker(
+        vault, policy, StubVerifier(), AuditLogger(tmp_path / "vault.db"),
+        refresh_engine=refresh_engine,
+    )
+
+    endpoint = MockTokenEndpoint(success_tokens={
+        "access_token": "cooldown_token",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "refresh_token": "cooldown_refresh",
+        "scope": "openid",
+    })
+
+    with patch("hermes_vault.oauth.oauth_refresh.requests.post", side_effect=endpoint.handler):
+        # First call — triggers refresh
+        decision1 = broker.get_ephemeral_env("openai", "dwight", ttl=900, alias="default")
+        assert decision1.allowed is True
+        assert decision1.metadata["oauth_refresh"]["refreshed"] is True
+        assert endpoint.calls is not None
+        first_call_count = len(endpoint.calls)
+
+        # Second call — within cooldown, should NOT trigger refresh
+        decision2 = broker.get_ephemeral_env("openai", "dwight", ttl=900, alias="default")
+        assert decision2.allowed is True
+        # Should have a cooldown indicator OR no additional endpoint calls
+        assert len(endpoint.calls) == first_call_count
+        # The second call should return the already-refreshed token
+        assert decision2.env["OPENAI_API_KEY"] == "cooldown_token"

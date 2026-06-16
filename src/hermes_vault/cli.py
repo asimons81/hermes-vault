@@ -1651,9 +1651,9 @@ def broker_env(
     canonical = normalize(service)
     decision = broker.get_ephemeral_env(service=canonical, agent_id=agent, ttl=ttl)
     if not decision.allowed:
-        console.print_json(data=decision.model_dump_json())
+        console.print_json(data=decision.model_dump(mode="json"))
         raise typer.Exit(code=1)
-    console.print_json(data=json.dumps(decision.model_dump(mode="json")))
+    console.print_json(data=decision.model_dump(mode="json"))
 
 
 @broker_app.command("list")

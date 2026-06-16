@@ -594,3 +594,72 @@ def test_capabilities_empty_explicit_list_grants_all() -> None:
     for cap in AgentCapability:
         allowed, _ = policy.can_capability("hermes", cap)
         assert allowed is True
+
+
+# ── rotate action for OAuth freshness ──────────────────────
+
+
+def test_can_rotate_denied_when_only_get_env_granted() -> None:
+    """An agent with only get_env should be denied rotate."""
+    config = PolicyConfig(
+        agents={
+            "dwight": AgentPolicy(
+                services=["openai"],
+                max_ttl_seconds=900,
+            )
+        }
+    )
+    agent = config.agents["dwight"]
+    config = config.model_copy(
+        update={
+            "agents": {
+                "dwight": agent.model_copy(
+                    update={
+                        "service_actions": {
+                            "openai": ServicePolicyEntry(
+                                actions=[ServiceAction.get_env],
+                            )
+                        }
+                    }
+                )
+            }
+        }
+    )
+    policy = PolicyEngine(config)
+
+    allowed, reason = policy.can("dwight", "openai", ServiceAction.rotate)
+    assert allowed is False
+    assert "not permitted" in reason
+
+
+def test_can_rotate_allowed_when_get_env_and_rotate_granted() -> None:
+    """An agent with get_env + rotate should be allowed rotate."""
+    config = PolicyConfig(
+        agents={
+            "dwight": AgentPolicy(
+                services=["openai"],
+                max_ttl_seconds=900,
+            )
+        }
+    )
+    agent = config.agents["dwight"]
+    config = config.model_copy(
+        update={
+            "agents": {
+                "dwight": agent.model_copy(
+                    update={
+                        "service_actions": {
+                            "openai": ServicePolicyEntry(
+                                actions=[ServiceAction.get_env, ServiceAction.rotate],
+                            )
+                        }
+                    }
+                )
+            }
+        }
+    )
+    policy = PolicyEngine(config)
+
+    allowed, reason = policy.can("dwight", "openai", ServiceAction.rotate)
+    assert allowed is True
+    assert "allowed" in reason

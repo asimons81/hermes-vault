@@ -95,6 +95,34 @@ Once registered, tools are prefixed as `mcp_hermes_vault_*`:
 | `mcp_hermes_vault_oauth_provider_status` | Report provider readiness and safe next commands |
 | `mcp_hermes_vault_oauth_refresh` | Trigger refresh for a stored OAuth token |
 
+### `get_ephemeral_env`
+
+The `get_ephemeral_env` tool materialises ephemeral environment variables for a service. The response now includes a `metadata` field alongside `env`, `ttl_seconds`, and `expires_at`.
+
+**Arguments:**
+- `agent_id` (required unless the server is bound to an allowed-agent set with a configured default) --- Identity for policy enforcement
+- `service` (required) --- Service name
+- `alias` (optional) --- Credential alias, default `default`
+- `ttl_seconds` (optional) --- TTL for the ephemeral environment, default 300
+
+**Response shape:**
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"env\": {\"OPENAI_API_KEY\": \"sk-...\"},\n  \"ttl_seconds\": 300,\n  \"expires_at\": \"2026-06-15T18:30:00Z\",\n  \"metadata\": {\n    \"oauth_refresh\": {\n      \"refreshed\": false,\n      \"reason\": \"Token is still fresh (expires in 3500s)\"\n    }\n  }\n}"
+    }
+  ]
+}
+```
+
+The `metadata` field may contain `oauth_refresh` with the following structure:
+- `refreshed` (bool or null): `true` if the token was refreshed, `false` if still fresh, `null` for non-OAuth credentials
+- `reason` (string): Human-readable explanation of the refresh decision
+
+When a near-expiry OAuth token is successfully refreshed, `oauth_refresh.refreshed` is `true`. When the token is hard-expired and refresh fails, the request is denied with a policy reason and no raw tokens are exposed.
+
 ## OAuth Tools
 
 ### `oauth_login`

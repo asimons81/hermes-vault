@@ -134,6 +134,36 @@ Mitigation: The callback server binds to `127.0.0.1` only and listens on an OS-a
 
 Mitigation: `backup-verify` and `restore --dry-run` prove the archive is structurally valid and decryptable without mutating the live vault. They reduce the chance of discovering a broken backup during recovery, but they do not protect against a lost passphrase, missing salt file, or host compromise after verification.
 
+### OAuth Refresh-at-Handoff Threat Model
+
+v0.15.0 introduces automatic OAuth token refresh at broker/MCP handoff. This adds new threat vectors:
+
+#### Silent vault mutation from a read-looking command
+
+Risk: A `get_ephemeral_env` call looks like a read operation to operators auditing the system, but it can silently mutate the vault by refreshing a near-expiry OAuth token.
+
+Mitigation: Live refresh requires the `rotate` service action permission. An agent with only `get_env` cannot trigger vault mutation. Policy separation ensures read-only grants remain read-only.
+
+#### Provider rate-limit abuse
+
+Risk: Rapid repeated `get_ephemeral_env` calls for the same credential could hammer the provider's token endpoint, triggering rate-limit blocks.
+
+Mitigation: A 30-second per-credential cooldown prevents repeated refresh attempts within a single handoff sequence. The existing exponential backoff in the `RefreshEngine` provides additional protection for retries.
+
+#### Stale token delivery after refresh failure
+
+Risk: When a near-expiry token fails to refresh, the broker could silently deliver a stale token that the agent then fails to use, creating confusing failures.
+
+Mitigation: The broker treats hard-expired tokens as fail-closed: if the token is past expiry and refresh cannot recover it, the request is denied with a clean error. Near-expiry tokens that fail refresh still deliver the existing token with a warning in `oauth_refresh` metadata.
+
+#### Summary
+
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| Vault mutation from read call | Medium | Require `rotate` permission for live refresh |
+| Provider rate-limit abuse | Low | 30s per-credential cooldown + exponential backoff |
+| Stale token delivery | Low | Fail-closed for hard-expired tokens |
+
 ### Residual risks
 
 - Initial login can use browser PKCE or device-code flow for providers that support it. Device-code support removes the local browser requirement, but the operator still has to approve the login in a provider-controlled browser or device prompt.

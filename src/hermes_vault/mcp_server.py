@@ -529,7 +529,7 @@ _pending_oauth: dict[str, dict[str, Any]] = {}
 
 # ── server ─────────────────────────────────────────────────────────────────────
 
-server = Server("hermes-vault", version="0.14.0")
+server = Server("hermes-vault", version="0.15.0")
 
 
 @server.list_tools()
@@ -746,6 +746,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 "env": result.env,
                 "ttl_seconds": result.ttl_seconds,
                 "expires_at": expires_at,
+                "metadata": result.metadata,
             }))]
 
         if name == "verify_credential":

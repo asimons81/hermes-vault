@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -17,10 +18,22 @@ from hermes_vault.models import (
     VerificationResult,
 )
 from hermes_vault.mutations import VaultMutations
+from hermes_vault.oauth.errors import (
+    OAuthNetworkError,
+    OAuthProviderError,
+    sanitize_oauth_error_detail,
+)
+from hermes_vault.oauth.oauth_refresh import (
+    RefreshTokenExpiredError,
+    RefreshTokenMissingError,
+)
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.service_ids import get_env_var_map, normalize
 from hermes_vault.verifier import Verifier
 from hermes_vault.vault import AmbiguousTargetError, Vault
+
+OAUTH_REFRESH_MARGIN_SECONDS = 300  # 5 minutes
+OAUTH_REFRESH_COOLDOWN_SECONDS = 30  # seconds between refresh attempts
 
 
 def _verification_is_unsupported(result: VerificationResult) -> bool:
@@ -38,13 +51,23 @@ class Broker:
         verifier: Verifier,
         audit: AuditLogger,
         scanner: Any = None,
+        refresh_engine: Any = None,
     ) -> None:
         self.vault = vault
         self.policy = policy
         self.verifier = verifier
         self.audit = audit
         self.scanner = scanner
+        self._refresh_engine = refresh_engine
+        self._refresh_cooldowns: dict[str, float] = {}
         self._mutations = VaultMutations(vault=vault, policy=policy, audit=audit)
+
+    @property
+    def refresh_engine(self):
+        if self._refresh_engine is None:
+            from hermes_vault.oauth.oauth_refresh import RefreshEngine
+            self._refresh_engine = RefreshEngine(vault=self.vault)
+        return self._refresh_engine
 
     def get_credential(self, service: str, purpose: str, agent_id: str) -> BrokerDecision:
         service = normalize(service)
@@ -82,9 +105,35 @@ class Broker:
         secret = self.vault.get_secret(record.id)
         if not secret:
             return self._deny(agent_id, canonical, "get_ephemeral_env", "credential not found in vault", ttl_seconds=effective_ttl)
+        # ── OAuth freshness check ────────────────────────────────────────
+        freshness_result = self._ensure_oauth_freshness(
+            record, canonical, alias, agent_id,
+        )
+        if freshness_result.get("decision") == "deny":
+            deny_meta: dict[str, object] = {}
+            oauth_meta = freshness_result.get("oauth_refresh")
+            if oauth_meta is not None:
+                deny_meta["oauth_refresh"] = oauth_meta
+            return self._deny(
+                agent_id, canonical, "get_ephemeral_env",
+                freshness_result.get("reason", "OAuth refresh failed"),
+                ttl_seconds=effective_ttl,
+                metadata=deny_meta,
+            )
+        if freshness_result.get("re_resolve"):
+            record = self.vault.resolve_credential(canonical, alias=alias)
+            secret = self.vault.get_secret(record.id)
+            if not secret:
+                return self._deny(agent_id, canonical, "get_ephemeral_env", "credential not found after OAuth refresh", ttl_seconds=effective_ttl)
         env_template = get_env_var_map(canonical)
         env = {key: value.format(secret=secret.secret) for key, value in env_template.items()}
         warnings = self._governance_warnings(canonical, alias)
+        metadata: dict[str, object] = {}
+        if warnings:
+            metadata["warnings"] = warnings
+        oauth_meta = freshness_result.get("oauth_refresh")
+        if oauth_meta is not None:
+            metadata["oauth_refresh"] = oauth_meta
         return self._allow(
             agent_id,
             canonical,
@@ -92,8 +141,147 @@ class Broker:
             "ephemeral environment materialization approved",
             ttl_seconds=effective_ttl,
             env=env,
-            metadata={"warnings": warnings} if warnings else {},
+            metadata=metadata,
         )
+
+    def _ensure_oauth_freshness(
+        self,
+        record,
+        service: str,
+        alias: str | None,
+        agent_id: str,
+    ) -> dict[str, object]:
+        """Check whether an OAuth access token needs refreshing and do it.
+
+        Returns a dict with keys:
+          - decision: "pass" | "deny"
+          - re_resolve: bool (if True, caller must re-fetch record + secret)
+          - oauth_refresh: dict with refresh metadata (or None for non-OAuth)
+          - reason: str (for deny cases)
+        """
+        # 1. Non-OAuth credentials pass through untouched
+        if record.credential_type != "oauth_access_token":
+            return {"decision": "pass", "oauth_refresh": None}
+
+        # 2. Token with no expiry — can't determine staleness
+        if record.expiry is None:
+            return {"decision": "pass", "oauth_refresh": {"refreshed": None}}
+
+        # 3. Check if token is near expiry or already expired
+        is_near_expiry = self.refresh_engine.is_expired(
+            record, margin_seconds=OAUTH_REFRESH_MARGIN_SECONDS,
+        )
+
+        if not is_near_expiry:
+            # 4. Token still has plenty of life
+            return {"decision": "pass", "oauth_refresh": {"refreshed": False}}
+
+        # 5. Token is near/at expiry — check rotate permission
+        can_rotate, rotate_reason = self.policy.can(
+            agent_id, service, ServiceAction.rotate,
+        )
+        cooldown_key = f"{service}:{alias or 'default'}"
+
+        if not can_rotate:
+            hard_expired = self.refresh_engine.is_expired(record, margin_seconds=0)
+            self.audit.record(
+                AccessLogRecord(
+                    agent_id=agent_id,
+                    service=service,
+                    action="broker_env_oauth_refresh",
+                    decision=Decision.deny if hard_expired else Decision.allow,
+                    reason=f"OAuth refresh skipped: {rotate_reason}",
+                )
+            )
+            if hard_expired:
+                return {
+                    "decision": "deny",
+                    "reason": f"OAuth refresh denied: {rotate_reason}",
+                    "oauth_refresh": {"refreshed": False, "error": rotate_reason},
+                }
+            return {
+                "decision": "pass",
+                "oauth_refresh": {"refreshed": False, "warning": rotate_reason},
+            }
+
+        # 6. Check cooldown
+        last_attempt = self._refresh_cooldowns.get(cooldown_key, 0.0)
+        if time.time() - last_attempt < OAUTH_REFRESH_COOLDOWN_SECONDS:
+            return {
+                "decision": "pass",
+                "oauth_refresh": {"refreshed": False, "cooldown": True},
+            }
+
+        # 7. Attempt live refresh
+        try:
+            self.refresh_engine.refresh(service, alias=alias or "default", dry_run=False)
+            self._refresh_cooldowns[cooldown_key] = time.time()
+            self.audit.record(
+                AccessLogRecord(
+                    agent_id=agent_id,
+                    service=service,
+                    action="broker_env_oauth_refresh",
+                    decision=Decision.allow,
+                    reason="Token refreshed successfully by broker",
+                )
+            )
+            return {
+                "decision": "pass",
+                "re_resolve": True,
+                "oauth_refresh": {"refreshed": True},
+            }
+        except RefreshTokenMissingError as exc:
+            return self._oauth_refresh_error(
+                record, exc, agent_id, service, cooldown_key,
+            )
+        except RefreshTokenExpiredError as exc:
+            return self._oauth_refresh_error(
+                record, exc, agent_id, service, cooldown_key,
+            )
+        except OAuthProviderError as exc:
+            return self._oauth_refresh_error(
+                record, exc, agent_id, service, cooldown_key,
+            )
+        except OAuthNetworkError as exc:
+            return self._oauth_refresh_error(
+                record, exc, agent_id, service, cooldown_key,
+            )
+        except Exception as exc:
+            return self._oauth_refresh_error(
+                record, exc, agent_id, service, cooldown_key,
+            )
+
+    def _oauth_refresh_error(
+        self,
+        record,
+        exc: Exception,
+        agent_id: str,
+        service: str,
+        cooldown_key: str,
+    ) -> dict[str, object]:
+        """Handle a refresh error: audit, cooldown, and decide pass/deny."""
+        sanitized = sanitize_oauth_error_detail(exc)
+        self._refresh_cooldowns[cooldown_key] = time.time()
+        hard_expired = self.refresh_engine.is_expired(record, margin_seconds=0)
+        self.audit.record(
+            AccessLogRecord(
+                agent_id=agent_id,
+                service=service,
+                action="broker_env_oauth_refresh",
+                decision=Decision.deny if hard_expired else Decision.allow,
+                reason=sanitized,
+            )
+        )
+        if hard_expired:
+            return {
+                "decision": "deny",
+                "reason": sanitized,
+                "oauth_refresh": {"refreshed": False, "error": sanitized},
+            }
+        return {
+            "decision": "pass",
+            "oauth_refresh": {"refreshed": False, "error": sanitized},
+        }
 
     def _governance_warnings(self, service: str, alias: str | None = None) -> list[dict[str, str]]:
         """Build structured governance warnings for a credential request."""
@@ -482,6 +670,7 @@ class Broker:
         action: str,
         reason: str,
         ttl_seconds: int | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> BrokerDecision:
         self.audit.record(
             AccessLogRecord(
@@ -499,4 +688,5 @@ class Broker:
             agent_id=agent_id,
             reason=reason,
             ttl_seconds=ttl_seconds,
+            metadata=metadata or {},
         )

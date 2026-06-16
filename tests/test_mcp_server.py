@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,8 @@ from hermes_vault.mcp_server import (
     read_resource,
     server,
 )
-from hermes_vault.models import CredentialStatus
+from hermes_vault.models import CredentialStatus, utc_now
+from hermes_vault.vault import Vault
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -858,3 +860,62 @@ agents:
         "HERMES_VAULT_MCP_DEFAULT_AGENT",
     ):
         os.environ.pop(key, None)
+
+
+# ── MCP OAuth freshness tests ────────────────────────────────────────────────
+
+def test_get_ephemeral_env_mcp_includes_oauth_refresh_metadata(vault_with_policy, tmp_path):
+    """MCP get_ephemeral_env response includes oauth_refresh metadata when credential is OAuth."""
+    import hermes_vault.mcp_server as mcp_mod
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    # Replace the google API key with an OAuth access token far from expiry
+    future = utc_now() + timedelta(hours=24)
+    rec = vault_with_policy.vault.add_credential(
+        service="google",
+        secret="ya29.valid-token",
+        credential_type="oauth_access_token",
+        alias="primary",
+        replace_existing=True,
+    )
+    vault_with_policy.vault.set_expiry(rec.id, future)
+    # Use the same broker instance for MCP calls
+    mcp_mod._broker = vault_with_policy
+
+    result = _run_async(call_tool("get_ephemeral_env", {
+        "agent_id": "test-agent",
+        "service": "google",
+    }))
+    data = json.loads(result[0].text)
+    assert "env" in data
+    assert "metadata" in data
+    assert "oauth_refresh" in data["metadata"]
+    # Token is far from expiry, so no refresh needed
+    assert data["metadata"]["oauth_refresh"]["refreshed"] is False
+
+
+def test_get_ephemeral_env_mcp_denies_expired_no_refresh(vault_with_policy, tmp_path):
+    """MCP get_ephemeral_env denies with sanitized message when OAuth token is expired and no refresh token."""
+    import hermes_vault.mcp_server as mcp_mod
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    # Replace the google API key with an expired OAuth access token (no refresh token)
+    past = utc_now() - timedelta(hours=1)
+    rec = vault_with_policy.vault.add_credential(
+        service="google",
+        secret="ya29.expired-token",
+        credential_type="oauth_access_token",
+        alias="primary",
+        replace_existing=True,
+    )
+    vault_with_policy.vault.set_expiry(rec.id, past)
+    # No refresh token is added for google, so refresh will fail
+    # Use the same broker instance
+    mcp_mod._broker = vault_with_policy
+
+    result = _run_async(call_tool("get_ephemeral_env", {
+        "agent_id": "test-agent",
+        "service": "google",
+    }))
+    text = result[0].text
+    # Should be denied with a sanitized message (no raw tokens)
+    assert "Denied:" in text
+    assert "ya29" not in text
