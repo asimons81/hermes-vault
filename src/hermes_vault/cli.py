@@ -25,6 +25,7 @@ from hermes_vault.health import run_health
 from hermes_vault.models import AccessLogRecord, CredentialStatus, Decision
 from hermes_vault.mutations import VaultMutations, OPERATOR_AGENT_ID
 from hermes_vault.policy import PolicyEngine
+from hermes_vault.policy_packs import get_policy_pack, list_policy_packs, render_policy_pack_yaml, write_policy_pack
 from hermes_vault.scanner import Scanner
 from hermes_vault.service_ids import is_canonical, normalize
 from hermes_vault.skillgen import SkillGenerator
@@ -69,6 +70,10 @@ broker_app = typer.Typer(help="Broker operations.")
 _typer_app.add_typer(broker_app, name="broker")
 policy_app = typer.Typer(help="Policy diagnostics and maintenance.")
 _typer_app.add_typer(policy_app, name="policy")
+policy_pack_app = typer.Typer(help="Built-in policy pack templates.")
+policy_app.add_typer(policy_pack_app, name="pack")
+lease_app = typer.Typer(help="Lease lifecycle operations.")
+_typer_app.add_typer(lease_app, name="lease")
 console = Console()
 
 
@@ -1561,6 +1566,68 @@ def policy_doctor(
     raise typer.Exit(code=0)
 
 
+@policy_pack_app.command("list")
+def policy_pack_list(
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+) -> None:
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=2)
+    packs = list_policy_packs()
+    if format == "json":
+        console.print_json(data=packs)
+        return
+    table = Table(title="Hermes Vault Policy Packs")
+    table.add_column("Name")
+    table.add_column("Description")
+    for pack in packs:
+        table.add_row(pack["name"], pack["description"])
+    console.print(table)
+
+
+@policy_pack_app.command("show")
+def policy_pack_show(
+    name: str = typer.Argument(help="Pack name: coder, auditor, or operator."),
+    format: str = typer.Option("yaml", "--format", help="Output format: yaml or json."),
+) -> None:
+    if format not in ("yaml", "json"):
+        console.print("[red]--format must be 'yaml' or 'json'[/red]")
+        raise typer.Exit(code=2)
+    try:
+        pack = get_policy_pack(name)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    if format == "json":
+        console.print_json(data=pack)
+    else:
+        console.print(render_policy_pack_yaml(name).rstrip())
+
+
+@policy_pack_app.command("init")
+@policy_pack_app.command("apply")
+def policy_pack_init(
+    name: str = typer.Argument(help="Pack name: coder, auditor, or operator."),
+    output: Path = typer.Option(..., "--output", exists=False, file_okay=True, dir_okay=False, writable=True, help="Output policy file path."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the pack instead of writing it."),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    try:
+        pack_text = render_policy_pack_yaml(name)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    if dry_run:
+        console.print(pack_text.rstrip())
+        return
+    try:
+        written = write_policy_pack(name, output, force=force)
+    except FileExistsError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"Wrote policy pack '{name}' to {written}")
+
+
 @_typer_app.command("dashboard")
 def dashboard(
     ctx: typer.Context,
@@ -1656,6 +1723,85 @@ def broker_env(
     console.print_json(data=decision.model_dump(mode="json"))
 
 
+@lease_app.command("issue")
+def lease_issue(
+    ctx: typer.Context,
+    service: str = typer.Argument(help="Service name (normalized to canonical ID)."),
+    agent: str = typer.Option(..., "--agent", help="Agent ID receiving the lease."),
+    ttl: int = typer.Option(900, "--ttl", help="Time-to-live in seconds for the lease."),
+    alias: str = typer.Option("default", "--alias", help="Credential alias."),
+    purpose: str = typer.Option("task", "--purpose", help="Lease purpose."),
+    reason: str | None = typer.Option(None, "--reason", help="Optional operator reason."),
+) -> None:
+    _, _, broker, _ = build_services(prompt=True)
+    decision = broker.issue_lease(
+        service=normalize(service),
+        agent_id=agent,
+        ttl=ttl,
+        alias=alias,
+        purpose=purpose,
+        reason=reason,
+    )
+    console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        raise typer.Exit(code=1)
+
+
+@lease_app.command("list")
+def lease_list(
+    ctx: typer.Context,
+    agent: str = typer.Option(..., "--agent", help="Agent ID requesting lease visibility."),
+    service: str | None = typer.Option(None, "--service", help="Optional service filter."),
+    status: str | None = typer.Option(None, "--status", help="Optional status filter."),
+) -> None:
+    _, _, broker, _ = build_services(prompt=True)
+    decision = broker.list_leases(agent_id=agent, service=service, status=status)
+    console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        raise typer.Exit(code=1)
+
+
+@lease_app.command("show")
+def lease_show(
+    ctx: typer.Context,
+    lease_id: str = typer.Argument(help="Lease ID."),
+    agent: str = typer.Option(..., "--agent", help="Agent ID requesting the lease."),
+) -> None:
+    _, _, broker, _ = build_services(prompt=True)
+    decision = broker.show_lease(agent_id=agent, lease_id=lease_id)
+    console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        raise typer.Exit(code=1)
+
+
+@lease_app.command("renew")
+def lease_renew(
+    ctx: typer.Context,
+    lease_id: str = typer.Argument(help="Lease ID."),
+    agent: str = typer.Option(..., "--agent", help="Agent ID renewing the lease."),
+    ttl: int = typer.Option(..., "--ttl", help="Extension in seconds."),
+) -> None:
+    _, _, broker, _ = build_services(prompt=True)
+    decision = broker.renew_lease(agent_id=agent, lease_id=lease_id, ttl=ttl)
+    console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        raise typer.Exit(code=1)
+
+
+@lease_app.command("revoke")
+def lease_revoke(
+    ctx: typer.Context,
+    lease_id: str = typer.Argument(help="Lease ID."),
+    agent: str = typer.Option(..., "--agent", help="Agent ID revoking the lease."),
+    reason: str | None = typer.Option(None, "--reason", help="Optional revocation reason."),
+) -> None:
+    _, _, broker, _ = build_services(prompt=True)
+    decision = broker.revoke_lease(agent_id=agent, lease_id=lease_id, reason=reason)
+    console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        raise typer.Exit(code=1)
+
+
 @broker_app.command("list")
 def broker_list(
     ctx: typer.Context,
@@ -1668,6 +1814,7 @@ def broker_list(
     """
     _, _, broker, _ = build_services(prompt=True)
     console.print_json(data=json.dumps(broker.list_available_credentials(agent)))
+
 
 
 @_typer_app.command("rotate-master-key")

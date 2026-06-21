@@ -23,7 +23,7 @@ from hermes_vault.config import AppSettings, get_settings, list_profiles, valida
 from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase_with_source
 from hermes_vault.health import run_health
 from hermes_vault.maintenance import run_maintenance
-from hermes_vault.models import CredentialRecord
+from hermes_vault.models import CredentialRecord, LeaseRecord
 from hermes_vault.oauth.oauth_refresh import RefreshEngine
 from hermes_vault.oauth.providers import OAuthProviderRegistry
 from hermes_vault.policy import PolicyEngine
@@ -145,6 +145,30 @@ def sanitize_credential(record: CredentialRecord) -> dict[str, Any]:
     }
 
 
+def sanitize_lease(record: LeaseRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "service": record.service,
+        "alias": record.alias,
+        "credential_id": record.credential_id,
+        "credential_type": record.credential_type,
+        "agent_id": record.agent_id,
+        "issued_by": record.issued_by,
+        "purpose": record.purpose,
+        "status": record.status.value,
+        "ttl_seconds": record.ttl_seconds,
+        "issued_at": record.issued_at.isoformat(),
+        "expires_at": record.expires_at.isoformat(),
+        "revoked_at": record.revoked_at.isoformat() if record.revoked_at else None,
+        "renewed_at": record.renewed_at.isoformat() if record.renewed_at else None,
+        "renew_count": record.renew_count,
+        "reason": record.reason,
+        "scopes": list(record.scopes),
+        "metadata_keys": sorted(record.metadata.keys()),
+        "has_metadata": bool(record.metadata),
+    }
+
+
 def validate_vault_key(ctx: DashboardContext, max_checks: int = 25) -> dict[str, Any]:
     records = ctx.vault.list_credentials()
     if not records:
@@ -240,6 +264,7 @@ class DashboardAPI:
     def overview(self) -> dict[str, Any]:
         ctx = self._context_factory()
         records = ctx.vault.list_credentials()
+        leases = ctx.vault.list_leases()
         health = run_health(ctx.vault, audit=ctx.audit)
         policy_report = run_policy_doctor(
             ctx.settings.effective_policy_path,
@@ -253,6 +278,8 @@ class DashboardAPI:
             "runtime_home": str(ctx.settings.runtime_home),
             "policy_path": str(ctx.settings.effective_policy_path),
             "credential_count": len(records),
+            "lease_count": len(leases),
+            "active_lease_count": sum(1 for lease in leases if lease.status.value == "active"),
             "services": sorted({record.service for record in records}),
             "health": health.as_dict(exclude_none=False),
             "policy_doctor": policy_report.as_dict(exclude_none=False),
@@ -266,6 +293,14 @@ class DashboardAPI:
             "version": DASHBOARD_VERSION,
             "runtime": runtime_metadata(ctx),
             "credentials": [sanitize_credential(record) for record in ctx.vault.list_credentials()],
+        }
+
+    def leases(self) -> dict[str, Any]:
+        ctx = self._context_factory()
+        return {
+            "version": DASHBOARD_VERSION,
+            "runtime": runtime_metadata(ctx),
+            "leases": [sanitize_lease(record) for record in ctx.vault.list_leases()],
         }
 
     def policy(self) -> dict[str, Any]:
@@ -653,6 +688,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._write_json(self.server.api.credentials())
         elif path == "/api/policy":
             self._write_json(self.server.api.policy())
+        elif path == "/api/leases":
+            self._write_json(self.server.api.leases())
         elif path == "/api/audit":
             try:
                 limit = int(query.get("limit", ["50"])[0] or 50)

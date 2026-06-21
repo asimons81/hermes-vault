@@ -2,9 +2,9 @@
 
 ![Hermes Vault promo image](assets/hermes-vault-promo-image.png)
 
-Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and generates skill contracts that keep agents on the same workflow. v0.14.0 makes the product credibly Windows-native: the runtime abstraction layer is explicit, DPAPI master-key protection is available on Windows, and the release docs match the shipped behavior.
+Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and now treats agent access as a first-class lease lifecycle. v0.16.0 adds lease issue/renew/revoke workflows, policy pack templates, and dashboard/MCP surfacing for access metadata.
 
-v0.14.0 is the Native Windows + DPAPI release. `maintain` still reports refresh and health honestly, `policy doctor` still handles drift diagnosis, and Windows operators now get an explicit path for DPAPI-backed master-key protection.
+v0.16.0 is the Agent Access Lifecycle release. `lease` commands make access time-bound and auditable, `policy pack` templates standardize operator policy, and the dashboard/MCP surfaces now expose lease metadata alongside credential health.
 
 ## What It Does
 
@@ -130,6 +130,8 @@ hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes --dry-run
 hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes
 hermes-vault verify --all
 hermes-vault policy doctor
+hermes-vault policy pack list
+hermes-vault lease issue openai --agent hermes --ttl 600
 hermes-vault generate-skill --all-agents
 hermes-vault dashboard --no-open
 ```
@@ -313,6 +315,17 @@ hermes-vault oauth doctor google
 hermes-vault oauth refresh google --alias work
 hermes-vault oauth providers
 ```
+
+## What's New in 0.16.0 - Agent Access Lifecycle
+
+v0.16.0 makes agent access a first-class lifecycle object. Hermes Vault can now issue, renew, list, show, and revoke leases, ship reusable policy pack templates, and surface lease metadata through the dashboard and MCP server.
+
+### What changed for operators
+
+- `lease issue` creates time-bound access instead of handing agents an open-ended credential lookup.
+- `lease list`, `lease show`, `lease renew`, and `lease revoke` give operators a direct lifecycle toolchain.
+- `policy pack` templates provide a repeatable starting point for agent policies instead of hand-editing YAML from scratch.
+- Dashboard and MCP responses remain metadata-only; lease and policy surfaces expose lifecycle state without leaking raw secrets.
 
 ## What's New in 0.15.1 - EvoLink Provider Support
 

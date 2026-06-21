@@ -51,6 +51,7 @@
           <button class="nav-item active" data-view="overview">Overview</button>
           <button class="nav-item" data-view="credentials">Credentials</button>
           <button class="nav-item" data-view="policy">Policy</button>
+          <button class="nav-item" data-view="leases">Leases</button>
           <button class="nav-item" data-view="audit">Audit</button>
           <button class="nav-item" data-view="operations">Operations</button>
         </nav>
@@ -85,6 +86,7 @@
             <article class="metric"><span>Services</span><strong id="metric-services">0</strong></article>
             <article class="metric"><span>Health Findings</span><strong id="metric-health">0</strong></article>
             <article class="metric"><span>Policy Findings</span><strong id="metric-policy">0</strong></article>
+            <article class="metric"><span>Leases</span><strong id="metric-leases">0</strong></article>
           </div>
           <div class="two-col">
             <section class="panel">
@@ -119,6 +121,13 @@
               <div id="agent-list" class="stack"></div>
             </section>
           </div>
+        </section>
+
+        <section id="leases" class="view">
+          <section class="panel">
+            <div class="panel-head"><h2>Lease Inventory</h2></div>
+            <div id="lease-table" class="table"></div>
+          </section>
         </section>
 
         <section id="audit" class="view">

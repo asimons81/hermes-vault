@@ -29,6 +29,54 @@ class StubBroker:
             reason="ok",
         )
 
+    def issue_lease(self, agent_id: str, service: str, ttl: int, alias: str | None = None, purpose: str = "task", reason: str | None = None) -> BrokerDecision:
+        self.called_with.append(f"lease:{service}")
+        return BrokerDecision(
+            allowed=True,
+            service=service,
+            agent_id=agent_id,
+            reason="lease issued",
+            ttl_seconds=ttl,
+            metadata={"lease": {"id": "lease-1", "service": service, "alias": alias or "default", "purpose": purpose}},
+        )
+
+    def list_leases(self, agent_id: str, service: str | None = None, status: str | None = None) -> BrokerDecision:
+        return BrokerDecision(
+            allowed=True,
+            service=service or "*",
+            agent_id=agent_id,
+            reason="returned 1 lease",
+            metadata={"leases": [{"id": "lease-1", "service": service or "openai", "status": status or "active"}]},
+        )
+
+    def show_lease(self, agent_id: str, lease_id: str) -> BrokerDecision:
+        return BrokerDecision(
+            allowed=True,
+            service="openai",
+            agent_id=agent_id,
+            reason="returned lease",
+            metadata={"lease": {"id": lease_id, "service": "openai", "status": "active"}},
+        )
+
+    def renew_lease(self, agent_id: str, lease_id: str, ttl: int) -> BrokerDecision:
+        return BrokerDecision(
+            allowed=True,
+            service="openai",
+            agent_id=agent_id,
+            reason="renewed lease",
+            ttl_seconds=ttl,
+            metadata={"lease": {"id": lease_id, "service": "openai", "status": "active"}},
+        )
+
+    def revoke_lease(self, agent_id: str, lease_id: str, reason: str | None = None) -> BrokerDecision:
+        return BrokerDecision(
+            allowed=True,
+            service="openai",
+            agent_id=agent_id,
+            reason="revoked lease",
+            metadata={"lease": {"id": lease_id, "service": "openai", "status": "revoked"}},
+        )
+
 
 class StubMutations:
     def __init__(self) -> None:
@@ -769,6 +817,38 @@ def test_broker_env_normalizes_service(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert calls == ["github"]
+
+
+def test_lease_issue_cli_uses_broker(monkeypatch) -> None:
+    broker = StubBroker()
+    monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services(broker=broker))
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["lease", "issue", "open_ai", "--agent", "hermes", "--ttl", "600"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["allowed"] is True
+    assert payload["service"] == "openai"
+    assert payload["ttl_seconds"] == 600
+    assert broker.called_with == ["lease:openai"]
+
+
+def test_policy_pack_show_and_init(monkeypatch, tmp_path: Path) -> None:
+    runner = CliRunner()
+    show_result = runner.invoke(_hermes_group, ["policy", "pack", "show", "coder", "--format", "json"])
+    assert show_result.exit_code == 0
+    show_payload = json.loads(show_result.output)
+    assert show_payload["agents"]["hermes"]["services"]
+    assert "issue_lease" in show_payload["agents"]["hermes"]["service_actions"]["openai"]["actions"]
+
+    output = tmp_path / "policy.yaml"
+    init_result = runner.invoke(_hermes_group, ["policy", "pack", "init", "auditor", "--output", str(output), "--force"])
+    assert init_result.exit_code == 0
+    assert output.exists()
+    text = output.read_text(encoding="utf-8")
+    assert "agents:" in text
+    assert "list_leases" in text
 
 
 # ── import (error handling) ────────────────────────────────────────────────

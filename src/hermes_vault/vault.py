@@ -5,7 +5,7 @@ import os
 import sqlite3
 import sys
 from typing import Any
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -21,7 +21,7 @@ from hermes_vault.crypto import (
     load_or_create_master_key,
     load_or_create_salt,
 )
-from hermes_vault.models import CredentialRecord, CredentialSecret, CredentialStatus, utc_now
+from hermes_vault.models import CredentialRecord, CredentialSecret, CredentialStatus, LeaseRecord, LeaseStatus, utc_now
 from hermes_vault.service_ids import normalize
 
 
@@ -115,6 +115,35 @@ class Vault:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_credentials_expiry ON credentials(expiry)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS leases (
+                    id TEXT PRIMARY KEY,
+                    service TEXT NOT NULL,
+                    alias TEXT NOT NULL,
+                    credential_id TEXT NOT NULL,
+                    credential_type TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    issued_by TEXT NOT NULL,
+                    purpose TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    ttl_seconds INTEGER NOT NULL,
+                    issued_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    revoked_at TEXT,
+                    renewed_at TEXT,
+                    renew_count INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT,
+                    scopes TEXT NOT NULL DEFAULT '[]',
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            self._migrate_leases_schema(conn)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_leases_service ON leases(service)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_leases_agent_id ON leases(agent_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_leases_status ON leases(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_leases_expires_at ON leases(expires_at)")
             conn.commit()
         self._secure_storage_files()
 
@@ -125,6 +154,45 @@ class Vault:
             conn.execute("ALTER TABLE credentials ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
         if "notes" not in columns:
             conn.execute("ALTER TABLE credentials ADD COLUMN notes TEXT")
+
+    def _migrate_leases_schema(self, conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(leases)").fetchall()}
+        if not columns:
+            return
+        if "service" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN service TEXT NOT NULL DEFAULT ''")
+        if "alias" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN alias TEXT NOT NULL DEFAULT 'default'")
+        if "credential_id" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN credential_id TEXT NOT NULL DEFAULT ''")
+        if "credential_type" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN credential_type TEXT NOT NULL DEFAULT 'unknown'")
+        if "agent_id" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''")
+        if "issued_by" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN issued_by TEXT NOT NULL DEFAULT ''")
+        if "purpose" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN purpose TEXT NOT NULL DEFAULT 'task'")
+        if "status" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        if "ttl_seconds" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 0")
+        if "issued_at" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN issued_at TEXT NOT NULL DEFAULT ''")
+        if "expires_at" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''")
+        if "revoked_at" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN revoked_at TEXT")
+        if "renewed_at" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN renewed_at TEXT")
+        if "renew_count" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN renew_count INTEGER NOT NULL DEFAULT 0")
+        if "reason" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN reason TEXT")
+        if "scopes" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN scopes TEXT NOT NULL DEFAULT '[]'")
+        if "metadata_json" not in columns:
+            conn.execute("ALTER TABLE leases ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
 
     @staticmethod
     def _normalize_tags(tags: list[str] | None) -> list[str]:
@@ -742,6 +810,198 @@ class Vault:
         merged.update(metadata)
         return merged
 
+    def _refresh_expired_leases(self, conn: sqlite3.Connection) -> None:
+        now = utc_now().isoformat()
+        conn.execute(
+            """
+            UPDATE leases
+            SET status = ?,
+                expires_at = CASE WHEN expires_at < ? THEN expires_at ELSE expires_at END
+            WHERE status = ? AND expires_at < ?
+            """,
+            (LeaseStatus.expired.value, now, LeaseStatus.active.value, now),
+        )
+
+    def _row_to_lease_record(self, row: sqlite3.Row) -> LeaseRecord:
+        payload = dict(row)
+        payload["status"] = LeaseStatus(payload["status"])
+        payload["ttl_seconds"] = int(payload["ttl_seconds"])
+        payload["renew_count"] = int(payload.get("renew_count") or 0)
+        payload["scopes"] = json.loads(payload.get("scopes") or "[]")
+        metadata_raw = payload.get("metadata_json") or "{}"
+        try:
+            payload["metadata"] = json.loads(metadata_raw)
+        except json.JSONDecodeError:
+            payload["metadata"] = {"raw": metadata_raw}
+        payload.pop("metadata_json", None)
+        return LeaseRecord.model_validate(payload)
+
+    def _find_lease(self, lease_id: str) -> LeaseRecord | None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            self._refresh_expired_leases(conn)
+            row = conn.execute("SELECT * FROM leases WHERE id = ?", (lease_id,)).fetchone()
+        return self._row_to_lease_record(row) if row else None
+
+    def issue_lease(
+        self,
+        service_or_id: str,
+        agent_id: str,
+        ttl_seconds: int,
+        alias: str | None = None,
+        purpose: str = "task",
+        issued_by: str | None = None,
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> LeaseRecord:
+        record = self.resolve_credential(service_or_id, alias=alias)
+        now = utc_now()
+        expires_at = now + timedelta(seconds=ttl_seconds)
+        lease = LeaseRecord(
+            service=record.service,
+            alias=record.alias,
+            credential_id=record.id,
+            credential_type=record.credential_type,
+            agent_id=agent_id,
+            issued_by=issued_by or agent_id,
+            purpose=purpose,
+            ttl_seconds=ttl_seconds,
+            issued_at=now,
+            expires_at=expires_at,
+            reason=reason,
+            scopes=record.scopes,
+            metadata=metadata or {},
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO leases (
+                    id, service, alias, credential_id, credential_type, agent_id, issued_by, purpose,
+                    status, ttl_seconds, issued_at, expires_at, revoked_at, renewed_at, renew_count,
+                    reason, scopes, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lease.id,
+                    lease.service,
+                    lease.alias,
+                    lease.credential_id,
+                    lease.credential_type,
+                    lease.agent_id,
+                    lease.issued_by,
+                    lease.purpose,
+                    lease.status.value,
+                    lease.ttl_seconds,
+                    lease.issued_at.isoformat(),
+                    lease.expires_at.isoformat(),
+                    lease.revoked_at.isoformat() if lease.revoked_at else None,
+                    lease.renewed_at.isoformat() if lease.renewed_at else None,
+                    lease.renew_count,
+                    lease.reason,
+                    json.dumps(lease.scopes),
+                    json.dumps(lease.metadata, sort_keys=True),
+                ),
+            )
+            conn.commit()
+        return lease
+
+    def list_leases(
+        self,
+        agent_id: str | None = None,
+        service: str | None = None,
+        status: LeaseStatus | str | None = None,
+    ) -> list[LeaseRecord]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            self._refresh_expired_leases(conn)
+            conditions: list[str] = []
+            params: list[Any] = []
+            if agent_id is not None:
+                conditions.append("agent_id = ?")
+                params.append(agent_id)
+            if service is not None:
+                conditions.append("service = ?")
+                params.append(normalize(service))
+            if status is not None:
+                status_value = status.value if isinstance(status, LeaseStatus) else str(status)
+                conditions.append("status = ?")
+                params.append(status_value)
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            rows = conn.execute(
+                f"SELECT * FROM leases WHERE {where_clause} ORDER BY issued_at DESC"
+            , params).fetchall()
+        return [self._row_to_lease_record(row) for row in rows]
+
+    def get_lease(self, lease_id: str) -> LeaseRecord | None:
+        return self._find_lease(lease_id)
+
+    def renew_lease(
+        self,
+        lease_id: str,
+        ttl_seconds: int,
+    ) -> LeaseRecord:
+        lease = self._find_lease(lease_id)
+        if lease is None:
+            raise KeyError(f"Lease '{lease_id}' not found")
+        if lease.status == LeaseStatus.revoked:
+            raise ValueError(f"Lease '{lease_id}' has been revoked")
+        if lease.status == LeaseStatus.expired:
+            raise ValueError(f"Lease '{lease_id}' has expired")
+        now = utc_now()
+        base = lease.expires_at if lease.expires_at > now else now
+        updated = lease.model_copy(update={
+            "status": LeaseStatus.active,
+            "ttl_seconds": ttl_seconds,
+            "expires_at": base + timedelta(seconds=ttl_seconds),
+            "renewed_at": now,
+            "renew_count": lease.renew_count + 1,
+        })
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE leases
+                SET status = ?, ttl_seconds = ?, expires_at = ?, renewed_at = ?, renew_count = ?
+                WHERE id = ?
+                """,
+                (
+                    updated.status.value,
+                    updated.ttl_seconds,
+                    updated.expires_at.isoformat(),
+                    updated.renewed_at.isoformat() if updated.renewed_at else None,
+                    updated.renew_count,
+                    updated.id,
+                ),
+            )
+            conn.commit()
+        return updated
+
+    def revoke_lease(self, lease_id: str, reason: str | None = None) -> LeaseRecord:
+        lease = self._find_lease(lease_id)
+        if lease is None:
+            raise KeyError(f"Lease '{lease_id}' not found")
+        now = utc_now()
+        updated = lease.model_copy(update={
+            "status": LeaseStatus.revoked,
+            "revoked_at": now,
+            "reason": reason if reason is not None else lease.reason,
+        })
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE leases
+                SET status = ?, revoked_at = ?, reason = ?
+                WHERE id = ?
+                """,
+                (
+                    updated.status.value,
+                    updated.revoked_at.isoformat() if updated.revoked_at else None,
+                    updated.reason,
+                    updated.id,
+                ),
+            )
+            conn.commit()
+        return updated
+
     def export_backup(self, *, metadata_only: bool = False) -> dict:
         """Export all credentials as a portable backup dict.
 
@@ -769,10 +1029,33 @@ class Vault:
             if not metadata_only:
                 entry["encrypted_payload"] = rec.encrypted_payload
             backup_creds.append(entry)
+        backup_leases = []
+        for lease in self.list_leases():
+            backup_leases.append({
+                "id": lease.id,
+                "service": lease.service,
+                "alias": lease.alias,
+                "credential_id": lease.credential_id,
+                "credential_type": lease.credential_type,
+                "agent_id": lease.agent_id,
+                "issued_by": lease.issued_by,
+                "purpose": lease.purpose,
+                "status": lease.status.value,
+                "ttl_seconds": lease.ttl_seconds,
+                "issued_at": lease.issued_at.isoformat(),
+                "expires_at": lease.expires_at.isoformat(),
+                "revoked_at": lease.revoked_at.isoformat() if lease.revoked_at else None,
+                "renewed_at": lease.renewed_at.isoformat() if lease.renewed_at else None,
+                "renew_count": lease.renew_count,
+                "reason": lease.reason,
+                "scopes": lease.scopes,
+                "metadata": lease.metadata,
+            })
         return {
             "version": "hvbackup-v1",
             "exported_at": utc_now().isoformat(),
             "credentials": backup_creds,
+            "leases": backup_leases,
         }
 
     def import_backup(self, backup: dict, replace: bool = True) -> list[CredentialRecord]:
@@ -882,6 +1165,100 @@ class Vault:
                     )
                 conn.commit()
             imported.append(record)
+
+        for lease_data in backup.get("leases", []):
+            lease_id = lease_data.get("id") or str(uuid4())
+            metadata = lease_data.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                metadata = {"raw": metadata}
+            scopes = lease_data.get("scopes") or []
+            if not isinstance(scopes, list):
+                scopes = [str(scopes)]
+            existing = self.get_lease(lease_id)
+            lease = LeaseRecord(
+                id=lease_id,
+                service=normalize(lease_data.get("service", "")),
+                alias=str(lease_data.get("alias") or "default"),
+                credential_id=str(lease_data.get("credential_id") or ""),
+                credential_type=str(lease_data.get("credential_type") or "unknown"),
+                agent_id=str(lease_data.get("agent_id") or ""),
+                issued_by=str(lease_data.get("issued_by") or lease_data.get("agent_id") or ""),
+                purpose=str(lease_data.get("purpose") or "task"),
+                status=LeaseStatus(str(lease_data.get("status") or LeaseStatus.active.value)),
+                ttl_seconds=int(lease_data.get("ttl_seconds") or 0),
+                issued_at=datetime.fromisoformat(lease_data.get("issued_at")) if lease_data.get("issued_at") else utc_now(),
+                expires_at=datetime.fromisoformat(lease_data.get("expires_at")) if lease_data.get("expires_at") else utc_now(),
+                revoked_at=datetime.fromisoformat(lease_data["revoked_at"]) if lease_data.get("revoked_at") else None,
+                renewed_at=datetime.fromisoformat(lease_data["renewed_at"]) if lease_data.get("renewed_at") else None,
+                renew_count=int(lease_data.get("renew_count") or 0),
+                reason=lease_data.get("reason"),
+                scopes=[str(item) for item in scopes],
+                metadata=metadata,
+            )
+            if existing:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute(
+                        """
+                        UPDATE leases
+                        SET service=?, alias=?, credential_id=?, credential_type=?, agent_id=?, issued_by=?,
+                            purpose=?, status=?, ttl_seconds=?, issued_at=?, expires_at=?, revoked_at=?,
+                            renewed_at=?, renew_count=?, reason=?, scopes=?, metadata_json=?
+                        WHERE id=?
+                        """,
+                        (
+                            lease.service,
+                            lease.alias,
+                            lease.credential_id,
+                            lease.credential_type,
+                            lease.agent_id,
+                            lease.issued_by,
+                            lease.purpose,
+                            lease.status.value,
+                            lease.ttl_seconds,
+                            lease.issued_at.isoformat(),
+                            lease.expires_at.isoformat(),
+                            lease.revoked_at.isoformat() if lease.revoked_at else None,
+                            lease.renewed_at.isoformat() if lease.renewed_at else None,
+                            lease.renew_count,
+                            lease.reason,
+                            json.dumps(lease.scopes),
+                            json.dumps(lease.metadata, sort_keys=True),
+                            lease.id,
+                        ),
+                    )
+                    conn.commit()
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO leases (
+                            id, service, alias, credential_id, credential_type, agent_id, issued_by, purpose,
+                            status, ttl_seconds, issued_at, expires_at, revoked_at, renewed_at, renew_count,
+                            reason, scopes, metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            lease.id,
+                            lease.service,
+                            lease.alias,
+                            lease.credential_id,
+                            lease.credential_type,
+                            lease.agent_id,
+                            lease.issued_by,
+                            lease.purpose,
+                            lease.status.value,
+                            lease.ttl_seconds,
+                            lease.issued_at.isoformat(),
+                            lease.expires_at.isoformat(),
+                            lease.revoked_at.isoformat() if lease.revoked_at else None,
+                            lease.renewed_at.isoformat() if lease.renewed_at else None,
+                            lease.renew_count,
+                            lease.reason,
+                            json.dumps(lease.scopes),
+                            json.dumps(lease.metadata, sort_keys=True),
+                        ),
+                    )
+                    conn.commit()
         return imported
 
     def rotate_master_key(

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.16.0 -- Agent Access Lifecycle
+
+### Added
+
+- Lease lifecycle support: agents and operators can issue, list, inspect, renew, and revoke time-bound leases over credential access.
+- Policy pack templates: reusable starter packs now provide a coherent policy baseline for operator and agent workflows.
+- Dashboard and MCP surfacing: lease metadata is visible through the local dashboard and MCP server without exposing raw secrets.
+
+### Changed
+
+- Release closeout: version surfaces now report `0.16.0` in `pyproject.toml`, `src/hermes_vault/__init__.py`, `src/hermes_vault/mcp_server.py`, and `uv.lock`.
+- README release notes now describe the Agent Access Lifecycle release at the top of the document.
+
+### Verification
+
+- Full `uv run pytest` passed after the lease, policy-pack, and release-surface updates.
+
 ## 0.15.1 -- EvoLink Provider Support
 
 ### Added

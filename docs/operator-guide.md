@@ -8,6 +8,23 @@
 4. Edit `~/.hermes/hermes-vault-data/policy.yaml` for the real agent allowlists.
 5. Back up both `vault.db` and `master_key_salt.bin` together. Losing the salt makes the vault unreadable.
 
+## v0.16.0 access-lifecycle release runbook
+
+This release turns access into a lease lifecycle. Use these commands when you want bounded access, a reusable policy baseline, and a quick cleanup path:
+
+```bash
+hermes-vault policy pack list
+hermes-vault policy pack show coder
+hermes-vault lease issue openai --agent hermes --ttl 600
+hermes-vault lease list --agent hermes
+hermes-vault lease revoke lease-123 --agent hermes --reason "task complete"
+```
+
+- `policy pack` gives canonical starting policy files instead of hand-editing YAML from scratch.
+- `lease issue` creates a time-bound access record.
+- `lease list`, `lease show`, `lease renew`, and `lease revoke` are the operator lifecycle tools.
+- Dashboard and MCP surfaces show lifecycle metadata but never raw secret values.
+
 ## v0.14.0 Windows-native release runbook
 
 This release is about keeping the vault healthy on its own after credentials already exist. Use the tools in this order when you want the honest picture:

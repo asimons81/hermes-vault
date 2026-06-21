@@ -36,6 +36,7 @@ const state = {
   loading: true,
   overview: null,
   credentials: [],
+  leases: [],
   verificationResults: {},
   policy: null,
   profiles: [],
@@ -260,12 +261,13 @@ async function loadAll(button) {
   setConnection("Refreshing", "busy");
   renderLoading();
   try {
-    const [overview, credentials, policy, audit, profiles] = await Promise.all([
+    const [overview, credentials, policy, audit, profiles, leases] = await Promise.all([
       api("/api/overview"),
       api("/api/credentials"),
       api("/api/policy"),
       api("/api/audit?limit=60"),
       api("/api/profiles"),
+      api("/api/leases"),
     ]);
     state.overview = overview;
     state.credentials = credentials.credentials || [];
@@ -273,6 +275,7 @@ async function loadAll(button) {
     state.policy = policy;
     state.audit = audit.entries || [];
     state.profiles = profiles.profiles || [];
+    state.leases = leases.leases || [];
     render();
     setConnection("Local session", "ready");
   } catch (error) {
@@ -291,6 +294,7 @@ function render() {
   renderOverview();
   renderCredentials();
   renderPolicy();
+  renderLeases();
   renderAudit();
   updateNavGlider();
 }
@@ -411,6 +415,29 @@ function renderPolicy() {
     });
   });
   renderItems(qs("#agent-list"), agents, "No agents configured.");
+}
+
+function renderLeases() {
+  const leases = state.leases || [];
+  const rows = leases.map((lease) => `
+    <tr>
+      <td><strong>${escapeHtml(lease.service)}</strong></td>
+      <td>${escapeHtml(lease.alias)}</td>
+      <td>${escapeHtml(lease.agent_id)}</td>
+      <td><span class="status ${escapeHtml(lease.status)}">${escapeHtml(lease.status)}</span></td>
+      <td>${escapeHtml(lease.purpose)}</td>
+      <td>${escapeHtml(String(lease.ttl_seconds || "-"))}</td>
+      <td>${formatExpiry(lease.expires_at)}</td>
+      <td>${escapeHtml(lease.renew_count ?? 0)}</td>
+      <td>${lease.reason ? `<p class="cell-note metadata-note">${escapeHtml(lease.reason)}</p>` : "-"}</td>
+    </tr>
+  `);
+  renderTable(
+    qs("#lease-table"),
+    ["Service", "Alias", "Agent", "Status", "Purpose", "TTL", "Expiry", "Renews", "Reason"],
+    rows,
+    "No leases have been issued yet.",
+  );
 }
 
 function renderAudit() {

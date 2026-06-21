@@ -71,6 +71,33 @@ class CredentialRecord(BaseModel):
     crypto_version: str = "aesgcm-v1"
 
 
+class LeaseStatus(str, Enum):
+    active = "active"
+    expired = "expired"
+    revoked = "revoked"
+
+
+class LeaseRecord(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    service: str
+    alias: str = "default"
+    credential_id: str
+    credential_type: str
+    agent_id: str
+    issued_by: str
+    purpose: str
+    status: LeaseStatus = LeaseStatus.active
+    ttl_seconds: int
+    issued_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime = Field(default_factory=utc_now)
+    revoked_at: datetime | None = None
+    renewed_at: datetime | None = None
+    renew_count: int = 0
+    reason: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class CredentialSecret(BaseModel):
     secret: str
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -108,6 +135,11 @@ class ServiceAction(str, Enum):
     add_credential = "add_credential"
     rotate = "rotate"
     delete = "delete"
+    issue_lease = "issue_lease"
+    list_leases = "list_leases"
+    show_lease = "show_lease"
+    renew_lease = "renew_lease"
+    revoke_lease = "revoke_lease"
 
 
 ALL_SERVICE_ACTIONS: list[ServiceAction] = list(ServiceAction)

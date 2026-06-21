@@ -12,6 +12,7 @@ from hermes_vault.models import (
     BrokerDecision,
     CredentialStatus,
     Decision,
+    LeaseStatus,
     MutationResult,
     ServiceAction,
     VerificationCategory,
@@ -628,6 +629,191 @@ class Broker:
             agent_id=agent_id,
             service_or_id=service_or_id,
             alias=alias,
+        )
+
+    def issue_lease(
+        self,
+        agent_id: str,
+        service_or_id: str,
+        ttl_seconds: int,
+        alias: str | None = None,
+        purpose: str = "task",
+        reason: str | None = None,
+    ) -> BrokerDecision:
+        try:
+            record = self.vault.resolve_credential(service_or_id, alias=alias)
+        except Exception as exc:
+            return self._deny(agent_id, normalize(service_or_id), "issue_lease", str(exc), ttl_seconds=ttl_seconds)
+
+        allowed, policy_reason = self.policy.can(agent_id, record.service, ServiceAction.issue_lease)
+        if not allowed:
+            return self._deny(agent_id, record.service, "issue_lease", policy_reason, ttl_seconds=ttl_seconds)
+
+        ttl_ok, ttl_reason, effective_ttl = self.policy.enforce_ttl(agent_id, ttl_seconds, record.service)
+        if not ttl_ok:
+            return self._deny(agent_id, record.service, "issue_lease", ttl_reason, ttl_seconds=ttl_seconds)
+
+        lease = self.vault.issue_lease(
+            service_or_id=record.id,
+            agent_id=agent_id,
+            ttl_seconds=effective_ttl,
+            alias=record.alias,
+            purpose=purpose,
+            issued_by=agent_id,
+            reason=reason,
+        )
+        metadata = lease.model_dump(mode="json")
+        self.audit.record(
+            AccessLogRecord(
+                agent_id=agent_id,
+                service=lease.service,
+                action="issue_lease",
+                decision=Decision.allow,
+                reason="lease issued",
+                ttl_seconds=lease.ttl_seconds,
+                metadata={"lease_id": lease.id, "status": lease.status.value, "expires_at": lease.expires_at.isoformat()},
+            )
+        )
+        return BrokerDecision(
+            allowed=True,
+            service=lease.service,
+            agent_id=agent_id,
+            reason="lease issued",
+            ttl_seconds=lease.ttl_seconds,
+            metadata={"lease": metadata},
+        )
+
+    def list_leases(
+        self,
+        agent_id: str,
+        service: str | None = None,
+        status: str | LeaseStatus | None = None,
+    ) -> BrokerDecision:
+        leases = self.vault.list_leases(service=service, status=status)
+        visible = []
+        denied_any = False
+        for lease in leases:
+            allowed, policy_reason = self.policy.can(agent_id, lease.service, ServiceAction.list_leases)
+            if not allowed:
+                denied_any = True
+                continue
+            visible.append(lease.model_dump(mode="json"))
+        if service is not None and not visible:
+            return self._deny(agent_id, normalize(service), "list_leases", "no visible leases for this service")
+        self.audit.record(
+            AccessLogRecord(
+                agent_id=agent_id,
+                service=service or "*",
+                action="list_leases",
+                decision=Decision.allow,
+                reason=f"returned {len(visible)} lease(s)",
+                metadata={"lease_count": len(visible), "filtered_out": len(leases) - len(visible)},
+            )
+        )
+        return BrokerDecision(
+            allowed=True,
+            service=normalize(service) if service else "*",
+            agent_id=agent_id,
+            reason=f"returned {len(visible)} lease(s)",
+            metadata={"leases": visible},
+        )
+
+    def show_lease(self, agent_id: str, lease_id: str) -> BrokerDecision:
+        lease = self.vault.get_lease(lease_id)
+        if lease is None:
+            return self._deny(agent_id, "*", "show_lease", f"lease '{lease_id}' not found")
+        allowed, policy_reason = self.policy.can(agent_id, lease.service, ServiceAction.show_lease)
+        if not allowed:
+            return self._deny(agent_id, lease.service, "show_lease", policy_reason)
+        self.audit.record(
+            AccessLogRecord(
+                agent_id=agent_id,
+                service=lease.service,
+                action="show_lease",
+                decision=Decision.allow,
+                reason=f"returned lease {lease.id}",
+                metadata={"lease_id": lease.id, "status": lease.status.value},
+            )
+        )
+        return BrokerDecision(
+            allowed=True,
+            service=lease.service,
+            agent_id=agent_id,
+            reason=f"returned lease {lease.id}",
+            metadata={"lease": lease.model_dump(mode="json")},
+        )
+
+    def renew_lease(
+        self,
+        agent_id: str,
+        lease_id: str,
+        ttl_seconds: int,
+    ) -> BrokerDecision:
+        lease = self.vault.get_lease(lease_id)
+        if lease is None:
+            return self._deny(agent_id, "*", "renew_lease", f"lease '{lease_id}' not found", ttl_seconds=ttl_seconds)
+        allowed, policy_reason = self.policy.can(agent_id, lease.service, ServiceAction.renew_lease)
+        if not allowed:
+            return self._deny(agent_id, lease.service, "renew_lease", policy_reason, ttl_seconds=ttl_seconds)
+        ttl_ok, ttl_reason, effective_ttl = self.policy.enforce_ttl(agent_id, ttl_seconds, lease.service)
+        if not ttl_ok:
+            return self._deny(agent_id, lease.service, "renew_lease", ttl_reason, ttl_seconds=ttl_seconds)
+        try:
+            updated = self.vault.renew_lease(lease.id, effective_ttl)
+        except ValueError as exc:
+            return self._deny(agent_id, lease.service, "renew_lease", str(exc), ttl_seconds=ttl_seconds)
+        self.audit.record(
+            AccessLogRecord(
+                agent_id=agent_id,
+                service=lease.service,
+                action="renew_lease",
+                decision=Decision.allow,
+                reason=f"renewed lease {lease.id}",
+                ttl_seconds=updated.ttl_seconds,
+                metadata={"lease_id": updated.id, "status": updated.status.value, "expires_at": updated.expires_at.isoformat()},
+            )
+        )
+        return BrokerDecision(
+            allowed=True,
+            service=lease.service,
+            agent_id=agent_id,
+            reason=f"renewed lease {lease.id}",
+            ttl_seconds=updated.ttl_seconds,
+            metadata={"lease": updated.model_dump(mode="json")},
+        )
+
+    def revoke_lease(
+        self,
+        agent_id: str,
+        lease_id: str,
+        reason: str | None = None,
+    ) -> BrokerDecision:
+        lease = self.vault.get_lease(lease_id)
+        if lease is None:
+            return self._deny(agent_id, "*", "revoke_lease", f"lease '{lease_id}' not found")
+        allowed, policy_reason = self.policy.can(agent_id, lease.service, ServiceAction.revoke_lease)
+        if not allowed:
+            return self._deny(agent_id, lease.service, "revoke_lease", policy_reason)
+        try:
+            updated = self.vault.revoke_lease(lease.id, reason=reason)
+        except ValueError as exc:
+            return self._deny(agent_id, lease.service, "revoke_lease", str(exc))
+        self.audit.record(
+            AccessLogRecord(
+                agent_id=agent_id,
+                service=lease.service,
+                action="revoke_lease",
+                decision=Decision.allow,
+                reason=f"revoked lease {lease.id}",
+                metadata={"lease_id": updated.id, "status": updated.status.value, "revoked_at": updated.revoked_at.isoformat() if updated.revoked_at else None},
+            )
+        )
+        return BrokerDecision(
+            allowed=True,
+            service=lease.service,
+            agent_id=agent_id,
+            reason=f"revoked lease {lease.id}",
+            metadata={"lease": updated.model_dump(mode="json")},
         )
 
     # ── internal helpers ──────────────────────────────────────────────────

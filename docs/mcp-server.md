@@ -87,6 +87,11 @@ Once registered, tools are prefixed as `mcp_hermes_vault_*`:
 | `mcp_hermes_vault_list_services` | List credentials visible to the agent, filtered by policy |
 | `mcp_hermes_vault_get_credential_metadata` | Fetch metadata (no raw secrets) |
 | `mcp_hermes_vault_get_ephemeral_env` | Materialise ephemeral env vars for a service |
+| `mcp_hermes_vault_lease_issue` | Issue a time-bound access lease |
+| `mcp_hermes_vault_lease_list` | List leases visible to the agent |
+| `mcp_hermes_vault_lease_show` | Show a specific lease |
+| `mcp_hermes_vault_lease_renew` | Renew a lease's TTL |
+| `mcp_hermes_vault_lease_revoke` | Revoke a lease |
 | `mcp_hermes_vault_verify_credential` | Verify a credential against its provider |
 | `mcp_hermes_vault_rotate_credential` | Rotate to a new secret (requires `rotate` permission) |
 | `mcp_hermes_vault_scan_for_secrets` | Scan filesystem paths for plaintext secrets |

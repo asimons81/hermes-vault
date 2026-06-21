@@ -79,6 +79,52 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         "required": ["service"],
     },
+    "lease_issue": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
+            "service": {"type": "string", "description": "Service name or credential ID"},
+            "alias": {"type": "string", "description": "Optional alias for disambiguation"},
+            "ttl_seconds": {"type": "integer", "description": "Lease duration in seconds"},
+            "purpose": {"type": "string", "description": "Purpose of the lease"},
+            "reason": {"type": "string", "description": "Optional human-readable reason"},
+        },
+        "required": ["service", "ttl_seconds"],
+    },
+    "lease_list": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
+            "service": {"type": "string", "description": "Optional service filter"},
+            "status": {"type": "string", "description": "Optional lease status filter"},
+        },
+    },
+    "lease_show": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
+            "lease_id": {"type": "string", "description": "Lease ID"},
+        },
+        "required": ["lease_id"],
+    },
+    "lease_renew": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
+            "lease_id": {"type": "string", "description": "Lease ID"},
+            "ttl_seconds": {"type": "integer", "description": "Renewal TTL in seconds"},
+        },
+        "required": ["lease_id", "ttl_seconds"],
+    },
+    "lease_revoke": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
+            "lease_id": {"type": "string", "description": "Lease ID"},
+            "reason": {"type": "string", "description": "Optional revocation reason"},
+        },
+        "required": ["lease_id"],
+    },
     "verify_credential": {
         "type": "object",
         "properties": {
@@ -302,6 +348,8 @@ def _resource_arguments(uri: Any) -> dict[str, Any]:
         arguments["agent_id"] = query["agent_id"][0]
     if query.get("alias"):
         arguments["alias"] = query["alias"][0]
+    if query.get("id"):
+        arguments["id"] = query["id"][0]
     return arguments
 
 
@@ -311,7 +359,9 @@ def _resource_key(uri: Any) -> str:
         raise ValueError(f"Unsupported resource URI: {uri}")
     if parsed.netloc == "services" and parsed.path not in ("", "/"):
         return "vault://services/{name}"
-    if parsed.netloc in {"services", "health", "policy"} and parsed.path in ("", "/"):
+    if parsed.netloc == "leases" and parsed.path not in ("", "/"):
+        return "vault://leases/{id}"
+    if parsed.netloc in {"services", "health", "policy", "leases"} and parsed.path in ("", "/"):
         return f"vault://{parsed.netloc}"
     raise ValueError(f"Unknown resource URI: {uri}")
 
@@ -321,6 +371,13 @@ def _resource_service_name(uri: Any) -> str | None:
     if parsed.netloc != "services" or parsed.path in ("", "/"):
         return None
     return normalize(urllib.parse.unquote(parsed.path.lstrip("/")).replace(" ", "_"))
+
+
+def _resource_lease_id(uri: Any) -> str | None:
+    parsed = urllib.parse.urlparse(str(uri))
+    if parsed.netloc != "leases" or parsed.path in ("", "/"):
+        return None
+    return urllib.parse.unquote(parsed.path.lstrip("/")).strip() or None
 
 
 def _resolve_resource_binding(settings: Any, uri: Any, resource_key: str) -> MCPBindingContext:
@@ -437,6 +494,47 @@ def _service_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBindi
     }
 
 
+def _lease_metadata_payload(record: Any) -> dict[str, Any]:
+    payload = record.model_dump(mode="json")
+    payload.pop("metadata", None)
+    payload["has_metadata"] = bool(record.metadata)
+    return payload
+
+
+def _leases_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    agent_id = binding.effective_agent_id or ""
+    result = broker.list_leases(agent_id)
+    if not result.allowed:
+        raise ValueError(result.reason)
+    leases = [dict(lease) for lease in result.metadata.get("leases", [])]
+    return {
+        "version": "vault-leases-v1",
+        "generated_at": _generated_at(),
+        "agent_id": agent_id,
+        "binding_mode": binding.binding_mode,
+        "count": len(leases),
+        "leases": leases,
+    }
+
+
+def _lease_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    agent_id = binding.effective_agent_id or ""
+    lease_id = _resource_lease_id(uri)
+    if lease_id is None:
+        raise ValueError(f"Missing lease id in resource URI: {uri}")
+    result = broker.show_lease(agent_id, lease_id)
+    if not result.allowed:
+        raise ValueError(result.reason)
+    lease = result.metadata.get("lease") or {}
+    return {
+        "version": "vault-lease-v1",
+        "generated_at": _generated_at(),
+        "agent_id": agent_id,
+        "binding_mode": binding.binding_mode,
+        "lease": lease,
+    }
+
+
 def _health_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
     cap_ok, cap_reason = broker.policy.can_capability(agent_id, AgentCapability.list_credentials)
@@ -509,16 +607,18 @@ def _policy_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict
 
 
 def _preflight_tool_arguments(name: str, arguments: dict[str, Any]) -> str | None:
-    if name in {"get_credential_metadata", "get_ephemeral_env", "verify_credential", "rotate_credential"}:
+    if name in {"get_credential_metadata", "get_ephemeral_env", "verify_credential", "rotate_credential", "oauth_refresh"}:
         if _normalize_agent_id(arguments.get("service")) is None:
             return "Missing required parameter: service"
+    if name in {"lease_issue", "lease_list", "lease_show", "lease_renew", "lease_revoke"}:
+        if name in {"lease_issue", "lease_renew"} and arguments.get("ttl_seconds") is None:
+            return "Missing required parameter: ttl_seconds"
+        if name in {"lease_show", "lease_renew", "lease_revoke"} and _normalize_agent_id(arguments.get("lease_id")) is None:
+            return "Missing required parameter: lease_id"
     if name in {"oauth_login", "oauth_device_login", "oauth_provider_status"}:
         provider = _normalize_agent_id(arguments.get("provider_id") or arguments.get("provider"))
         if provider is None:
             return "Missing required parameter: provider_id" if name in {"oauth_device_login", "oauth_provider_status"} else "Missing required parameter: provider"
-    if name == "oauth_refresh":
-        if _normalize_agent_id(arguments.get("service")) is None:
-            return "Missing required parameter: service"
     return None
 
 
@@ -529,7 +629,7 @@ _pending_oauth: dict[str, dict[str, Any]] = {}
 
 # ── server ─────────────────────────────────────────────────────────────────────
 
-server = Server("hermes-vault", version="0.15.1")
+server = Server("hermes-vault", version="0.16.0")
 
 
 @server.list_tools()
@@ -549,6 +649,31 @@ async def list_tools() -> list[Tool]:
             name="get_ephemeral_env",
             description="Materialise ephemeral environment variables for a service. Primary access pattern.",
             inputSchema=_TOOL_SCHEMAS["get_ephemeral_env"],
+        ),
+        Tool(
+            name="lease_issue",
+            description="Issue a credential lease for a service. Returns metadata only.",
+            inputSchema=_TOOL_SCHEMAS["lease_issue"],
+        ),
+        Tool(
+            name="lease_list",
+            description="List visible leases for the effective agent. Returns metadata only.",
+            inputSchema=_TOOL_SCHEMAS["lease_list"],
+        ),
+        Tool(
+            name="lease_show",
+            description="Show one lease by ID. Returns metadata only.",
+            inputSchema=_TOOL_SCHEMAS["lease_show"],
+        ),
+        Tool(
+            name="lease_renew",
+            description="Renew a lease by ID. Returns metadata only.",
+            inputSchema=_TOOL_SCHEMAS["lease_renew"],
+        ),
+        Tool(
+            name="lease_revoke",
+            description="Revoke a lease by ID. Returns metadata only.",
+            inputSchema=_TOOL_SCHEMAS["lease_revoke"],
         ),
         Tool(
             name="verify_credential",
@@ -645,6 +770,13 @@ async def list_resources() -> list[Resource]:
             description="Sanitized policy summary for the effective agent only.",
             mimeType="application/json",
         ),
+        Resource(
+            name="vault-leases",
+            title="Hermes Vault leases",
+            uri=AnyUrl("vault://leases"),
+            description="Policy-scoped lease inventory for the effective agent.",
+            mimeType="application/json",
+        ),
     ]
     resources.extend(await _default_agent_service_resources())
     return resources
@@ -659,7 +791,14 @@ async def list_resource_templates() -> list[ResourceTemplate]:
             uriTemplate="vault://services/{name}",
             description="Metadata for one policy-visible service. Optional query parameters: agent_id, alias.",
             mimeType="application/json",
-        )
+        ),
+        ResourceTemplate(
+            name="vault-lease-detail",
+            title="Hermes Vault lease metadata",
+            uriTemplate="vault://leases/{id}",
+            description="Metadata for one policy-visible lease. Optional query parameter: agent_id.",
+            mimeType="application/json",
+        ),
     ]
 
 
@@ -684,6 +823,10 @@ async def read_resource(uri: Any) -> Any:
             payload = _health_resource_payload(broker, binding)
         elif key == "vault://policy":
             payload = _policy_resource_payload(broker, binding)
+        elif key == "vault://leases":
+            payload = _leases_resource_payload(broker, binding)
+        elif key == "vault://leases/{id}":
+            payload = _lease_detail_resource_payload(uri, broker, binding)
         else:
             raise ValueError(f"Unknown resource URI: {uri}")
     except ValueError as exc:
@@ -748,6 +891,53 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 "expires_at": expires_at,
                 "metadata": result.metadata,
             }))]
+
+        if name == "lease_issue":
+            agent_id = binding.effective_agent_id or ""
+            service = arguments["service"]
+            alias = arguments.get("alias")
+            ttl = arguments["ttl_seconds"]
+            purpose = arguments.get("purpose") or "task"
+            reason = arguments.get("reason")
+            result = broker.issue_lease(agent_id, service, ttl, alias=alias, purpose=purpose, reason=reason)
+            if not result.allowed:
+                return [TextContent(type="text", text=f"Denied: {result.reason}")]
+            return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
+
+        if name == "lease_list":
+            agent_id = binding.effective_agent_id or ""
+            service = arguments.get("service")
+            status = arguments.get("status")
+            result = broker.list_leases(agent_id, service=service, status=status)
+            if not result.allowed:
+                return [TextContent(type="text", text=f"Denied: {result.reason}")]
+            return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
+
+        if name == "lease_show":
+            agent_id = binding.effective_agent_id or ""
+            lease_id = arguments["lease_id"]
+            result = broker.show_lease(agent_id, lease_id)
+            if not result.allowed:
+                return [TextContent(type="text", text=f"Denied: {result.reason}")]
+            return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
+
+        if name == "lease_renew":
+            agent_id = binding.effective_agent_id or ""
+            lease_id = arguments["lease_id"]
+            ttl = arguments["ttl_seconds"]
+            result = broker.renew_lease(agent_id, lease_id, ttl)
+            if not result.allowed:
+                return [TextContent(type="text", text=f"Denied: {result.reason}")]
+            return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
+
+        if name == "lease_revoke":
+            agent_id = binding.effective_agent_id or ""
+            lease_id = arguments["lease_id"]
+            reason = arguments.get("reason")
+            result = broker.revoke_lease(agent_id, lease_id, reason=reason)
+            if not result.allowed:
+                return [TextContent(type="text", text=f"Denied: {result.reason}")]
+            return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
 
         if name == "verify_credential":
             agent_id = binding.effective_agent_id or ""
