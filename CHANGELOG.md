@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.15.1 -- EvoLink Provider Support
+
+### Added
+
+- EvoLink provider support: `evolink` is now a canonical service ID, env-name hints recognize `EVOLINK_API_KEY`, and provider verification has a direct EvoLink models check.
+- Release closeout: version surfaces now report `0.15.1` in `pyproject.toml`, `src/hermes_vault/__init__.py`, and `src/hermes_vault/mcp_server.py`.
+
+### Changed
+
+- README release notes now describe the EvoLink patch release instead of repeating the prior OAuth freshness story as the latest release.
+
+### Verification
+
+- Targeted release regression tests passed for the EvoLink-related surfaces and release version assertions.
+
 ## 0.15.0 -- Agent OAuth Freshness
 
 ### Added
