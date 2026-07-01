@@ -42,7 +42,7 @@
     <!-- Hero Section -->
     <section class="hero section-pad reveal hero-reveal-1">
       <div class="hero-copy">
-        <p class="eyebrow">v0.15.0 &bull; agent OAuth freshness &bull; local first</p>
+        <p class="eyebrow">v0.17.0 &bull; Lease Assurance &bull; full lifecycle</p>
         <h1>From <span>.env</span> to safe agent access.</h1>
         <p class="lede">
           Bootstrap a messy plaintext env file into an encrypted local vault, policy-scoped agent access, generated skill contracts, browserless OAuth options, and a release loop that proves freshness, drift, and recovery. Less key sprawl, fewer auth lies, fewer agent mistakes.
@@ -63,8 +63,8 @@
         <div class="hero-metrics" aria-label="Release and platform notes">
           <div class="metric-card">
             <span>Current Release</span>
-            <strong>0.15.0</strong>
-            <small>Agent OAuth freshness: broker auto-refreshes near-expiry OAuth tokens before env handoff. No stale tokens, no agent-side refresh logic needed.</small>
+            <strong>0.17.0</strong>
+            <small>Lease Assurance: full lease lifecycle with health visibility, scheduled cleanup, policy drift detection, and backup diffing across every operator surface.</small>
           </div>
           <div class="metric-card">
             <span>Operator Loop</span>
@@ -310,7 +310,7 @@
                 <span>Production Install</span>
                 <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
               </div>
-              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.15.0
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.17.0
 hermes-vault bootstrap --from-env .env --agent hermes --dry-run
 hermes-vault bootstrap --from-env .env --agent hermes
 hermes-vault oauth doctor google
@@ -365,11 +365,23 @@ uv run pytest tests/ -q</code></pre>
       <div class="release-timeline">
         <article class="release-featured">
           <div class="release-badge">Current Release</div>
-          <h3>v0.15.0</h3>
-          <p>Agent OAuth freshness: broker auto-refreshes near-expiry OAuth tokens before the credential reaches the agent, reducing stale-token failures. <code>oauth_refresh</code> metadata in broker decisions, 30s refresh cooldown, and policy-gated via the <code>rotate</code> service action.</p>
+          <h3>v0.17.0</h3>
+          <p>Lease Assurance: time-bound credential leases with health visibility, scheduled cleanup, policy drift detection, backup lease diffing, and full end-to-end test coverage. 754 total tests, 57 new lease tests across 10 operator surfaces.</p>
         </article>
 
         <div class="release-list">
+          <article class="release-row">
+            <span class="release-version">v0.16.0</span>
+            <p>Agent Access Lifecycle with <code>lease issue/renew/revoke</code> workflows, policy pack templates, and dashboard/MCP surfacing for access metadata.</p>
+          </article>
+          <article class="release-row">
+            <span class="release-version">v0.15.1</span>
+            <p>EvoLink provider support with canonical service ID mapping and provider-specific verification.</p>
+          </article>
+          <article class="release-row">
+            <span class="release-version">v0.15.0</span>
+            <p>Agent OAuth freshness: broker auto-refreshes near-expiry OAuth tokens before env handoff. OAuth refresh metadata, 30s refresh cooldown, and policy-gated via the <code>rotate</code> service action.</p>
+          </article>
           <article class="release-row">
             <span class="release-version">v0.14.0</span>
             <p>Native Windows support with <code>HERMES_VAULT_DPAPI=1</code> master-key wrapping, a new <code>_platform.py</code> abstraction layer, and full <code>docs/windows.md</code> install, OAuth, backup, and Task Scheduler guides.</p>
