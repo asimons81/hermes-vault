@@ -657,7 +657,6 @@ class Broker:
             service_or_id=record.id,
             agent_id=agent_id,
             ttl_seconds=effective_ttl,
-            alias=record.alias,
             purpose=purpose,
             issued_by=agent_id,
             reason=reason,

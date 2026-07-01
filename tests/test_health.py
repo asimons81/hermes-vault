@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -10,7 +11,8 @@ from click.testing import CliRunner
 
 from hermes_vault.audit import AuditLogger
 from hermes_vault.cli import _hermes_group, build_services as real_build_services
-from hermes_vault.health import HealthReport, run_health
+from hermes_vault.health import HealthReport, lease_summary, run_health
+from hermes_vault.models import LeaseStatus
 from hermes_vault.models import AccessLogRecord, CredentialStatus, Decision, VerificationCategory, VerificationResult
 from hermes_vault.vault import Vault
 
@@ -146,6 +148,48 @@ def test_health_report_version_builtin(vault_with_fresh_creds: Vault) -> None:
     report = run_health(vault_with_fresh_creds)
     d = report.as_dict(exclude_none=False)
     assert d["version"] == "health-v1"
+
+
+def test_lease_summary_reports_active_expired_and_revoked(empty_vault: Vault) -> None:
+    record = empty_vault.add_credential("openai", "sk-lease", "api_key", alias="primary")
+    active = empty_vault.issue_lease(record.id, agent_id="health-agent", ttl_seconds=300)
+    expired = empty_vault.issue_lease(record.id, agent_id="health-agent", ttl_seconds=300)
+    revoked = empty_vault.issue_lease(record.id, agent_id="health-agent", ttl_seconds=300)
+    empty_vault.revoke_lease(revoked.id, reason="cleanup")
+    past = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+    with sqlite3.connect(empty_vault.db_path) as conn:
+        conn.execute("UPDATE leases SET expires_at = ?, status = ? WHERE id = ?", (past, LeaseStatus.active.value, expired.id))
+        conn.commit()
+
+    summary = lease_summary(empty_vault)
+
+    assert summary == {"active": 1, "expired": 1, "revoked": 1, "total": 3}
+    assert active.id != expired.id
+
+
+def test_health_report_includes_lease_counts(empty_vault: Vault) -> None:
+    record = empty_vault.add_credential("openai", "sk-lease", "api_key", alias="primary")
+    empty_vault.issue_lease(record.id, agent_id="health-agent", ttl_seconds=300)
+
+    report = run_health(empty_vault)
+
+    assert report.leases["active"] == 1
+    assert report.leases["total"] == 1
+
+
+def test_cli_health_json_contains_leases_key(
+    cli_runner: CliRunner, vault_with_fresh_creds: Vault, monkeypatch
+) -> None:
+    record = vault_with_fresh_creds.resolve_credential("openai", alias="primary")
+    vault_with_fresh_creds.issue_lease(record.id, agent_id="health-agent", ttl_seconds=300)
+    _record_recent_backup(AuditLogger(vault_with_fresh_creds.db_path))
+    monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services(vault_with_fresh_creds))
+
+    result = cli_runner.invoke(_hermes_group, ["health", "--format", "json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["leases"] == {"active": 1, "expired": 0, "revoked": 0, "total": 1}
 
 
 def test_health_verify_live_adds_provider_failure_without_secret(vault_with_fresh_creds: Vault) -> None:

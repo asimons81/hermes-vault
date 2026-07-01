@@ -262,6 +262,43 @@ def _collect_agent_findings(agent_id: str, agent_raw: dict[str, Any]) -> list[Po
                     )
                 )
 
+    for service_name, entry in service_actions.items():
+        actions_raw = entry.get("actions", []) if isinstance(entry, dict) else []
+        if not isinstance(actions_raw, list):
+            continue
+        actions = {str(action) for action in actions_raw if isinstance(action, str)}
+        normalized_service = normalize(service_name)
+        if ServiceAction.issue_lease.value in actions and not {
+            ServiceAction.get_env.value,
+            ServiceAction.get_credential.value,
+        }.intersection(actions):
+            findings.append(
+                PolicyDoctorFinding(
+                    kind="lease_issue_without_access",
+                    severity=FindingSeverity.medium,
+                    agent_id=agent_id,
+                    service=normalized_service,
+                    detail=(
+                        f"agent can issue leases for service '{normalized_service}' but lacks both "
+                        "get_env and get_credential on that service"
+                    ),
+                    suggestion="Grant get_env or get_credential, or remove issue_lease for this service.",
+                )
+            )
+        if ServiceAction.revoke_lease.value in actions and ServiceAction.issue_lease.value not in actions:
+            findings.append(
+                PolicyDoctorFinding(
+                    kind="lease_revoke_without_issue",
+                    severity=FindingSeverity.medium,
+                    agent_id=agent_id,
+                    service=normalized_service,
+                    detail=(
+                        f"agent can revoke leases for service '{normalized_service}' without also holding issue_lease"
+                    ),
+                    suggestion="Confirm this cross-agent revocation path is intentional.",
+                )
+            )
+
     if raw_secret_access:
         findings.append(
             PolicyDoctorFinding(

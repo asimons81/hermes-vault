@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.17.0 -- Lease Assurance
+
+### Added
+
+- Full lease lifecycle backfill across vault, broker, MCP, CLI, backup/recovery, release regression, health, maintenance, policy doctor, and diff coverage.
+- Lease-aware health reporting with active, expired, revoked, and total lease counts in CLI, JSON, and MCP health surfaces.
+- Lease-aware maintenance with `--cleanup-leases` for idempotent expired-lease revocation during scheduled runs.
+- Lease-focused policy doctor warnings for agents that can issue leases without access materialization rights or revoke leases without issue authority.
+- Lease drift reporting in backup diff output, including added, removed, and changed lease state.
+
+### Changed
+
+- Broker and CLI lease flows now use the real method contracts end-to-end, including correct broker argument wiring and metadata-safe deny responses for MCP lease tools.
+- Vault lease renewal now allows expired leases to be renewed from the current time, and double-revocation now fails closed with a clear error.
+- Version surfaces now report `0.17.0` in `pyproject.toml` and `src/hermes_vault/__init__.py`.
+
+### Verification
+
+- Full test suite: `uv run pytest tests/ -q`
+- Import check: `uv run python -c "import hermes_vault; print(hermes_vault.__version__)"`
+
 ## 0.16.0 -- Agent Access Lifecycle
 
 ### Added

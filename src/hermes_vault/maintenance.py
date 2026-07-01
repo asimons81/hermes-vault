@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from hermes_vault.audit import AuditLogger
-from hermes_vault.health import run_health
-from hermes_vault.models import AccessLogRecord, Decision, utc_now
+from hermes_vault.health import lease_summary, run_health
+from hermes_vault.models import AccessLogRecord, Decision, LeaseStatus, utc_now
 from hermes_vault.oauth.errors import sanitize_oauth_error_detail
 from hermes_vault.oauth.oauth_refresh import RefreshAttempt, RefreshEngine
 from hermes_vault.vault import Vault
@@ -124,6 +124,12 @@ class MaintenanceReport:
     health: dict[str, Any] = field(default_factory=dict)
     refresh_results: list[dict[str, Any]] = field(default_factory=list)
     refresh_summary: dict[str, Any] = field(default_factory=dict)
+    leases: dict[str, int] = field(default_factory=lambda: {
+        "active": 0,
+        "expired": 0,
+        "revoked": 0,
+        "total": 0,
+    })
     audit_recorded: bool = False
     recommended_exit_code: int = 0
 
@@ -140,6 +146,7 @@ class MaintenanceReport:
             "health": self.health,
             "refresh_results": self.refresh_results,
             "refresh_summary": self.refresh_summary,
+            "leases": self.leases,
             "audit_recorded": self.audit_recorded,
             "recommended_exit_code": self.recommended_exit_code,
         }
@@ -158,6 +165,7 @@ def run_maintenance(
     expiring_days: int = 7,
     backup_days: int = 30,
     refresh_engine: RefreshEngine | None = None,
+    cleanup_leases: bool = False,
 ) -> MaintenanceReport:
     """Run refresh + health orchestration and return a structured report."""
     engine = refresh_engine or RefreshEngine(
@@ -168,6 +176,12 @@ def run_maintenance(
         engine.set_audit(audit)
 
     refresh_results = engine.refresh_all(dry_run=dry_run)
+    if cleanup_leases:
+        for lease in vault.list_leases(status=LeaseStatus.expired):
+            try:
+                vault.revoke_lease(lease.id, reason="maintenance cleanup")
+            except ValueError:
+                continue
     health = run_health(
         vault,
         audit=audit,
@@ -199,6 +213,7 @@ def run_maintenance(
         health=_health_to_dict(health),
         refresh_results=refresh_dicts,
         refresh_summary=refresh_summary,
+        leases=lease_summary(vault),
     )
     report.recommended_exit_code = _recommended_exit_code(health, refresh_summary)
 

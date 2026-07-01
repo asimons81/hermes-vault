@@ -26,11 +26,14 @@ def test_release_version_surfaces_align() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
 
-    from hermes_vault.mcp_server import server
+    from hermes_vault.mcp_server import list_tools, server
+    import asyncio
 
-    assert pyproject["project"]["version"] == "0.16.0"
-    assert hermes_vault.__version__ == "0.16.0"
+    assert pyproject["project"]["version"] == "0.17.0"
+    assert hermes_vault.__version__ == "0.17.0"
     assert server.version == hermes_vault.__version__
+    tool_names = {tool.name for tool in asyncio.get_event_loop().run_until_complete(list_tools())}
+    assert {"lease_issue", "lease_list", "lease_show", "lease_renew", "lease_revoke"}.issubset(tool_names)
 
 
 def test_release_story_mentions_lifecycle_and_recovery() -> None:
@@ -39,10 +42,10 @@ def test_release_story_mentions_lifecycle_and_recovery() -> None:
     changelog = (repo_root / "CHANGELOG.md").read_text(encoding="utf-8")
     operator_guide = (repo_root / "docs" / "operator-guide.md").read_text(encoding="utf-8")
 
-    assert "Credential Lifecycle & Recovery" in changelog
-    assert "policy drift" in readme.lower()
-    assert "backup-verify" in operator_guide
-    assert "restore --dry-run" in operator_guide
+    assert "Lease Assurance" in changelog
+    assert "What's New in 0.17.0" in readme
+    assert "cleanup-leases" in operator_guide
+    assert "diff --against" in operator_guide
 
 
 def test_release_story_mentions_evolink_support() -> None:
@@ -157,6 +160,22 @@ def test_backup_preserves_encrypted_payloads(tmp_path: Path) -> None:
     secret = vault_b.get_secret("openai")
     assert secret is not None
     assert secret.secret == "sk-key"
+
+
+def test_backup_round_trip_preserves_leases(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-pass")
+    record = vault.add_credential("openai", "sk-openai-key", "api_key", alias="primary", scopes=["models.read"])
+    lease = vault.issue_lease(record.id, agent_id="release-agent", ttl_seconds=300, metadata={"ticket": "17"})
+
+    backup = vault.export_backup()
+    vault.delete(record.id)
+    imported = vault.import_backup(backup)
+    restored = vault.get_lease(lease.id)
+
+    assert imported
+    assert restored is not None
+    assert restored.credential_id == record.id
+    assert restored.metadata == {"ticket": "17"}
 
 
 def test_backup_round_trip_preserves_aliases(tmp_path: Path) -> None:

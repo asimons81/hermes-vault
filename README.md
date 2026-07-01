@@ -6,6 +6,16 @@ Hermes Vault is a local-first credential broker and encrypted vault for Hermes a
 
 v0.16.0 is the Agent Access Lifecycle release. `lease` commands make access time-bound and auditable, `policy pack` templates standardize operator policy, and the dashboard/MCP surfaces now expose lease metadata alongside credential health.
 
+## What's New in 0.17.0
+
+v0.17.0 is the Lease Assurance release. It hardens the lease feature that landed in v0.16.0 by adding direct lifecycle coverage, health visibility, scheduled cleanup, and operator drift checks.
+
+- Lease issue/list/show/renew/revoke now have direct vault, broker, MCP, CLI, backup, and release-regression coverage.
+- `hermes-vault health` now reports lease counts in both markdown and JSON output.
+- `hermes-vault maintain --cleanup-leases` can revoke expired leases safely during scheduled runs.
+- `hermes-vault policy doctor` warns about lease issuance without usable access rights and revoke-only lease grants.
+- `hermes-vault diff --against <backup>` now reports lease drift alongside credential drift.
+
 ## What It Does
 
 - Scans Hermes-relevant files for plaintext secrets, duplicates, and insecure permissions

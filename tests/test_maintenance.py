@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -39,6 +40,7 @@ def _healthy_report() -> HealthReport:
         expiring_threshold_days=7,
         backup_threshold_days=30,
         verified_live=False,
+        leases={"active": 0, "expired": 0, "revoked": 0, "total": 0},
     )
 
 
@@ -234,3 +236,50 @@ def test_run_maintenance_failure_summary_classifies_missing_refresh_token(monkey
         "policy_denial",
     ]
     assert report.recommended_exit_code == 1
+
+
+def test_run_maintenance_reports_lease_summary(monkeypatch, vault: Vault) -> None:
+    monkeypatch.setattr("hermes_vault.maintenance.RefreshEngine", FakeRefreshEngine)
+    record = vault.resolve_credential("openai", alias="primary")
+    active = vault.issue_lease(record.id, agent_id="maint-agent", ttl_seconds=300)
+    expired = vault.issue_lease(record.id, agent_id="maint-agent", ttl_seconds=300)
+    past = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+    with sqlite3.connect(vault.db_path) as conn:
+        conn.execute("UPDATE leases SET expires_at = ?, status = ? WHERE id = ?", (past, "active", expired.id))
+        conn.commit()
+
+    report = run_maintenance(vault, audit=None, dry_run=True)
+
+    assert report.leases == {"active": 1, "expired": 1, "revoked": 0, "total": 2}
+    assert report.health["leases"] == report.leases
+    assert active.id != expired.id
+
+
+def test_run_maintenance_cleanup_revokes_expired_leases(monkeypatch, vault: Vault) -> None:
+    monkeypatch.setattr("hermes_vault.maintenance.RefreshEngine", FakeRefreshEngine)
+    record = vault.resolve_credential("openai", alias="primary")
+    expired = vault.issue_lease(record.id, agent_id="maint-agent", ttl_seconds=300)
+    past = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+    with sqlite3.connect(vault.db_path) as conn:
+        conn.execute("UPDATE leases SET expires_at = ?, status = ? WHERE id = ?", (past, "active", expired.id))
+        conn.commit()
+
+    report = run_maintenance(vault, audit=None, dry_run=True, cleanup_leases=True)
+    cleaned = vault.get_lease(expired.id)
+
+    assert cleaned is not None
+    assert cleaned.status.value == "revoked"
+    assert report.leases == {"active": 0, "expired": 0, "revoked": 1, "total": 1}
+
+
+def test_run_maintenance_cleanup_skips_active_leases(monkeypatch, vault: Vault) -> None:
+    monkeypatch.setattr("hermes_vault.maintenance.RefreshEngine", FakeRefreshEngine)
+    record = vault.resolve_credential("openai", alias="primary")
+    active = vault.issue_lease(record.id, agent_id="maint-agent", ttl_seconds=300)
+
+    report = run_maintenance(vault, audit=None, dry_run=True, cleanup_leases=True)
+    unchanged = vault.get_lease(active.id)
+
+    assert unchanged is not None
+    assert unchanged.status.value == "active"
+    assert report.leases["active"] == 1

@@ -246,3 +246,55 @@ def test_policy_doctor_finding_model_serializes() -> None:
 
     assert finding.model_dump(mode="json")["severity"] == "high"
     json.dumps(finding.as_dict())
+
+
+def test_policy_doctor_flags_issue_lease_without_access(tmp_path: Path) -> None:
+    policy_path = tmp_path / "policy.yaml"
+    policy = {
+        "agents": {
+            "lease-bot": {
+                "services": {
+                    "openai": {
+                        "actions": ["issue_lease", "list_leases", "show_lease"],
+                    }
+                },
+                "capabilities": ["list_credentials"],
+                "raw_secret_access": False,
+                "ephemeral_env_only": True,
+                "max_ttl_seconds": 900,
+            }
+        }
+    }
+    _write_policy(policy_path, policy)
+
+    report = run_policy_doctor(policy_path)
+
+    finding = next(f for f in report.findings if f.kind == "lease_issue_without_access")
+    assert finding.agent_id == "lease-bot"
+    assert finding.service == "openai"
+
+
+def test_policy_doctor_flags_revoke_lease_without_issue(tmp_path: Path) -> None:
+    policy_path = tmp_path / "policy.yaml"
+    policy = {
+        "agents": {
+            "lease-ops": {
+                "services": {
+                    "openai": {
+                        "actions": ["revoke_lease", "show_lease", "get_env"],
+                    }
+                },
+                "capabilities": ["list_credentials"],
+                "raw_secret_access": False,
+                "ephemeral_env_only": True,
+                "max_ttl_seconds": 900,
+            }
+        }
+    }
+    _write_policy(policy_path, policy)
+
+    report = run_policy_doctor(policy_path)
+
+    finding = next(f for f in report.findings if f.kind == "lease_revoke_without_issue")
+    assert finding.agent_id == "lease-ops"
+    assert finding.service == "openai"

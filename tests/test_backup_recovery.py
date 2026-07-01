@@ -109,3 +109,30 @@ def test_restore_dry_run_does_not_mutate_live_vault(tmp_path: Path) -> None:
     assert after is not None
     assert before.secret == after.secret
     assert vault.list_credentials()[0].encrypted_payload == record.encrypted_payload
+
+
+def test_backup_import_round_trip_preserves_lease_data(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    record = vault.add_credential("openai", "sk-secret-1234567890", "api_key", alias="primary", scopes=["models.read"])
+    lease = vault.issue_lease(record.id, agent_id="backup-agent", ttl_seconds=600, metadata={"ticket": "42"})
+    backup_path = _write_backup(tmp_path / "backup.json", vault.export_backup())
+
+    restore_vault = Vault(tmp_path / "restored.db", tmp_path / "restored-salt.bin", "test-passphrase")
+    restore_vault.import_backup(json.loads(backup_path.read_text(encoding="utf-8")))
+    restored = restore_vault.get_lease(lease.id)
+
+    assert restored is not None
+    assert restored.service == "openai"
+    assert restored.agent_id == "backup-agent"
+    assert restored.metadata == {"ticket": "42"}
+
+
+def test_metadata_only_backup_retains_lease_metadata(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    record = vault.add_credential("openai", "sk-secret-1234567890", "api_key", alias="primary", scopes=["models.read"])
+    lease = vault.issue_lease(record.id, agent_id="backup-agent", ttl_seconds=600, metadata={"ticket": "meta-only"})
+    backup = vault.export_backup(metadata_only=True)
+
+    assert "leases" in backup
+    assert backup["leases"][0]["id"] == lease.id
+    assert backup["leases"][0]["metadata"] == {"ticket": "meta-only"}

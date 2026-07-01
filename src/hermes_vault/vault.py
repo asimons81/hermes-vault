@@ -945,10 +945,8 @@ class Vault:
             raise KeyError(f"Lease '{lease_id}' not found")
         if lease.status == LeaseStatus.revoked:
             raise ValueError(f"Lease '{lease_id}' has been revoked")
-        if lease.status == LeaseStatus.expired:
-            raise ValueError(f"Lease '{lease_id}' has expired")
         now = utc_now()
-        base = lease.expires_at if lease.expires_at > now else now
+        base = lease.expires_at if lease.status != LeaseStatus.expired and lease.expires_at > now else now
         updated = lease.model_copy(update={
             "status": LeaseStatus.active,
             "ttl_seconds": ttl_seconds,
@@ -979,6 +977,8 @@ class Vault:
         lease = self._find_lease(lease_id)
         if lease is None:
             raise KeyError(f"Lease '{lease_id}' not found")
+        if lease.status == LeaseStatus.revoked:
+            raise ValueError(f"Lease '{lease_id}' has already been revoked")
         now = utc_now()
         updated = lease.model_copy(update={
             "status": LeaseStatus.revoked,

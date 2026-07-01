@@ -28,6 +28,7 @@ from mcp.types import Resource, ResourceTemplate, TextContent, TextResourceConte
 from pydantic import AnyUrl
 from rich.console import Console
 
+from hermes_vault import __version__
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings
@@ -629,7 +630,7 @@ _pending_oauth: dict[str, dict[str, Any]] = {}
 
 # ── server ─────────────────────────────────────────────────────────────────────
 
-server = Server("hermes-vault", version="0.16.0")
+server = Server("hermes-vault", version=__version__)
 
 
 @server.list_tools()
@@ -900,8 +901,6 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             purpose = arguments.get("purpose") or "task"
             reason = arguments.get("reason")
             result = broker.issue_lease(agent_id, service, ttl, alias=alias, purpose=purpose, reason=reason)
-            if not result.allowed:
-                return [TextContent(type="text", text=f"Denied: {result.reason}")]
             return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
 
         if name == "lease_list":
@@ -909,16 +908,12 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             service = arguments.get("service")
             status = arguments.get("status")
             result = broker.list_leases(agent_id, service=service, status=status)
-            if not result.allowed:
-                return [TextContent(type="text", text=f"Denied: {result.reason}")]
             return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
 
         if name == "lease_show":
             agent_id = binding.effective_agent_id or ""
             lease_id = arguments["lease_id"]
             result = broker.show_lease(agent_id, lease_id)
-            if not result.allowed:
-                return [TextContent(type="text", text=f"Denied: {result.reason}")]
             return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
 
         if name == "lease_renew":
@@ -926,8 +921,6 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             lease_id = arguments["lease_id"]
             ttl = arguments["ttl_seconds"]
             result = broker.renew_lease(agent_id, lease_id, ttl)
-            if not result.allowed:
-                return [TextContent(type="text", text=f"Denied: {result.reason}")]
             return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
 
         if name == "lease_revoke":
@@ -935,8 +928,6 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             lease_id = arguments["lease_id"]
             reason = arguments.get("reason")
             result = broker.revoke_lease(agent_id, lease_id, reason=reason)
-            if not result.allowed:
-                return [TextContent(type="text", text=f"Denied: {result.reason}")]
             return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
 
         if name == "verify_credential":

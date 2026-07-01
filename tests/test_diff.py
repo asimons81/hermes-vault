@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -130,6 +131,56 @@ def test_diff_version_is_preserved(vault_with_two_creds: Vault) -> None:
     b2 = vault_with_two_creds.export_backup(metadata_only=True)
     entries = diff_backups(b2, b1)
     assert isinstance(entries, list)
+
+
+def test_diff_reports_added_leases(vault_with_two_creds: Vault) -> None:
+    b1 = vault_with_two_creds.export_backup(metadata_only=True)
+    record = vault_with_two_creds.resolve_credential("openai", alias="primary")
+    lease = vault_with_two_creds.issue_lease(record.id, agent_id="diff-agent", ttl_seconds=300)
+    b2 = vault_with_two_creds.export_backup(metadata_only=True)
+
+    entries = diff_backups(b2, b1)
+    added = [entry for entry in entries if entry.resource_type == "lease" and entry.kind == "added"]
+
+    assert len(added) == 1
+    assert added[0].lease_id == lease.id
+    assert added[0].service == "openai"
+
+
+def test_diff_reports_removed_leases(vault_with_two_creds: Vault) -> None:
+    record = vault_with_two_creds.resolve_credential("openai", alias="primary")
+    lease = vault_with_two_creds.issue_lease(record.id, agent_id="diff-agent", ttl_seconds=300)
+    b1 = vault_with_two_creds.export_backup(metadata_only=True)
+    with sqlite3.connect(vault_with_two_creds.db_path) as conn:
+        conn.execute("DELETE FROM leases WHERE id = ?", (lease.id,))
+        conn.commit()
+    b2 = vault_with_two_creds.export_backup(metadata_only=True)
+
+    entries = diff_backups(b2, b1)
+    removed = [entry for entry in entries if entry.resource_type == "lease" and entry.kind == "removed"]
+
+    assert len(removed) == 1
+    assert removed[0].lease_id == lease.id
+
+
+def test_diff_reports_changed_lease_fields(vault_with_two_creds: Vault) -> None:
+    record = vault_with_two_creds.resolve_credential("openai", alias="primary")
+    lease = vault_with_two_creds.issue_lease(record.id, agent_id="diff-agent", ttl_seconds=300)
+    b1 = vault_with_two_creds.export_backup(metadata_only=True)
+    with sqlite3.connect(vault_with_two_creds.db_path) as conn:
+        conn.execute(
+            "UPDATE leases SET ttl_seconds = ?, expires_at = ?, status = ? WHERE id = ?",
+            (120, (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat(), "revoked", lease.id),
+        )
+        conn.commit()
+    b2 = vault_with_two_creds.export_backup(metadata_only=True)
+
+    entries = diff_backups(b2, b1)
+    changed = [entry for entry in entries if entry.resource_type == "lease" and entry.kind == "changed"]
+
+    assert len(changed) == 1
+    assert changed[0].lease_id == lease.id
+    assert {item["field"] for item in changed[0].changes} == {"status", "ttl_seconds", "expires_at"}
 
 
 # ── CLI integration: backup --metadata-only ────────────────────────────

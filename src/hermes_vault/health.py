@@ -13,11 +13,24 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from hermes_vault.audit import AuditLogger
-from hermes_vault.models import CredentialStatus, VerificationCategory, utc_now
+from hermes_vault.models import CredentialStatus, LeaseStatus, VerificationCategory, utc_now
 from hermes_vault.vault import Vault
 
 
 REPORT_VERSION = "health-v1"
+
+
+def lease_summary(vault: Vault) -> dict[str, int]:
+    leases = vault.list_leases()
+    active = sum(1 for lease in leases if lease.status == LeaseStatus.active)
+    expired = sum(1 for lease in leases if lease.status == LeaseStatus.expired)
+    revoked = sum(1 for lease in leases if lease.status == LeaseStatus.revoked)
+    return {
+        "active": active,
+        "expired": expired,
+        "revoked": revoked,
+        "total": len(leases),
+    }
 
 
 @dataclass
@@ -56,6 +69,12 @@ class HealthReport:
     expiring_threshold_days: int = 7
     backup_threshold_days: int = 30
     verified_live: bool = False
+    leases: dict[str, int] = field(default_factory=lambda: {
+        "active": 0,
+        "expired": 0,
+        "revoked": 0,
+        "total": 0,
+    })
 
     def as_dict(self, *, exclude_none: bool = True) -> dict[str, Any]:
         d = {
@@ -75,6 +94,7 @@ class HealthReport:
             "expiring_threshold_days": self.expiring_threshold_days,
             "backup_threshold_days": self.backup_threshold_days,
             "verified_live": self.verified_live,
+            "leases": self.leases,
         }
         if exclude_none:
             d = {k: v for k, v in d.items() if v is not None}
@@ -186,6 +206,16 @@ def run_health(
     if services is not None:
         records = [rec for rec in records if rec.service in services]
     report.total_credentials = len(records)
+    if services is None:
+        report.leases = lease_summary(vault)
+    else:
+        leases = [lease for lease in vault.list_leases(service=None) if lease.service in services]
+        report.leases = {
+            "active": sum(1 for lease in leases if lease.status == LeaseStatus.active),
+            "expired": sum(1 for lease in leases if lease.status == LeaseStatus.expired),
+            "revoked": sum(1 for lease in leases if lease.status == LeaseStatus.revoked),
+            "total": len(leases),
+        }
 
     healthy = 0
     for rec in records:

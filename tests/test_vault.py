@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from hermes_vault.crypto import SALT_SIZE
+from hermes_vault.models import CredentialStatus, LeaseStatus, utc_now
 from hermes_vault.vault import Vault
 from hermes_vault.vault import DuplicateCredentialError, AmbiguousTargetError
-from hermes_vault.models import CredentialStatus
 
 
 def test_vault_encrypts_and_decrypts(tmp_path: Path) -> None:
@@ -380,3 +381,226 @@ def test_rotate_by_service_alias(tmp_path: Path) -> None:
     secret = vault.get_secret(id2)
     assert secret is not None
     assert secret.secret == "ghp_rotated"
+
+
+def _make_lease_vault(tmp_path: Path) -> tuple[Vault, object]:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    record = vault.add_credential(
+        "openai",
+        "sk-lease-secret",
+        "api_key",
+        alias="primary",
+        scopes=["models.read", "files.write"],
+    )
+    return vault, record
+
+
+class TestLeases:
+    def test_issue_lease_happy_path(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+
+        lease = vault.issue_lease(
+            "openai",
+            agent_id="lease-agent",
+            ttl_seconds=600,
+            alias="primary",
+            purpose="deploy",
+            reason="ticket-123",
+            metadata={"ticket": "123"},
+        )
+
+        assert lease.service == record.service
+        assert lease.alias == record.alias
+        assert lease.credential_id == record.id
+        assert lease.status == LeaseStatus.active
+        assert lease.ttl_seconds == 600
+        assert lease.scopes == ["models.read", "files.write"]
+        assert lease.metadata == {"ticket": "123"}
+
+    def test_issue_lease_by_credential_id(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+
+        lease = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=60)
+
+        assert lease.credential_id == record.id
+        assert lease.service == "openai"
+
+    def test_issue_lease_for_missing_credential_raises(self, tmp_path: Path) -> None:
+        vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+
+        with pytest.raises(KeyError):
+            vault.issue_lease("missing-service", agent_id="lease-agent", ttl_seconds=60)
+
+    def test_list_leases_supports_filters(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+        github = vault.add_credential("github", "ghp-test", "personal_access_token", alias="work")
+        first = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=600)
+        second = vault.issue_lease(github.id, agent_id="lease-agent", ttl_seconds=600, purpose="ci")
+        revoked = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=600, purpose="cleanup")
+        vault.revoke_lease(revoked.id, reason="done")
+
+        all_leases = vault.list_leases()
+        service_leases = vault.list_leases(service="openai")
+        revoked_leases = vault.list_leases(status=LeaseStatus.revoked)
+        combined = vault.list_leases(service="openai", status=LeaseStatus.revoked)
+
+        assert {lease.id for lease in all_leases} == {first.id, second.id, revoked.id}
+        assert {lease.id for lease in service_leases} == {first.id, revoked.id}
+        assert [lease.id for lease in revoked_leases] == [revoked.id]
+        assert [lease.id for lease in combined] == [revoked.id]
+
+    def test_list_leases_refreshes_expired_status(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+        lease = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=60)
+        past = (utc_now() - timedelta(seconds=30)).isoformat()
+
+        with sqlite3.connect(vault.db_path) as conn:
+            conn.execute("UPDATE leases SET expires_at = ?, status = ? WHERE id = ?", (past, LeaseStatus.active.value, lease.id))
+            conn.commit()
+
+        listed = vault.list_leases(status=LeaseStatus.expired)
+
+        assert [item.id for item in listed] == [lease.id]
+        assert vault.get_lease(lease.id).status == LeaseStatus.expired
+
+    def test_get_lease_found_and_not_found(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+        lease = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=60)
+
+        assert vault.get_lease(lease.id).id == lease.id
+        assert vault.get_lease("missing-lease") is None
+
+    def test_renew_lease_happy_path(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+        lease = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=60)
+
+        renewed = vault.renew_lease(lease.id, ttl_seconds=600)
+
+        assert renewed.id == lease.id
+        assert renewed.ttl_seconds == 600
+        assert renewed.renew_count == 1
+        assert renewed.renewed_at is not None
+        assert renewed.expires_at > lease.expires_at
+
+    def test_renew_lease_on_revoked_raises(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+        lease = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=60)
+        vault.revoke_lease(lease.id, reason="done")
+
+        with pytest.raises(ValueError, match="revoked"):
+            vault.renew_lease(lease.id, ttl_seconds=60)
+
+    def test_renew_lease_on_expired_resets_from_now(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+        lease = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=60)
+        past = (utc_now() - timedelta(seconds=10)).isoformat()
+
+        with sqlite3.connect(vault.db_path) as conn:
+            conn.execute("UPDATE leases SET expires_at = ?, status = ? WHERE id = ?", (past, LeaseStatus.active.value, lease.id))
+            conn.commit()
+
+        renewed = vault.renew_lease(lease.id, ttl_seconds=120)
+
+        assert renewed.status == LeaseStatus.active
+        assert renewed.renew_count == 1
+        assert renewed.expires_at > utc_now()
+
+    def test_renew_lease_with_shorter_ttl(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+        lease = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=600)
+
+        renewed = vault.renew_lease(lease.id, ttl_seconds=60)
+
+        assert renewed.ttl_seconds == 60
+        assert renewed.expires_at < lease.expires_at + timedelta(seconds=61)
+
+    def test_revoke_lease_happy_path(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+        lease = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=60)
+
+        revoked = vault.revoke_lease(lease.id, reason="done")
+
+        assert revoked.status == LeaseStatus.revoked
+        assert revoked.revoked_at is not None
+        assert revoked.reason == "done"
+
+    def test_revoke_lease_on_already_revoked_raises(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+        lease = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=60)
+        vault.revoke_lease(lease.id, reason="done")
+
+        with pytest.raises(ValueError, match="already been revoked"):
+            vault.revoke_lease(lease.id)
+
+    def test_revoke_lease_on_expired_lease(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+        lease = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=60)
+        past = (utc_now() - timedelta(seconds=10)).isoformat()
+
+        with sqlite3.connect(vault.db_path) as conn:
+            conn.execute("UPDATE leases SET expires_at = ?, status = ? WHERE id = ?", (past, LeaseStatus.active.value, lease.id))
+            conn.commit()
+
+        revoked = vault.revoke_lease(lease.id, reason="cleanup")
+
+        assert revoked.status == LeaseStatus.revoked
+        assert revoked.reason == "cleanup"
+
+    def test_lease_backup_round_trip_preserves_fields(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+        lease = vault.issue_lease(
+            record.id,
+            agent_id="lease-agent",
+            ttl_seconds=300,
+            purpose="report",
+            reason="ticket-9",
+            metadata={"ticket": "9", "owner": "ops"},
+        )
+        renewed = vault.renew_lease(lease.id, ttl_seconds=500)
+        revoked = vault.revoke_lease(lease.id, reason="expired-task")
+
+        backup = vault.export_backup()
+        clone = Vault(tmp_path / "clone.db", tmp_path / "clone-salt.bin", "test-passphrase")
+        imported = clone.import_backup(backup)
+        restored = clone.get_lease(revoked.id)
+
+        assert imported
+        assert restored is not None
+        assert restored.model_dump(mode="json") == revoked.model_dump(mode="json")
+        assert restored.renew_count == renewed.renew_count
+
+    def test_lease_scopes_and_metadata_round_trip(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+        lease = vault.issue_lease(
+            record.id,
+            agent_id="lease-agent",
+            ttl_seconds=300,
+            metadata={"nested": {"ticket": 7}, "list": ["a", "b"]},
+        )
+
+        backup = vault.export_backup()
+        restored = backup["leases"][0]
+
+        assert restored["scopes"] == ["models.read", "files.write"]
+        assert restored["metadata"] == {"nested": {"ticket": 7}, "list": ["a", "b"]}
+        mirror = Vault(tmp_path / "mirror.db", tmp_path / "mirror-salt.bin", "test-passphrase")
+        mirror.import_backup(backup)
+        assert mirror.get_lease(lease.id).metadata == lease.metadata
+
+    def test_concurrent_leases_on_same_credential(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+
+        first = vault.issue_lease(record.id, agent_id="agent-a", ttl_seconds=60)
+        second = vault.issue_lease(record.id, agent_id="agent-b", ttl_seconds=120)
+
+        leases = vault.list_leases(service="openai")
+        assert {lease.id for lease in leases} == {first.id, second.id}
+        assert {lease.agent_id for lease in leases} == {"agent-a", "agent-b"}
+
+    def test_auto_expiry_zero_second_ttl(self, tmp_path: Path) -> None:
+        vault, record = _make_lease_vault(tmp_path)
+
+        lease = vault.issue_lease(record.id, agent_id="lease-agent", ttl_seconds=0)
+        expired = vault.list_leases(status=LeaseStatus.expired)
+
+        assert lease.id in {item.id for item in expired}

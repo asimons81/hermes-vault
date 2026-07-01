@@ -4,13 +4,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
 from hermes_vault.models import (
     AgentCapability,
     AgentPolicy,
+    Decision,
     CredentialRecord,
     CredentialStatus,
+    LeaseStatus,
     PolicyConfig,
     ServiceAction,
     ServicePolicyEntry,
@@ -337,6 +341,242 @@ def test_broker_scan_denied_without_capability(tmp_path: Path) -> None:
     decision = broker.scan_secrets("pam")
     assert decision.allowed is False
     assert "not granted" in decision.reason
+
+
+def _make_lease_broker(
+    tmp_path: Path,
+    *,
+    actions: dict[str, list[ServiceAction]] | None = None,
+    max_ttl_seconds: int = 900,
+) -> tuple[Vault, Broker]:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-openai", "api_key", alias="primary", scopes=["models.read"])
+    vault.add_credential("github", "ghp-token", "personal_access_token", alias="work", scopes=["repo"])
+    actions = actions or {
+        "openai": [
+            ServiceAction.issue_lease,
+            ServiceAction.list_leases,
+            ServiceAction.show_lease,
+            ServiceAction.renew_lease,
+            ServiceAction.revoke_lease,
+        ],
+        "github": [
+            ServiceAction.issue_lease,
+            ServiceAction.list_leases,
+            ServiceAction.show_lease,
+            ServiceAction.renew_lease,
+            ServiceAction.revoke_lease,
+        ],
+    }
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "lease-agent": AgentPolicy(
+                    services=list(actions.keys()),
+                    service_actions={
+                        service: ServicePolicyEntry(actions=service_actions)
+                        for service, service_actions in actions.items()
+                    },
+                    max_ttl_seconds=max_ttl_seconds,
+                    raw_secret_access=False,
+                    ephemeral_env_only=True,
+                )
+            }
+        )
+    )
+    audit = AuditLogger(tmp_path / "vault.db")
+    broker = Broker(vault, policy, StubVerifier(), audit)
+    return vault, broker
+
+
+class TestLeaseBroker:
+    def test_issue_lease_happy_path_with_policy_allow(self, tmp_path: Path) -> None:
+        vault, broker = _make_lease_broker(tmp_path)
+
+        decision = broker.issue_lease("lease-agent", "openai", 600, alias="primary", purpose="deploy", reason="ticket-1")
+
+        assert decision.allowed is True
+        assert decision.service == "openai"
+        assert decision.ttl_seconds == 600
+        assert decision.metadata["lease"]["purpose"] == "deploy"
+        assert vault.get_lease(decision.metadata["lease"]["id"]) is not None
+
+    def test_issue_lease_denied_by_policy(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(
+            tmp_path,
+            actions={"openai": [ServiceAction.list_leases, ServiceAction.show_lease]},
+        )
+
+        decision = broker.issue_lease("lease-agent", "openai", 600, alias="primary")
+
+        assert decision.allowed is False
+        assert "issue_lease" in decision.reason
+
+    def test_issue_lease_denied_by_zero_ttl(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path)
+
+        decision = broker.issue_lease("lease-agent", "openai", 0, alias="primary")
+
+        assert decision.allowed is False
+        assert "greater than zero" in decision.reason
+
+    def test_issue_lease_caps_ttl_to_policy_max(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path, max_ttl_seconds=300)
+
+        decision = broker.issue_lease("lease-agent", "openai", 600, alias="primary")
+
+        assert decision.allowed is True
+        assert decision.ttl_seconds == 300
+
+    def test_issue_lease_denied_for_unknown_service(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path)
+
+        decision = broker.issue_lease("lease-agent", "nonexistent", 60)
+
+        assert decision.allowed is False
+        assert "not found" in decision.reason.lower()
+
+    def test_issue_lease_records_audit_trail(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path)
+
+        decision = broker.issue_lease("lease-agent", "openai", 60, alias="primary")
+        entries = broker.audit.list_recent(limit=5, action="issue_lease")
+
+        assert decision.allowed is True
+        assert entries[0]["decision"] == Decision.allow.value
+        assert entries[0]["metadata"]["lease_id"] == decision.metadata["lease"]["id"]
+        assert entries[0]["ttl_seconds"] == 60
+
+    def test_list_leases_filters_mixed_visibility(self, tmp_path: Path) -> None:
+        vault, broker = _make_lease_broker(
+            tmp_path,
+            actions={
+                "openai": [ServiceAction.issue_lease, ServiceAction.list_leases, ServiceAction.show_lease],
+                "github": [ServiceAction.issue_lease],
+            },
+        )
+        openai = vault.resolve_credential("openai", alias="primary")
+        github = vault.resolve_credential("github", alias="work")
+        visible = vault.issue_lease(openai.id, agent_id="lease-agent", ttl_seconds=60)
+        hidden = vault.issue_lease(github.id, agent_id="lease-agent", ttl_seconds=60)
+
+        decision = broker.list_leases("lease-agent")
+
+        assert decision.allowed is True
+        assert [lease["id"] for lease in decision.metadata["leases"]] == [visible.id]
+        assert hidden.id not in {lease["id"] for lease in decision.metadata["leases"]}
+
+    def test_list_leases_supports_status_filter(self, tmp_path: Path) -> None:
+        vault, broker = _make_lease_broker(tmp_path)
+        lease = broker.issue_lease("lease-agent", "openai", 60, alias="primary").metadata["lease"]
+        vault.revoke_lease(lease["id"], reason="done")
+
+        decision = broker.list_leases("lease-agent", status=LeaseStatus.revoked)
+
+        assert decision.allowed is True
+        assert [item["id"] for item in decision.metadata["leases"]] == [lease["id"]]
+
+    def test_show_lease_found_and_allowed(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path)
+        issued = broker.issue_lease("lease-agent", "openai", 60, alias="primary").metadata["lease"]
+
+        decision = broker.show_lease("lease-agent", issued["id"])
+
+        assert decision.allowed is True
+        assert decision.metadata["lease"]["id"] == issued["id"]
+
+    def test_show_lease_not_found(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path)
+
+        decision = broker.show_lease("lease-agent", "missing-lease")
+
+        assert decision.allowed is False
+        assert "not found" in decision.reason
+
+    def test_show_lease_denied_by_policy(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(
+            tmp_path,
+            actions={"openai": [ServiceAction.issue_lease, ServiceAction.list_leases]},
+        )
+        lease = broker.issue_lease("lease-agent", "openai", 60, alias="primary")
+
+        decision = broker.show_lease("lease-agent", lease.metadata["lease"]["id"])
+
+        assert decision.allowed is False
+        assert "show_lease" in decision.reason
+
+    def test_renew_lease_happy_path(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path)
+        issued = broker.issue_lease("lease-agent", "openai", 60, alias="primary")
+
+        decision = broker.renew_lease("lease-agent", issued.metadata["lease"]["id"], 300)
+
+        assert decision.allowed is True
+        assert decision.ttl_seconds == 300
+        assert decision.metadata["lease"]["renew_count"] == 1
+
+    def test_renew_lease_denied_by_policy(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(
+            tmp_path,
+            actions={"openai": [ServiceAction.issue_lease, ServiceAction.show_lease]},
+        )
+        lease = broker.issue_lease("lease-agent", "openai", 60, alias="primary")
+
+        decision = broker.renew_lease("lease-agent", lease.metadata["lease"]["id"], 120)
+
+        assert decision.allowed is False
+        assert "renew_lease" in decision.reason
+
+    def test_renew_lease_denied_by_ttl(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path)
+        lease = broker.issue_lease("lease-agent", "openai", 60, alias="primary")
+
+        decision = broker.renew_lease("lease-agent", lease.metadata["lease"]["id"], 0)
+
+        assert decision.allowed is False
+        assert "greater than zero" in decision.reason
+
+    def test_renew_lease_on_revoked_returns_deny(self, tmp_path: Path) -> None:
+        vault, broker = _make_lease_broker(tmp_path)
+        lease = broker.issue_lease("lease-agent", "openai", 60, alias="primary")
+        vault.revoke_lease(lease.metadata["lease"]["id"], reason="done")
+
+        decision = broker.renew_lease("lease-agent", lease.metadata["lease"]["id"], 60)
+
+        assert decision.allowed is False
+        assert "revoked" in decision.reason
+
+    def test_revoke_lease_happy_path(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path)
+        lease = broker.issue_lease("lease-agent", "openai", 60, alias="primary")
+
+        decision = broker.revoke_lease("lease-agent", lease.metadata["lease"]["id"], reason="cleanup")
+
+        assert decision.allowed is True
+        assert decision.metadata["lease"]["status"] == LeaseStatus.revoked.value
+        assert decision.metadata["lease"]["reason"] == "cleanup"
+
+    def test_revoke_lease_denied_by_policy(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(
+            tmp_path,
+            actions={"openai": [ServiceAction.issue_lease, ServiceAction.show_lease, ServiceAction.renew_lease]},
+        )
+        lease = broker.issue_lease("lease-agent", "openai", 60, alias="primary")
+
+        decision = broker.revoke_lease("lease-agent", lease.metadata["lease"]["id"])
+
+        assert decision.allowed is False
+        assert "revoke_lease" in decision.reason
+
+    def test_revoke_lease_on_already_revoked_returns_deny(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path)
+        lease = broker.issue_lease("lease-agent", "openai", 60, alias="primary")
+        broker.revoke_lease("lease-agent", lease.metadata["lease"]["id"], reason="cleanup")
+
+        decision = broker.revoke_lease("lease-agent", lease.metadata["lease"]["id"])
+
+        assert decision.allowed is False
+        assert "already been revoked" in decision.reason
 
 
 def test_broker_scan_allowed_with_capability(tmp_path: Path) -> None:

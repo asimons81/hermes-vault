@@ -9,8 +9,10 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from hermes_vault import _platform
+from hermes_vault.audit import AuditLogger
+from hermes_vault.broker import Broker
 from hermes_vault.cli import _dashboard_runtime_warning, _hermes_group, app
-from hermes_vault.models import BrokerDecision, MutationResult, utc_now
+from hermes_vault.models import AgentPolicy, BrokerDecision, MutationResult, PolicyConfig, ServiceAction, ServicePolicyEntry, utc_now
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.vault import Vault
 
@@ -29,15 +31,15 @@ class StubBroker:
             reason="ok",
         )
 
-    def issue_lease(self, agent_id: str, service: str, ttl: int, alias: str | None = None, purpose: str = "task", reason: str | None = None) -> BrokerDecision:
-        self.called_with.append(f"lease:{service}")
+    def issue_lease(self, agent_id: str, service_or_id: str, ttl_seconds: int, alias: str | None = None, purpose: str = "task", reason: str | None = None) -> BrokerDecision:
+        self.called_with.append(f"lease:{service_or_id}")
         return BrokerDecision(
             allowed=True,
-            service=service,
+            service=service_or_id,
             agent_id=agent_id,
             reason="lease issued",
-            ttl_seconds=ttl,
-            metadata={"lease": {"id": "lease-1", "service": service, "alias": alias or "default", "purpose": purpose}},
+            ttl_seconds=ttl_seconds,
+            metadata={"lease": {"id": "lease-1", "service": service_or_id, "alias": alias or "default", "purpose": purpose}},
         )
 
     def list_leases(self, agent_id: str, service: str | None = None, status: str | None = None) -> BrokerDecision:
@@ -58,13 +60,13 @@ class StubBroker:
             metadata={"lease": {"id": lease_id, "service": "openai", "status": "active"}},
         )
 
-    def renew_lease(self, agent_id: str, lease_id: str, ttl: int) -> BrokerDecision:
+    def renew_lease(self, agent_id: str, lease_id: str, ttl_seconds: int) -> BrokerDecision:
         return BrokerDecision(
             allowed=True,
             service="openai",
             agent_id=agent_id,
             reason="renewed lease",
-            ttl_seconds=ttl,
+            ttl_seconds=ttl_seconds,
             metadata={"lease": {"id": lease_id, "service": "openai", "status": "active"}},
         )
 
@@ -258,6 +260,7 @@ def test_maintain_table_uses_recommended_exit_code(monkeypatch) -> None:
         recommended_exit_code = 1
         refresh_summary = {"attempted": 1, "succeeded": 0, "failed": 1}
         health = {"healthy": False, "findings": []}
+        leases = {"active": 0, "expired": 1, "revoked": 0, "total": 1}
         audit_recorded = True
         lifecycle_scope = "refresh + health only"
         policy_drift_checked = False
@@ -832,6 +835,92 @@ def test_lease_issue_cli_uses_broker(monkeypatch) -> None:
     assert payload["service"] == "openai"
     assert payload["ttl_seconds"] == 600
     assert broker.called_with == ["lease:openai"]
+
+
+def _real_lease_build_services(tmp_path: Path):
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-openai", "api_key", alias="primary", scopes=["models.read"])
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "hermes": AgentPolicy(
+                    services=["openai"],
+                    service_actions={
+                        "openai": ServicePolicyEntry(
+                            actions=[
+                                ServiceAction.issue_lease,
+                                ServiceAction.list_leases,
+                                ServiceAction.show_lease,
+                                ServiceAction.renew_lease,
+                                ServiceAction.revoke_lease,
+                            ]
+                        )
+                    },
+                    max_ttl_seconds=900,
+                    raw_secret_access=False,
+                    ephemeral_env_only=True,
+                )
+            }
+        )
+    )
+    broker = Broker(vault, policy, object(), AuditLogger(tmp_path / "vault.db"))
+
+    def _inner(prompt: bool = False):
+        return vault, policy, broker, object()
+
+    return _inner
+
+
+def test_lease_cli_end_to_end(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("hermes_vault.cli.build_services", _real_lease_build_services(tmp_path))
+
+    runner = CliRunner()
+    issue = runner.invoke(
+        _hermes_group,
+        ["lease", "issue", "open_ai", "--agent", "hermes", "--ttl", "600", "--alias", "primary", "--purpose", "deploy"],
+    )
+    assert issue.exit_code == 0
+    issued = json.loads(issue.output)
+    lease_id = issued["metadata"]["lease"]["id"]
+    assert issued["allowed"] is True
+    assert issued["service"] == "openai"
+
+    listed = runner.invoke(_hermes_group, ["lease", "list", "--agent", "hermes", "--service", "openai"])
+    assert listed.exit_code == 0
+    listed_payload = json.loads(listed.output)
+    assert [item["id"] for item in listed_payload["metadata"]["leases"]] == [lease_id]
+
+    shown = runner.invoke(_hermes_group, ["lease", "show", lease_id, "--agent", "hermes"])
+    assert shown.exit_code == 0
+    shown_payload = json.loads(shown.output)
+    assert shown_payload["metadata"]["lease"]["purpose"] == "deploy"
+
+    renewed = runner.invoke(_hermes_group, ["lease", "renew", lease_id, "--agent", "hermes", "--ttl", "300"])
+    assert renewed.exit_code == 0
+    renewed_payload = json.loads(renewed.output)
+    assert renewed_payload["ttl_seconds"] == 300
+    assert renewed_payload["metadata"]["lease"]["renew_count"] == 1
+
+    revoked = runner.invoke(_hermes_group, ["lease", "revoke", lease_id, "--agent", "hermes", "--reason", "cleanup"])
+    assert revoked.exit_code == 0
+    revoked_payload = json.loads(revoked.output)
+    assert revoked_payload["metadata"]["lease"]["status"] == "revoked"
+
+
+def test_lease_cli_output_contains_expected_fields(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("hermes_vault.cli.build_services", _real_lease_build_services(tmp_path))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["lease", "issue", "openai", "--agent", "hermes", "--ttl", "120", "--alias", "primary", "--reason", "ticket-7"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    lease = payload["metadata"]["lease"]
+    assert {"id", "service", "alias", "agent_id", "status", "ttl_seconds", "expires_at", "reason"}.issubset(lease)
+    assert lease["reason"] == "ticket-7"
 
 
 def test_policy_pack_show_and_init(monkeypatch, tmp_path: Path) -> None:

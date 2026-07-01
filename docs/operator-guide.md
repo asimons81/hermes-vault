@@ -25,6 +25,23 @@ hermes-vault lease revoke lease-123 --agent hermes --reason "task complete"
 - `lease list`, `lease show`, `lease renew`, and `lease revoke` are the operator lifecycle tools.
 - Dashboard and MCP surfaces show lifecycle metadata but never raw secret values.
 
+## v0.17.0 lease-assurance runbook
+
+This release makes the lease lifecycle observable and maintainable, not just invocable:
+
+```bash
+hermes-vault health --format json
+hermes-vault maintain --dry-run --cleanup-leases
+hermes-vault maintain --cleanup-leases
+hermes-vault policy doctor
+hermes-vault diff --against ~/vault-backup.json --format json
+```
+
+- `health` now includes `leases.active`, `leases.expired`, `leases.revoked`, and `leases.total`.
+- `maintain --cleanup-leases` revokes expired leases only. Active leases are left alone, and repeated runs stay safe.
+- `policy doctor` now warns when an agent can issue leases without `get_env` or `get_credential`, and when it can revoke leases without `issue_lease`.
+- `diff` now shows lease additions, removals, and changes so backup comparisons include access drift, not just credential drift.
+
 ## v0.14.0 Windows-native release runbook
 
 This release is about keeping the vault healthy on its own after credentials already exist. Use the tools in this order when you want the honest picture:

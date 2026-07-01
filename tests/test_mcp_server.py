@@ -792,6 +792,11 @@ agents:
           - rotate
           - delete
           - add_credential
+          - issue_lease
+          - list_leases
+          - show_lease
+          - renew_lease
+          - revoke_lease
       google:
         actions:
           - get_credential
@@ -800,10 +805,17 @@ agents:
           - rotate
           - delete
           - add_credential
+          - issue_lease
+          - list_leases
+          - show_lease
+          - renew_lease
+          - revoke_lease
       supabase:
         actions:
           - get_credential
           - get_env
+          - list_leases
+          - show_lease
     max_ttl_seconds: 3600
     raw_secret_access: false
     ephemeral_env_only: true
@@ -924,3 +936,135 @@ def test_get_ephemeral_env_mcp_denies_expired_no_refresh(vault_with_policy, tmp_
     # Should be denied with a sanitized message (no raw tokens)
     assert "Denied:" in text
     assert "ya29" not in text
+
+
+def test_lease_issue_tool_returns_broker_decision_shape(vault_with_policy, tmp_path):
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    mcp_mod._broker = vault_with_policy
+
+    result = _run_async(call_tool("lease_issue", {
+        "agent_id": "test-agent",
+        "service": "openai",
+        "alias": "primary",
+        "ttl_seconds": 600,
+        "purpose": "deploy",
+    }))
+    data = _json(result)
+
+    assert data["allowed"] is True
+    assert data["service"] == "openai"
+    assert data["ttl_seconds"] == 600
+    assert data["metadata"]["lease"]["purpose"] == "deploy"
+
+
+def test_lease_list_tool_returns_leases(vault_with_policy, tmp_path):
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    lease = vault_with_policy.issue_lease("test-agent", "openai", 600, alias="primary")
+    mcp_mod._broker = vault_with_policy
+
+    result = _run_async(call_tool("lease_list", {"agent_id": "test-agent"}))
+    data = _json(result)
+
+    assert data["allowed"] is True
+    assert [item["id"] for item in data["metadata"]["leases"]] == [lease.metadata["lease"]["id"]]
+
+
+def test_lease_show_tool_returns_lease_detail(vault_with_policy, tmp_path):
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    lease = vault_with_policy.issue_lease("test-agent", "openai", 600, alias="primary")
+    mcp_mod._broker = vault_with_policy
+
+    result = _run_async(call_tool("lease_show", {
+        "agent_id": "test-agent",
+        "lease_id": lease.metadata["lease"]["id"],
+    }))
+    data = _json(result)
+
+    assert data["allowed"] is True
+    assert data["metadata"]["lease"]["id"] == lease.metadata["lease"]["id"]
+
+
+def test_lease_renew_tool_returns_updated_lease(vault_with_policy, tmp_path):
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    lease = vault_with_policy.issue_lease("test-agent", "openai", 600, alias="primary")
+    mcp_mod._broker = vault_with_policy
+
+    result = _run_async(call_tool("lease_renew", {
+        "agent_id": "test-agent",
+        "lease_id": lease.metadata["lease"]["id"],
+        "ttl_seconds": 300,
+    }))
+    data = _json(result)
+
+    assert data["allowed"] is True
+    assert data["ttl_seconds"] == 300
+    assert data["metadata"]["lease"]["renew_count"] == 1
+
+
+def test_lease_revoke_tool_returns_revoked_lease(vault_with_policy, tmp_path):
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    lease = vault_with_policy.issue_lease("test-agent", "openai", 600, alias="primary")
+    mcp_mod._broker = vault_with_policy
+
+    result = _run_async(call_tool("lease_revoke", {
+        "agent_id": "test-agent",
+        "lease_id": lease.metadata["lease"]["id"],
+        "reason": "cleanup",
+    }))
+    data = _json(result)
+
+    assert data["allowed"] is True
+    assert data["metadata"]["lease"]["status"] == "revoked"
+    assert data["metadata"]["lease"]["reason"] == "cleanup"
+
+
+def test_lease_issue_denied_returns_decision_shape(vault_with_policy, tmp_path, monkeypatch):
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    mcp_mod._broker = vault_with_policy
+    monkeypatch.setenv("HERMES_VAULT_MCP_ALLOWED_AGENTS", "restricted-agent")
+
+    result = _run_async(call_tool("lease_issue", {
+        "agent_id": "restricted-agent",
+        "service": "openai",
+        "alias": "primary",
+        "ttl_seconds": 600,
+    }))
+    data = _json(result)
+
+    assert data["allowed"] is False
+    assert "issue_lease" in data["reason"]
+
+
+def test_vault_leases_resource_returns_list(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    vault_with_policy.issue_lease("test-agent", "openai", 600, alias="primary")
+
+    result = _run_async(read_resource("vault://leases?agent_id=test-agent"))
+    data = _resource_json(result)
+
+    assert data["version"] == "vault-leases-v1"
+    assert data["count"] == 1
+    assert data["leases"][0]["service"] == "openai"
+
+
+def test_vault_lease_detail_resource_returns_detail(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    lease = vault_with_policy.issue_lease("test-agent", "openai", 600, alias="primary")
+
+    result = _run_async(read_resource(f"vault://leases/{lease.metadata['lease']['id']}?agent_id=test-agent"))
+    data = _resource_json(result)
+
+    assert data["version"] == "vault-lease-v1"
+    assert data["lease"]["id"] == lease.metadata["lease"]["id"]

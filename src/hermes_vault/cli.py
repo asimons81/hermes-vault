@@ -1384,6 +1384,7 @@ def maintain(
     stale_days: int = typer.Option(30, "--stale-days", help="Flag credentials not verified within this many days."),
     expiring_days: int = typer.Option(7, "--expiring-days", help="Flag credentials expiring within this many days."),
     backup_days: int = typer.Option(30, "--backup-days", help="Warn if last backup exceeds this many days."),
+    cleanup_leases: bool = typer.Option(False, "--cleanup-leases", help="Revoke expired leases during maintenance."),
 ) -> None:
     """Run scheduled-safe OAuth refresh and vault health maintenance.
 
@@ -1419,6 +1420,7 @@ def maintain(
         stale_days=stale_days,
         expiring_days=expiring_days,
         backup_days=backup_days,
+        cleanup_leases=cleanup_leases,
     )
 
     if format == "json":
@@ -1436,6 +1438,15 @@ def maintain(
     table.add_row("Recovery proven", "yes" if report.recovery_proven else "no")
     table.add_row("Next step", report.next_step_hint)
     table.add_row("Health", "healthy" if report.health.get("healthy") else "warnings")
+    table.add_row(
+        "Leases",
+        (
+            f"total={report.leases.get('total', 0)} "
+            f"active={report.leases.get('active', 0)} "
+            f"expired={report.leases.get('expired', 0)} "
+            f"revoked={report.leases.get('revoked', 0)}"
+        ),
+    )
     table.add_row("Audit recorded", "yes" if report.audit_recorded else "no")
     table.add_row("Exit code", str(report.recommended_exit_code))
     console.print(table)
@@ -1735,9 +1746,9 @@ def lease_issue(
 ) -> None:
     _, _, broker, _ = build_services(prompt=True)
     decision = broker.issue_lease(
-        service=normalize(service),
+        service_or_id=normalize(service),
         agent_id=agent,
-        ttl=ttl,
+        ttl_seconds=ttl,
         alias=alias,
         purpose=purpose,
         reason=reason,
@@ -1782,7 +1793,7 @@ def lease_renew(
     ttl: int = typer.Option(..., "--ttl", help="Extension in seconds."),
 ) -> None:
     _, _, broker, _ = build_services(prompt=True)
-    decision = broker.renew_lease(agent_id=agent, lease_id=lease_id, ttl=ttl)
+    decision = broker.renew_lease(agent_id=agent, lease_id=lease_id, ttl_seconds=ttl)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
         raise typer.Exit(code=1)
@@ -2156,7 +2167,7 @@ def diff(
             e.kind.upper(),
             e.service,
             e.alias,
-            e.credential_type or "-",
+            "lease" if e.resource_type == "lease" else (e.credential_type or "-"),
             e.status or "-",
             changes_str[:60] + ("..." if len(changes_str) > 60 else ""),
         )

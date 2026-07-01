@@ -305,6 +305,10 @@ def render_health_report_markdown(report) -> str:
         f"| Expired | {report.expired_count} |",
         f"| Expiring | {report.expiring_count} |",
         f"| Never verified | {report.never_verified_count} |",
+        f"| Total leases | {report.leases.get('total', 0)} |",
+        f"| Active leases | {report.leases.get('active', 0)} |",
+        f"| Expired leases | {report.leases.get('expired', 0)} |",
+        f"| Revoked leases | {report.leases.get('revoked', 0)} |",
     ]
     if report.days_since_last_backup is not None:
         lines.append(f"| Days since last backup | {report.days_since_last_backup} |")
