@@ -42,7 +42,7 @@
     <!-- Hero Section -->
     <section class="hero section-pad reveal hero-reveal-1">
       <div class="hero-copy">
-        <p class="eyebrow">v0.17.0 &bull; Lease Assurance &bull; full lifecycle</p>
+        <p class="eyebrow">v0.18.0 &bull; Operator Workflow Convergence &bull; guided operations</p>
         <h1>From <span>.env</span> to safe agent access.</h1>
         <p class="lede">
           Bootstrap a messy plaintext env file into an encrypted local vault, policy-scoped agent access, generated skill contracts, browserless OAuth options, and a release loop that proves freshness, drift, and recovery. Less key sprawl, fewer auth lies, fewer agent mistakes.
@@ -63,8 +63,8 @@
         <div class="hero-metrics" aria-label="Release and platform notes">
           <div class="metric-card">
             <span>Current Release</span>
-            <strong>0.17.0</strong>
-            <small>Lease Assurance: full lease lifecycle with health visibility, scheduled cleanup, policy drift detection, and backup diffing across every operator surface.</small>
+            <strong>0.18.0</strong>
+            <small>Operator Workflow Convergence: dashboard onboarding preview, recovery diff drills, searchable inventory, and MCP status metadata.</small>
           </div>
           <div class="metric-card">
             <span>Operator Loop</span>
@@ -264,7 +264,7 @@
         <p class="eyebrow">Console Dashboard</p>
         <h2>Visual visibility without secret exposure.</h2>
         <p>
-          The redesigned local console renders health statistics, credential inventory, policy posture, operations, and audit activity on localhost, keeping raw key payloads fully redacted.
+          The redesigned local console renders health statistics, onboarding previews, credential inventory, policy posture, recovery drills, leases, and audit activity on localhost, keeping raw key payloads fully redacted.
         </p>
       </div>
 
@@ -310,7 +310,7 @@
                 <span>Production Install</span>
                 <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
               </div>
-              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.17.0
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.18.0
 hermes-vault bootstrap --from-env .env --agent hermes --dry-run
 hermes-vault bootstrap --from-env .env --agent hermes
 hermes-vault oauth doctor google
@@ -365,11 +365,15 @@ uv run pytest tests/ -q</code></pre>
       <div class="release-timeline">
         <article class="release-featured">
           <div class="release-badge">Current Release</div>
-          <h3>v0.17.0</h3>
-          <p>Lease Assurance: time-bound credential leases with health visibility, scheduled cleanup, policy drift detection, backup lease diffing, and full end-to-end test coverage. 754 total tests, 57 new lease tests across 10 operator surfaces.</p>
+          <h3>v0.18.0</h3>
+          <p>Operator Workflow Convergence: dry-run dashboard onboarding preview, recovery diff drills, searchable credential/lease/audit views, MCP <code>vault://status</code>, and fixes for lease metrics, key validation, and OAuth login state isolation.</p>
         </article>
 
         <div class="release-list">
+          <article class="release-row">
+            <span class="release-version">v0.17.0</span>
+            <p>Lease Assurance with health visibility, scheduled cleanup, policy drift detection, backup lease diffing, and full lease lifecycle coverage.</p>
+          </article>
           <article class="release-row">
             <span class="release-version">v0.16.0</span>
             <p>Agent Access Lifecycle with <code>lease issue/renew/revoke</code> workflows, policy pack templates, and dashboard/MCP surfacing for access metadata.</p>

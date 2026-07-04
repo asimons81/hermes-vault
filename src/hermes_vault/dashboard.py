@@ -19,8 +19,10 @@ from hermes_vault import _platform
 from hermes_vault.audit import AuditLogger
 from hermes_vault.backup import restore_dry_run, verify_backup_file
 from hermes_vault.broker import Broker
+from hermes_vault.bootstrap import run_bootstrap
 from hermes_vault.config import AppSettings, get_settings, list_profiles, validate_profile_name
 from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase_with_source
+from hermes_vault.diff import diff_backups
 from hermes_vault.health import run_health
 from hermes_vault.maintenance import run_maintenance
 from hermes_vault.models import CredentialRecord, LeaseRecord
@@ -42,17 +44,21 @@ SAFE_ACTIONS = {
     "oauth_refresh",
     "backup_verify",
     "restore_dry_run",
+    "backup_diff",
+    "onboarding_preview",
     "maintenance",
 }
 DASHBOARD_DRY_RUN_ONLY_ACTIONS = {
     "oauth_refresh",
     "maintenance",
+    "onboarding_preview",
 }
 SECRET_REQUIRED_ACTIONS = {
     "verify",
     "oauth_refresh",
     "backup_verify",
     "restore_dry_run",
+    "backup_diff",
     "maintenance",
 }
 SECURITY_HEADERS = {
@@ -169,7 +175,7 @@ def sanitize_lease(record: LeaseRecord) -> dict[str, Any]:
     }
 
 
-def validate_vault_key(ctx: DashboardContext, max_checks: int = 25) -> dict[str, Any]:
+def validate_vault_key(ctx: DashboardContext, max_checks: int | None = None) -> dict[str, Any]:
     records = ctx.vault.list_credentials()
     if not records:
         return {
@@ -180,7 +186,12 @@ def validate_vault_key(ctx: DashboardContext, max_checks: int = 25) -> dict[str,
             "reason": "Vault contains no credentials to validate.",
         }
 
-    checked = records[:max(1, max_checks)]
+    if max_checks is None:
+        checked = records
+        validation_scope = "all"
+    else:
+        checked = records[:max(1, max_checks)]
+        validation_scope = "sample"
     failures = []
     decrypted_count = 0
     for record in checked:
@@ -201,6 +212,7 @@ def validate_vault_key(ctx: DashboardContext, max_checks: int = 25) -> dict[str,
             "checked_count": len(checked),
             "decrypted_count": 0,
             "failed_count": len(failures),
+            "validation_scope": validation_scope,
             "failures": failures[:5],
             "reason": "Vault key material could not decrypt credential data.",
         }
@@ -213,6 +225,7 @@ def validate_vault_key(ctx: DashboardContext, max_checks: int = 25) -> dict[str,
             "checked_count": len(checked),
             "decrypted_count": decrypted_count,
             "failed_count": len(failures),
+            "validation_scope": validation_scope,
             "failures": failures[:5],
             "reason": "Vault key material is valid, but some credential records could not be decrypted.",
         }
@@ -224,6 +237,7 @@ def validate_vault_key(ctx: DashboardContext, max_checks: int = 25) -> dict[str,
         "checked_count": len(checked),
         "decrypted_count": decrypted_count,
         "failed_count": 0,
+        "validation_scope": validation_scope,
         "reason": "Vault key material decrypted credential data successfully.",
     }
 
@@ -424,6 +438,10 @@ class DashboardAPI:
                 return self._action_backup_verify(payload, ctx)
             if action == "restore_dry_run":
                 return self._action_restore_dry_run(payload, ctx)
+            if action == "backup_diff":
+                return self._action_backup_diff(payload, ctx)
+            if action == "onboarding_preview":
+                return self._action_onboarding_preview(payload, ctx)
             if action == "maintenance":
                 return 200, self._action_maintenance(payload, ctx)
         except Exception as exc:
@@ -508,6 +526,58 @@ class DashboardAPI:
             return 400, {"error": "input path is required"}
         report = restore_dry_run(input_path, ctx.vault)
         return (200 if report.decryptable else 422), report.as_dict(exclude_none=False)
+
+    def _action_backup_diff(self, payload: dict[str, Any], ctx: DashboardContext) -> tuple[int, dict[str, Any]]:
+        input_path = str(payload.get("input") or "").strip()
+        if not input_path:
+            return 400, {"error": "input path is required"}
+        try:
+            compare = json.loads(Path(input_path).read_text(encoding="utf-8"))
+        except Exception as exc:
+            return 422, {"error": f"Failed to read backup file: {exc}"}
+        current = ctx.vault.export_backup(metadata_only=True)
+        entries = [entry.as_dict() for entry in diff_backups(current, compare)]
+        summary: dict[str, int] = {"added": 0, "changed": 0, "removed": 0}
+        resource_summary: dict[str, int] = {"credential": 0, "lease": 0}
+        for entry in entries:
+            summary[entry["kind"]] = summary.get(entry["kind"], 0) + 1
+            resource_type = entry.get("resource_type", "credential")
+            resource_summary[resource_type] = resource_summary.get(resource_type, 0) + 1
+        return 200, {
+            "version": DASHBOARD_VERSION,
+            "mode": "backup-diff",
+            "backup_path": input_path,
+            "count": len(entries),
+            "summary": summary,
+            "resource_summary": resource_summary,
+            "entries": entries,
+        }
+
+    def _action_onboarding_preview(self, payload: dict[str, Any], ctx: DashboardContext) -> tuple[int, dict[str, Any]]:
+        input_path = str(payload.get("from_env") or payload.get("input") or "").strip()
+        if not input_path:
+            return 400, {"error": "from_env path is required"}
+        env_map = payload.get("map") or payload.get("env_map") or []
+        if isinstance(env_map, str):
+            env_map = [item.strip() for item in env_map.split(",") if item.strip()]
+        if not isinstance(env_map, list):
+            return 400, {"error": "map must be a list or comma-separated string"}
+        try:
+            report = run_bootstrap(
+                from_env=Path(input_path),
+                agent=str(payload.get("agent") or "hermes"),
+                dry_run=True,
+                env_map=[str(item) for item in env_map],
+                redact_source=False,
+            )
+        except Exception as exc:
+            return 422, {"error": str(exc), "mode": "onboarding-preview"}
+        data = report.as_dict()
+        data["dashboard_boundary"] = "dry_run_only"
+        data["raw_values_returned"] = False
+        data["source_mutated"] = False
+        data["active_profile"] = ctx.settings.profile_name
+        return 200, data
 
     def _action_maintenance(self, payload: dict[str, Any], ctx: DashboardContext) -> dict[str, Any]:
         report = run_maintenance(
@@ -794,7 +864,7 @@ def create_dashboard_server(
     dev_origin: str | None = None,
 ) -> DashboardServer:
     if host not in {"127.0.0.1", "localhost"}:
-        raise ValueError("Hermes Vault dashboard only supports local host binding in v0.8.0")
+        raise ValueError("Hermes Vault dashboard only supports local host binding")
     return DashboardServer(
         (host, port),
         token or generate_session_token(),

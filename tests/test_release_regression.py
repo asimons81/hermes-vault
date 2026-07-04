@@ -26,26 +26,34 @@ def test_release_version_surfaces_align() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
 
-    from hermes_vault.mcp_server import list_tools, server
+    from hermes_vault.mcp_server import list_resources, list_tools, server
     import asyncio
 
-    assert pyproject["project"]["version"] == "0.17.0"
-    assert hermes_vault.__version__ == "0.17.0"
+    assert pyproject["project"]["version"] == "0.18.0"
+    assert hermes_vault.__version__ == "0.18.0"
     assert server.version == hermes_vault.__version__
     tool_names = {tool.name for tool in asyncio.get_event_loop().run_until_complete(list_tools())}
     assert {"lease_issue", "lease_list", "lease_show", "lease_renew", "lease_revoke"}.issubset(tool_names)
+    resource_uris = {str(resource.uri) for resource in asyncio.get_event_loop().run_until_complete(list_resources())}
+    assert "vault://status" in resource_uris
 
 
-def test_release_story_mentions_lifecycle_and_recovery() -> None:
+def test_release_story_mentions_operator_workflow_convergence() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     readme = (repo_root / "README.md").read_text(encoding="utf-8")
     changelog = (repo_root / "CHANGELOG.md").read_text(encoding="utf-8")
     operator_guide = (repo_root / "docs" / "operator-guide.md").read_text(encoding="utf-8")
+    site = (repo_root / "site" / "index.html").read_text(encoding="utf-8")
+    dashboard_html = (repo_root / "src" / "hermes_vault" / "dashboard_static" / "index.html").read_text(encoding="utf-8")
 
-    assert "Lease Assurance" in changelog
-    assert "What's New in 0.17.0" in readme
-    assert "cleanup-leases" in operator_guide
-    assert "diff --against" in operator_guide
+    assert "Operator Workflow Convergence" in changelog
+    assert "What's New in 0.18.0" in readme
+    assert "vault://status" in operator_guide
+    assert "v0.18.0" in site
+    assert "git@v0.18.0" in site
+    assert "onboarding-preview" in dashboard_html
+    assert "backup-diff" in dashboard_html
+    assert "dry-run-only in v0.8" not in dashboard_html
 
 
 def test_release_story_mentions_evolink_support() -> None:

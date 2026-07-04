@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.18.0 -- Operator Workflow Convergence
+
+### Added
+
+- Dashboard Onboarding Preview action for dry-run bootstrap/import summaries, including redacted import counts, skipped entries, policy doctor summary, skill next step, and MCP config snippet.
+- Dashboard Recovery Hub diff support, pairing metadata-only backup drift with backup verification and restore dry-run.
+- Client-side dashboard search, status filters, and sorting for credential, lease, and audit tables.
+- MCP `vault://status` resource for policy-scoped health, lease, backup, policy, profile, and safe next-step metadata.
+- Release readiness and roadmap artifacts for the v0.18.0 release train.
+
+### Fixed
+
+- Dashboard overview now renders the lease metric returned by the backend.
+- Dashboard vault-key validation now checks all credential records instead of only the first sample.
+- MCP browser OAuth logins now include unique `login_id` values so concurrent same-provider/same-alias attempts do not collide.
+- Current dashboard UI and host-binding errors no longer refer to stale v0.8 operational copy.
+
+### Changed
+
+- Version surfaces now report `0.18.0` in `pyproject.toml`, `src/hermes_vault/__init__.py`, and `uv.lock`.
+- The public site and README now present Operator Workflow Convergence as the current release.
+
+### Verification
+
+- Focused dashboard/MCP regression suite: `uv run pytest tests/test_dashboard.py tests/test_mcp_server.py -q --tb=short`
+
 ## 0.17.0 -- Lease Assurance
 
 ### Added

@@ -2,19 +2,19 @@
 
 ![Hermes Vault promo image](assets/hermes-vault-promo-image.png)
 
-Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and now treats agent access as a first-class lease lifecycle. v0.16.0 adds lease issue/renew/revoke workflows, policy pack templates, and dashboard/MCP surfacing for access metadata.
+Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into observable operator workflows.
 
-v0.16.0 is the Agent Access Lifecycle release. `lease` commands make access time-bound and auditable, `policy pack` templates standardize operator policy, and the dashboard/MCP surfaces now expose lease metadata alongside credential health.
+v0.18.0 is the Operator Workflow Convergence release. The local console now brings onboarding preview, searchable inventory, recovery diff drills, and lease-aware status into one operator surface, while MCP gains a consolidated metadata-only `vault://status` resource.
 
-## What's New in 0.17.0
+## What's New in 0.18.0
 
-v0.17.0 is the Lease Assurance release. It hardens the lease feature that landed in v0.16.0 by adding direct lifecycle coverage, health visibility, scheduled cleanup, and operator drift checks.
+v0.18.0 makes Hermes Vault easier to operate day to day without widening the secret-exposure boundary.
 
-- Lease issue/list/show/renew/revoke now have direct vault, broker, MCP, CLI, backup, and release-regression coverage.
-- `hermes-vault health` now reports lease counts in both markdown and JSON output.
-- `hermes-vault maintain --cleanup-leases` can revoke expired leases safely during scheduled runs.
-- `hermes-vault policy doctor` warns about lease issuance without usable access rights and revoke-only lease grants.
-- `hermes-vault diff --against <backup>` now reports lease drift alongside credential drift.
+- Dashboard Onboarding Preview wraps the existing bootstrap dry-run report with redacted import counts, policy doctor summary, skill next step, and MCP config snippet.
+- Dashboard Recovery Hub adds metadata-only backup diff next to backup verification and restore dry-run.
+- Credential, lease, and audit tables now have client-side search, status filters, and sorting.
+- MCP exposes `vault://status` for policy-scoped health, lease, backup, policy, and next-step metadata.
+- Dashboard lease metrics, full vault-key validation, MCP OAuth login isolation, and stale dashboard release copy are fixed.
 
 ## What It Does
 
@@ -47,10 +47,10 @@ Hermes Vault runs natively on Windows -- no WSL required.
 
 ```powershell
 # Install with uv (recommended)
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.14.0
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.18.0
 
 # Or with pipx
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.14.0
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.18.0
 
 # Or with pip (editable dev install)
 python -m venv .venv

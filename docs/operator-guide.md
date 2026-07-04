@@ -8,6 +8,22 @@
 4. Edit `~/.hermes/hermes-vault-data/policy.yaml` for the real agent allowlists.
 5. Back up both `vault.db` and `master_key_salt.bin` together. Losing the salt makes the vault unreadable.
 
+## v0.18.0 operator-workflow convergence runbook
+
+This release makes the console and MCP surfaces better at answering "what should I do next?" without exposing secrets:
+
+```bash
+hermes-vault dashboard --no-open
+hermes-vault mcp
+hermes-vault diff --against ~/vault-backup.json --format json
+```
+
+- Dashboard Onboarding Preview wraps `bootstrap --dry-run` for redacted env import planning. It does not import credentials or redact source files from the browser.
+- Dashboard Recovery Hub can verify a backup, run restore dry-run, and diff current metadata against a backup from one local view.
+- Credential, lease, and audit dashboard tables now support client-side search, status filters, and sorting for larger vaults.
+- MCP `vault://status?agent_id=<agent>` returns policy-scoped health, lease, backup, policy, profile, and safe next-step metadata. It never returns raw secret values.
+- Dashboard vault-key validation now checks every credential record, so late-record decrypt failures are visible before secret-backed actions run.
+
 ## v0.16.0 access-lifecycle release runbook
 
 This release turns access into a lease lifecycle. Use these commands when you want bounded access, a reusable policy baseline, and a quick cleanup path:

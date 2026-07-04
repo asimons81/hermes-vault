@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Hermes Vault Console</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -49,6 +50,7 @@
         <nav class="nav" aria-label="Console views">
           <div class="nav-indicator" id="nav-indicator"></div>
           <button class="nav-item active" data-view="overview">Overview</button>
+          <button class="nav-item" data-view="onboarding">Onboarding</button>
           <button class="nav-item" data-view="credentials">Credentials</button>
           <button class="nav-item" data-view="policy">Policy</button>
           <button class="nav-item" data-view="leases">Leases</button>
@@ -100,11 +102,51 @@
           </div>
         </section>
 
+        <section id="onboarding" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Onboarding Preview</h2>
+              <button class="primary-button" type="button" data-action="onboarding-preview">Preview</button>
+            </div>
+            <div class="form-grid">
+              <label>
+                <span>.env path</span>
+                <input id="onboarding-env-path" placeholder="/path/to/.env" />
+              </label>
+              <label>
+                <span>Agent</span>
+                <input id="onboarding-agent" value="hermes" />
+              </label>
+              <label class="wide">
+                <span>Mappings</span>
+                <input id="onboarding-map" placeholder="CUSTOM_TOKEN=custom:api_key, DATABASE_URL=postgres:connection_url" />
+              </label>
+            </div>
+            <div id="onboarding-summary" class="summary-grid"></div>
+          </section>
+        </section>
+
         <section id="credentials" class="view">
           <section class="panel">
             <div class="panel-head">
               <h2>Credential Inventory</h2>
               <button class="ghost-button" type="button" data-action="verify-all" data-secret-action="true">Verify All</button>
+            </div>
+            <div class="filter-bar">
+              <input id="credential-filter" data-filter="credentials" placeholder="Filter service, alias, type, tag, note, status" />
+              <select id="credential-status-filter" data-filter="credentialStatus" aria-label="Credential status">
+                <option value="">Any status</option>
+                <option value="active">Active</option>
+                <option value="invalid">Invalid</option>
+                <option value="expired">Expired</option>
+                <option value="unknown">Unknown</option>
+              </select>
+              <select id="credential-sort" data-filter="credentialSort" aria-label="Credential sort">
+                <option value="service">Service</option>
+                <option value="status">Status</option>
+                <option value="last_verified_at">Last verified</option>
+                <option value="expiry">Expiry</option>
+              </select>
             </div>
             <div id="credential-table" class="table"></div>
           </section>
@@ -126,6 +168,21 @@
         <section id="leases" class="view">
           <section class="panel">
             <div class="panel-head"><h2>Lease Inventory</h2></div>
+            <div class="filter-bar">
+              <input id="lease-filter" data-filter="leases" placeholder="Filter service, alias, agent, purpose, reason" />
+              <select id="lease-status-filter" data-filter="leaseStatus" aria-label="Lease status">
+                <option value="">Any status</option>
+                <option value="active">Active</option>
+                <option value="expired">Expired</option>
+                <option value="revoked">Revoked</option>
+              </select>
+              <select id="lease-sort" data-filter="leaseSort" aria-label="Lease sort">
+                <option value="expires_at">Expiry</option>
+                <option value="service">Service</option>
+                <option value="agent_id">Agent</option>
+                <option value="status">Status</option>
+              </select>
+            </div>
             <div id="lease-table" class="table"></div>
           </section>
         </section>
@@ -133,6 +190,16 @@
         <section id="audit" class="view">
           <section class="panel">
             <div class="panel-head"><h2>Audit Timeline</h2></div>
+            <div class="filter-bar">
+              <input id="audit-filter" data-filter="audit" placeholder="Filter time, agent, action, service, decision, reason" />
+              <select id="audit-sort" data-filter="auditSort" aria-label="Audit sort">
+                <option value="timestamp">Time</option>
+                <option value="agent_id">Agent</option>
+                <option value="action">Action</option>
+                <option value="service">Service</option>
+                <option value="decision">Decision</option>
+              </select>
+            </div>
             <div id="audit-table" class="table"></div>
           </section>
         </section>
@@ -141,14 +208,14 @@
           <div class="ops-grid">
             <section class="panel">
               <h2>Maintenance</h2>
-              <p class="panel-note">Dashboard maintenance is dry-run-only in v0.8. Use the CLI for live maintenance.</p>
+              <p class="panel-note">Dashboard maintenance is dry-run-only. Use the CLI for live maintenance.</p>
               <div class="button-row">
                 <button class="primary-button" type="button" data-action="maintenance-dry" data-secret-action="true">Run Dry-Run</button>
               </div>
             </section>
             <section class="panel">
               <h2>OAuth Refresh</h2>
-              <p class="panel-note">OAuth refresh is dry-run-only from the dashboard in v0.8. Use the CLI for live refresh.</p>
+              <p class="panel-note">OAuth refresh is dry-run-only from the dashboard. Use the CLI for live refresh.</p>
               <div class="form-row">
                 <input id="oauth-service" placeholder="service, e.g. google" />
                 <input id="oauth-alias" placeholder="alias" value="default" />
@@ -158,12 +225,14 @@
               </div>
             </section>
             <section class="panel">
-              <h2>Recovery Drill</h2>
+              <h2>Recovery Hub</h2>
               <input id="backup-path" placeholder="/path/to/vault-backup.json" />
               <div class="button-row">
                 <button class="primary-button" type="button" data-action="backup-verify" data-secret-action="true">Verify Backup</button>
                 <button class="ghost-button" type="button" data-action="restore-dry-run" data-secret-action="true">Restore Dry-Run</button>
+                <button class="ghost-button" type="button" data-action="backup-diff" data-secret-action="true">Diff</button>
               </div>
+              <div id="recovery-summary" class="summary-grid compact"></div>
             </section>
           </div>
           <section class="panel output-panel">

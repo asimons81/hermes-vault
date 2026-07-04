@@ -101,7 +101,8 @@ def test_list_tools_returns_expected_tools():
 def test_list_resources_returns_expected_static_resources():
     resources = _run_async(list_resources())
     by_uri = {str(resource.uri): resource for resource in resources}
-    assert {"vault://services", "vault://health", "vault://policy"}.issubset(by_uri)
+    assert {"vault://status", "vault://services", "vault://health", "vault://policy"}.issubset(by_uri)
+    assert by_uri["vault://status"].mimeType == "application/json"
     assert by_uri["vault://services"].mimeType == "application/json"
     assert by_uri["vault://health"].mimeType == "application/json"
     assert by_uri["vault://policy"].mimeType == "application/json"
@@ -238,6 +239,33 @@ def test_read_health_resource_returns_no_live_verify_health(vault_with_policy, t
     assert data["policy_scoped"] is True
 
 
+def test_read_status_resource_returns_consolidated_metadata(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(read_resource("vault://status?agent_id=test-agent"))
+    data = _resource_json(result)
+
+    assert data["version"] == "vault-status-v1"
+    assert data["agent_id"] == "test-agent"
+    assert data["policy_scoped"] is True
+    assert data["profile"]["name"] == "default"
+    assert data["health"]["total_credentials"] == 2
+    assert "policy_hash" in data["policy"]
+    assert isinstance(data["next_steps"], list)
+    assert data["raw_secret_values_returned"] is False
+    serialized = json.dumps(data)
+    assert "test-openai-key" not in serialized
+    assert "gh-test-token" not in serialized
+
+
+def test_read_status_resource_denies_agent_without_list_capability(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(read_resource("vault://status?agent_id=no-list-agent"))
+    data = _resource_json(result)
+
+    assert data["version"] == "vault-resource-error-v1"
+    assert "list_credentials" in data["error"]
+
+
 def test_read_health_resource_is_policy_scoped(vault_with_policy, tmp_path):
     os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
     result = _run_async(read_resource("vault://health?agent_id=test-agent"))
@@ -288,6 +316,7 @@ def test_unknown_resource_uri_raises():
 def test_resource_content_is_application_json(vault_with_policy, tmp_path):
     os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
     for uri in (
+        "vault://status?agent_id=test-agent",
         "vault://services?agent_id=test-agent",
         "vault://services/openai?agent_id=test-agent",
         "vault://health?agent_id=test-agent",
@@ -584,6 +613,7 @@ def test_oauth_login_returns_authorization_url(vault_with_policy, tmp_path, monk
     }))
     data = _json(result)
     assert "authorization_url" in data
+    assert "login_id" in data
     assert "redirect_uri" in data
     assert "message" in data
     assert "test" in data["message"]
@@ -593,6 +623,53 @@ def test_oauth_login_returns_authorization_url(vault_with_policy, tmp_path, monk
     assert "code_challenge_method=S256" in url
     assert "state=" in url
     assert "client_id=" in url
+
+
+def test_oauth_login_pending_state_uses_unique_login_ids(vault_with_policy, tmp_path, monkeypatch):
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    monkeypatch.setenv("HERMES_VAULT_OAUTH_GOOGLE_CLIENT_ID", "test-client-123")
+    monkeypatch.setenv("HERMES_VAULT_OAUTH_GOOGLE_CLIENT_SECRET", "test-secret")
+
+    class FakeCallbackServer:
+        next_port = 9000
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def start(self) -> int:
+            FakeCallbackServer.next_port += 1
+            return FakeCallbackServer.next_port
+
+        def wait(self):
+            raise AssertionError("wait should not run in this collision test")
+
+    class FakeThread:
+        def __init__(self, target, daemon: bool = False) -> None:
+            self.target = target
+            self.daemon = daemon
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(mcp_mod, "CallbackServer", FakeCallbackServer)
+    monkeypatch.setattr(mcp_mod.threading, "Thread", FakeThread)
+
+    first = _json(_run_async(call_tool("oauth_login", {
+        "agent_id": "test-agent",
+        "provider": "google",
+        "alias": "shared",
+    })))
+    second = _json(_run_async(call_tool("oauth_login", {
+        "agent_id": "test-agent",
+        "provider": "google",
+        "alias": "shared",
+    })))
+
+    assert first["login_id"] != second["login_id"]
+    assert len(mcp_mod._pending_oauth) == 2
+    assert all(key.startswith("browser:default:google:shared:") for key in mcp_mod._pending_oauth)
 
 
 def test_oauth_device_login_requires_provider(tmp_path, monkeypatch):

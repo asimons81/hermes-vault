@@ -44,6 +44,7 @@ from hermes_vault.oauth.oauth_refresh import RefreshEngine, refresh_alias_for
 from hermes_vault.oauth.providers import OAuthProviderRegistry
 from hermes_vault.oauth.readiness import provider_readiness
 from hermes_vault.policy import PolicyEngine
+from hermes_vault.policy_doctor import run_policy_doctor
 from hermes_vault.scanner import Scanner
 from hermes_vault.service_ids import normalize
 from hermes_vault.verifier import Verifier
@@ -362,7 +363,7 @@ def _resource_key(uri: Any) -> str:
         return "vault://services/{name}"
     if parsed.netloc == "leases" and parsed.path not in ("", "/"):
         return "vault://leases/{id}"
-    if parsed.netloc in {"services", "health", "policy", "leases"} and parsed.path in ("", "/"):
+    if parsed.netloc in {"services", "health", "policy", "leases", "status"} and parsed.path in ("", "/"):
         return f"vault://{parsed.netloc}"
     raise ValueError(f"Unknown resource URI: {uri}")
 
@@ -569,6 +570,71 @@ def _health_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict
     return payload
 
 
+def _status_resource_payload(broker: Broker, binding: MCPBindingContext, settings: Any) -> dict[str, Any]:
+    agent_id = binding.effective_agent_id or ""
+    health = _health_resource_payload(broker, binding)
+    agent_policy = broker.policy.get_agent_policy(agent_id)
+    if agent_policy is None:
+        raise ValueError(f"agent '{agent_id}' is not defined in policy")
+
+    lease_result = broker.list_leases(agent_id)
+    leases = list(lease_result.metadata.get("leases", [])) if lease_result.allowed else []
+    policy_report = run_policy_doctor(
+        settings.effective_policy_path,
+        generated_skills_dir=settings.generated_skills_dir,
+        strict=False,
+    )
+
+    next_steps: list[str] = []
+    if health.get("findings"):
+        next_steps.append("Run hermes-vault health locally and resolve the reported findings.")
+    if policy_report.finding_count:
+        next_steps.append("Run hermes-vault policy doctor locally and review policy drift.")
+    days_since_backup = health.get("days_since_last_backup")
+    backup_threshold = int(health.get("backup_threshold_days") or 30)
+    if days_since_backup is None:
+        next_steps.append("Create and verify a backup with hermes-vault backup and hermes-vault backup-verify.")
+    elif int(days_since_backup) > backup_threshold:
+        next_steps.append("Refresh backup coverage and run a restore dry-run.")
+    if not next_steps:
+        next_steps.append("Vault status is clean for this policy scope; continue using brokered env or leases.")
+
+    return {
+        "version": "vault-status-v1",
+        "generated_at": _generated_at(),
+        "agent_id": agent_id,
+        "binding_mode": binding.binding_mode,
+        "policy_scoped": True,
+        "profile": {
+            "name": settings.profile_name,
+            "runtime_home": str(settings.runtime_home),
+            "policy_path": str(settings.effective_policy_path),
+            "mcp_binding_enabled": settings.mcp_binding_enabled,
+        },
+        "health": {
+            "healthy": health.get("healthy"),
+            "total_credentials": health.get("total_credentials"),
+            "finding_count": len(health.get("findings", [])),
+            "days_since_last_backup": days_since_backup,
+            "backup_threshold_days": backup_threshold,
+            "leases": health.get("leases", {}),
+        },
+        "policy": {
+            "policy_hash": broker.policy.compute_policy_hash(),
+            "service_count": len(agent_policy.services),
+            "finding_count": policy_report.finding_count,
+        },
+        "leases": {
+            "count": len(leases),
+            "active": sum(1 for lease in leases if lease.get("status") == "active"),
+            "expired": sum(1 for lease in leases if lease.get("status") == "expired"),
+            "revoked": sum(1 for lease in leases if lease.get("status") == "revoked"),
+        },
+        "next_steps": next_steps,
+        "raw_secret_values_returned": False,
+    }
+
+
 def _policy_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
     agent_policy = broker.policy.get_agent_policy(agent_id)
@@ -623,7 +689,7 @@ def _preflight_tool_arguments(name: str, arguments: dict[str, Any]) -> str | Non
     return None
 
 
-# ── OAuth state holder (per-process, not thread-safe across multiple concurrent logins) ─────────
+# ── OAuth state holder (per-process; browser/device login attempts use unique keys) ─────────
 
 _pending_oauth: dict[str, dict[str, Any]] = {}
 
@@ -751,6 +817,13 @@ async def _default_agent_service_resources() -> list[Resource]:
 async def list_resources() -> list[Resource]:
     resources = [
         Resource(
+            name="vault-status",
+            title="Hermes Vault status",
+            uri=AnyUrl("vault://status"),
+            description="Consolidated policy-scoped vault status and safe next steps.",
+            mimeType="application/json",
+        ),
+        Resource(
             name="vault-services",
             title="Hermes Vault services",
             uri=AnyUrl("vault://services"),
@@ -822,6 +895,8 @@ async def read_resource(uri: Any) -> Any:
             payload = _service_detail_resource_payload(uri, broker, binding)
         elif key == "vault://health":
             payload = _health_resource_payload(broker, binding)
+        elif key == "vault://status":
+            payload = _status_resource_payload(broker, binding, settings)
         elif key == "vault://policy":
             payload = _policy_resource_payload(broker, binding)
         elif key == "vault://leases":
@@ -1075,8 +1150,10 @@ def _handle_oauth_login(arguments: dict[str, Any], broker: Broker, agent_id: str
     # Track pending login (so callback can validate state + exchange)
     # Include profile to prevent cross-profile OAuth collisions
     settings = get_settings()
-    pending_key = f"{settings.profile_name}:{provider_id}:{alias}"
+    login_id = secrets.token_urlsafe(12)
+    pending_key = f"browser:{settings.profile_name}:{provider_id}:{alias}:{login_id}"
     _pending_oauth[pending_key] = {
+        "login_id": login_id,
         "state": state,
         "code_verifier": code_verifier,
         "redirect_uri": redirect_uri,
@@ -1106,6 +1183,7 @@ def _handle_oauth_login(arguments: dict[str, Any], broker: Broker, agent_id: str
 
     return [TextContent(type="text", text=_json_text({
         "success": True,
+        "login_id": login_id,
         "authorization_url": auth_url,
         "redirect_uri": redirect_uri,
         "state": state,

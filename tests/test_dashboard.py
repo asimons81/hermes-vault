@@ -316,6 +316,25 @@ def test_dashboard_validates_correct_vault_key(tmp_path: Path) -> None:
     assert validation["ok"] is True
     assert validation["checked_count"] == 1
     assert validation["decrypted_count"] == 1
+    assert validation["validation_scope"] == "all"
+
+
+def test_dashboard_key_validation_checks_beyond_first_25_records(tmp_path: Path) -> None:
+    ctx = _empty_context(tmp_path)
+    for index in range(30):
+        ctx.vault.add_credential(f"service-{index:02d}", f"secret-{index}", "api_key", alias="default")
+    broken = ctx.vault.list_credentials()[-1]
+    import sqlite3
+
+    with sqlite3.connect(ctx.settings.db_path) as conn:
+        conn.execute("UPDATE credentials SET encrypted_payload = ? WHERE id = ?", ("not-valid-ciphertext", broken.id))
+        conn.commit()
+
+    validation = validate_vault_key(ctx)
+
+    assert validation["status"] == "degraded"
+    assert validation["checked_count"] == 30
+    assert validation["failed_count"] == 1
 
 
 def test_dashboard_reports_degraded_key_validation_when_only_some_credentials_fail(tmp_path: Path) -> None:
@@ -502,8 +521,10 @@ def test_dashboard_session_endpoint_reports_safe_actions(tmp_path: Path) -> None
 
     assert payload["local_only"] is True
     assert "verify" in payload["safe_actions"]
+    assert "onboarding_preview" in payload["safe_actions"]
+    assert "backup_diff" in payload["safe_actions"]
     assert "delete_credential" not in payload["safe_actions"]
-    assert payload["dry_run_only_actions"] == ["maintenance", "oauth_refresh"]
+    assert payload["dry_run_only_actions"] == ["maintenance", "oauth_refresh", "onboarding_preview"]
     assert payload["seconds_remaining"] > 0
 
 
@@ -567,6 +588,49 @@ def test_dashboard_forces_maintenance_to_dry_run(monkeypatch: pytest.MonkeyPatch
     assert status == 200
     assert calls[0]["dry_run"] is True
     assert payload["dry_run"] is True
+
+
+def test_dashboard_onboarding_preview_is_dry_run_and_redacted(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=sk-sensitive-value\nNEXT_PUBLIC_URL=https://example.test\n", encoding="utf-8")
+    api = DashboardAPI(context_factory=lambda: ctx)
+
+    status, payload = api.action("onboarding_preview", {"from_env": str(env_path), "agent": "hermes"})
+
+    assert status == 200
+    assert payload["dry_run"] is True
+    assert payload["dashboard_boundary"] == "dry_run_only"
+    assert payload["raw_values_returned"] is False
+    assert payload["source_mutated"] is False
+    assert payload["import_preview"]["importable_count"] == 1
+    assert "sk-sensitive-value" not in json.dumps(payload)
+    assert env_path.read_text(encoding="utf-8").startswith("OPENAI_API_KEY=sk-sensitive-value")
+
+
+def test_dashboard_backup_diff_action_returns_metadata_only(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    backup_path = tmp_path / "backup.json"
+    backup = ctx.vault.export_backup(metadata_only=True)
+    ctx.vault.add_credential("github", "ghp-secret-value", "personal_access_token", alias="work")
+    backup_path.write_text(json.dumps(backup), encoding="utf-8")
+    api = DashboardAPI(context_factory=lambda: ctx)
+
+    status, payload = api.action("backup_diff", {"input": str(backup_path)})
+
+    assert status == 200
+    assert payload["mode"] == "backup-diff"
+    assert payload["summary"]["added"] == 1
+    assert payload["entries"][0]["service"] == "github"
+    assert "ghp-secret-value" not in json.dumps(payload)
+
+
+def test_dashboard_static_copy_has_current_dashboard_language() -> None:
+    html = (dashboard_static_dir() / "index.html").read_text(encoding="utf-8")
+    app_js = (dashboard_static_dir() / "app.js").read_text(encoding="utf-8")
+
+    assert "dry-run-only in v0.8" not in html
+    assert "#metric-leases" in app_js
 
 
 def test_dashboard_overview_reports_runtime_diagnostics(tmp_path: Path) -> None:

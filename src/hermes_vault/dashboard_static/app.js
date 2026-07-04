@@ -41,6 +41,18 @@ const state = {
   policy: null,
   profiles: [],
   audit: [],
+  filters: {
+    credentials: "",
+    credentialStatus: "",
+    credentialSort: "service",
+    leases: "",
+    leaseStatus: "",
+    leaseSort: "expires_at",
+    audit: "",
+    auditSort: "timestamp",
+  },
+  onboardingPreview: null,
+  recovery: {},
 };
 
 const qs = (selector) => document.querySelector(selector);
@@ -111,6 +123,29 @@ function formatExpiry(expiryStr) {
     return `<span style="color: var(--gold); font-weight: bold;">Expires in ${diffDays}d</span><br><span style="font-size:11px; opacity:0.6">${formattedDate}</span>`;
   }
   return `<span>${formattedDate}</span>`;
+}
+
+function searchable(record, fields) {
+  return fields.map((field) => {
+    const value = record[field];
+    return Array.isArray(value) ? value.join(" ") : fmt(value);
+  }).join(" ").toLowerCase();
+}
+
+function matchesText(record, fields, query) {
+  const value = (query || "").trim().toLowerCase();
+  return !value || searchable(record, fields).includes(value);
+}
+
+function sortBy(records, field, direction = "asc") {
+  const factor = direction === "desc" ? -1 : 1;
+  return [...records].sort((a, b) => {
+    const left = fmt(a[field]).toLowerCase();
+    const right = fmt(b[field]).toLowerCase();
+    if (left < right) return -1 * factor;
+    if (left > right) return 1 * factor;
+    return 0;
+  });
 }
 
 function verificationLabel(result) {
@@ -292,10 +327,12 @@ function render() {
   renderKeyWarning();
   renderProfileBadge();
   renderOverview();
+  renderOnboarding();
   renderCredentials();
   renderPolicy();
   renderLeases();
   renderAudit();
+  renderRecoverySummary();
   updateNavGlider();
 }
 
@@ -325,6 +362,7 @@ function renderOverview() {
   qs("#metric-services").textContent = (overview.services || []).length;
   qs("#metric-health").textContent = (health.findings || []).length;
   qs("#metric-policy").textContent = doctor.finding_count || 0;
+  qs("#metric-leases").textContent = overview.lease_count || 0;
 
   const healthItems = (health.findings || []).slice(0, 8).map((finding) => itemNode({
     title: fmt(finding.kind),
@@ -343,6 +381,29 @@ function renderOverview() {
   }));
 }
 
+function renderOnboarding() {
+  const target = qs("#onboarding-summary");
+  if (!target) return;
+  const preview = state.onboardingPreview;
+  if (!preview) {
+    target.innerHTML = `
+      <article class="summary-card"><span>Importable</span><strong>-</strong></article>
+      <article class="summary-card"><span>Skipped</span><strong>-</strong></article>
+      <article class="summary-card"><span>Policy Findings</span><strong>-</strong></article>
+      <article class="summary-card"><span>Boundary</span><strong>Dry-run</strong></article>
+    `;
+    return;
+  }
+  const importPreview = preview.import_preview || {};
+  const policy = preview.policy_doctor_summary || {};
+  target.innerHTML = `
+    <article class="summary-card"><span>Importable</span><strong>${escapeHtml(importPreview.importable_count || 0)}</strong></article>
+    <article class="summary-card"><span>Skipped</span><strong>${escapeHtml(importPreview.skipped_count || 0)}</strong></article>
+    <article class="summary-card"><span>Policy Findings</span><strong>${escapeHtml(policy.finding_count || 0)}</strong></article>
+    <article class="summary-card"><span>Raw Values</span><strong>${preview.raw_values_returned ? "Returned" : "Redacted"}</strong></article>
+  `;
+}
+
 function renderTagChips(tags) {
   const safeTags = Array.isArray(tags) ? tags : [];
   if (!safeTags.length) return "-";
@@ -350,7 +411,15 @@ function renderTagChips(tags) {
 }
 
 function renderCredentials() {
-  const rows = state.credentials.map((record) => `
+  const filtered = sortBy(
+    state.credentials.filter((record) => {
+      const statusOk = !state.filters.credentialStatus || record.status === state.filters.credentialStatus;
+      return statusOk && matchesText(record, ["service", "alias", "credential_type", "status", "tags", "notes"], state.filters.credentials);
+    }),
+    state.filters.credentialSort || "service",
+    state.filters.credentialSort === "last_verified_at" || state.filters.credentialSort === "expiry" ? "desc" : "asc",
+  );
+  const rows = filtered.map((record) => `
     <tr>
       <td><strong>${escapeHtml(record.service)}</strong></td>
       <td>${escapeHtml(record.alias)}</td>
@@ -374,7 +443,7 @@ function renderCredentials() {
       qs("#credential-table"),
       ["Service", "Alias", "Type", "Tags", "Notes", "Status", "Verification", "Last Verified", "Expiry", "Action"],
       rows,
-      "No credentials in the vault.",
+      state.credentials.length ? "No credentials match the current filters." : "No credentials in the vault.",
     );
     return;
   }
@@ -418,7 +487,14 @@ function renderPolicy() {
 }
 
 function renderLeases() {
-  const leases = state.leases || [];
+  const leases = sortBy(
+    (state.leases || []).filter((lease) => {
+      const statusOk = !state.filters.leaseStatus || lease.status === state.filters.leaseStatus;
+      return statusOk && matchesText(lease, ["service", "alias", "agent_id", "status", "purpose", "reason"], state.filters.leases);
+    }),
+    state.filters.leaseSort || "expires_at",
+    state.filters.leaseSort === "expires_at" ? "asc" : "asc",
+  );
   const rows = leases.map((lease) => `
     <tr>
       <td><strong>${escapeHtml(lease.service)}</strong></td>
@@ -436,12 +512,17 @@ function renderLeases() {
     qs("#lease-table"),
     ["Service", "Alias", "Agent", "Status", "Purpose", "TTL", "Expiry", "Renews", "Reason"],
     rows,
-    "No leases have been issued yet.",
+    (state.leases || []).length ? "No leases match the current filters." : "No leases have been issued yet.",
   );
 }
 
 function renderAudit() {
-  const rows = state.audit.map((entry) => `
+  const entries = sortBy(
+    state.audit.filter((entry) => matchesText(entry, ["timestamp", "agent_id", "action", "service", "decision", "reason"], state.filters.audit)),
+    state.filters.auditSort || "timestamp",
+    state.filters.auditSort === "timestamp" ? "desc" : "asc",
+  );
+  const rows = entries.map((entry) => `
     <tr>
       <td>${escapeHtml(shortDate(entry.timestamp))}</td>
       <td><strong>${escapeHtml(entry.agent_id)}</strong></td>
@@ -455,8 +536,22 @@ function renderAudit() {
     qs("#audit-table"),
     ["Time", "Agent", "Action", "Service", "Decision", "Reason"],
     rows,
-    "No audit entries yet.",
+    state.audit.length ? "No audit entries match the current filters." : "No audit entries yet.",
   );
+}
+
+function renderRecoverySummary() {
+  const target = qs("#recovery-summary");
+  if (!target) return;
+  const recovery = state.recovery || {};
+  const verify = recovery.backup_verify;
+  const restore = recovery.restore_dry_run;
+  const diff = recovery.backup_diff;
+  target.innerHTML = `
+    <article class="summary-card"><span>Verify</span><strong>${verify ? (verify.decryptable ? "OK" : "Check") : "-"}</strong></article>
+    <article class="summary-card"><span>Restore Dry-Run</span><strong>${restore ? (restore.decryptable ? "OK" : "Check") : "-"}</strong></article>
+    <article class="summary-card"><span>Diff Entries</span><strong>${diff ? escapeHtml(diff.count || 0) : "-"}</strong></article>
+  `;
 }
 
 async function runAction(action, payload = {}, button) {
@@ -476,6 +571,12 @@ async function runAction(action, payload = {}, button) {
         const service = (item.metadata && item.metadata.record_service) || payload.service || item.service;
         state.verificationResults[credentialKey(service, alias)] = item;
       }
+    }
+    if (action === "onboarding_preview") {
+      state.onboardingPreview = result;
+    }
+    if (["backup_verify", "restore_dry_run", "backup_diff"].includes(action)) {
+      state.recovery[action] = result;
     }
     output.textContent = JSON.stringify(result, null, 2);
     await loadAll();
@@ -524,6 +625,24 @@ document.body.addEventListener("change", async (event) => {
   }
 });
 
+document.body.addEventListener("input", (event) => {
+  const target = event.target.closest("[data-filter]");
+  if (!target) return;
+  state.filters[target.dataset.filter] = target.value;
+  renderCredentials();
+  renderLeases();
+  renderAudit();
+});
+
+document.body.addEventListener("change", (event) => {
+  const target = event.target.closest("[data-filter]");
+  if (!target) return;
+  state.filters[target.dataset.filter] = target.value;
+  renderCredentials();
+  renderLeases();
+  renderAudit();
+});
+
 document.body.addEventListener("click", (event) => {
   const target = event.target.closest("button");
   if (!target || target.disabled) return;
@@ -545,6 +664,14 @@ document.body.addEventListener("click", (event) => {
     runAction("backup_verify", { input: qs("#backup-path").value }, target);
   } else if (target.dataset.action === "restore-dry-run") {
     runAction("restore_dry_run", { input: qs("#backup-path").value }, target);
+  } else if (target.dataset.action === "backup-diff") {
+    runAction("backup_diff", { input: qs("#backup-path").value }, target);
+  } else if (target.dataset.action === "onboarding-preview") {
+    runAction("onboarding_preview", {
+      from_env: qs("#onboarding-env-path").value,
+      agent: qs("#onboarding-agent").value || "hermes",
+      map: qs("#onboarding-map").value,
+    }, target);
   }
 });
 
