@@ -63,6 +63,8 @@ def _preprocess_policy(raw: dict) -> dict:
                 sa[svc_name] = ServicePolicyEntry(
                     actions=actions,
                     max_ttl_seconds=entry_data.get("max_ttl_seconds"),
+                    require_lease_for_env=entry_data.get("require_lease_for_env"),
+                    require_lease_purpose=entry_data.get("require_lease_purpose"),
                 )
             agent_data["service_actions"] = sa
             agent_data["services"] = list(svc.keys())
@@ -251,6 +253,96 @@ class PolicyEngine:
                 ceiling = min(ceiling, entry.max_ttl_seconds)
         effective = min(requested_ttl, ceiling)
         return True, "ttl accepted", effective
+
+    def require_lease_for_env(self, agent_id: str, service: str) -> bool:
+        agent = self.get_agent_policy(agent_id)
+        if not agent:
+            return False
+        entry = agent.service_actions.get(normalize(service)) if agent.service_actions else None
+        if entry and entry.require_lease_for_env is not None:
+            return bool(entry.require_lease_for_env)
+        return bool(agent.require_lease_for_env)
+
+    def require_lease_purpose(self, agent_id: str, service: str | None = None) -> bool:
+        agent = self.get_agent_policy(agent_id)
+        if not agent:
+            return False
+        if service:
+            entry = agent.service_actions.get(normalize(service)) if agent.service_actions else None
+            if entry and entry.require_lease_purpose is not None:
+                return bool(entry.require_lease_purpose)
+        return bool(agent.require_lease_purpose)
+
+    def explain(
+        self,
+        agent_id: str,
+        service: str,
+        action: str | ServiceAction,
+        requested_ttl: int | None = None,
+    ) -> dict:
+        canonical = normalize(service)
+        action_value = ServiceAction(action).value if isinstance(action, str) else action.value
+        agent = self.get_agent_policy(agent_id)
+        result = {
+            "version": "policy-explain-v1",
+            "agent_id": agent_id,
+            "service": canonical,
+            "action": action_value,
+            "allowed": False,
+            "reason": "",
+            "service_allowed": False,
+            "action_allowed": False,
+            "capability_required": None,
+            "raw_secret_access": False,
+            "ephemeral_env_only": True,
+            "requires_lease": False,
+            "requires_lease_purpose": False,
+            "requested_ttl_seconds": requested_ttl,
+            "effective_ttl_seconds": None,
+            "agent_max_ttl_seconds": None,
+            "service_max_ttl_seconds": None,
+            "policy_hash": self.compute_policy_hash(),
+            "recommended_next_step": "",
+        }
+        if not agent:
+            result["reason"] = f"agent '{agent_id}' is not defined in policy"
+            result["recommended_next_step"] = "Define the agent in policy.yaml with the minimum required service actions."
+            return result
+
+        result["raw_secret_access"] = agent.raw_secret_access
+        result["ephemeral_env_only"] = agent.ephemeral_env_only
+        result["agent_max_ttl_seconds"] = agent.max_ttl_seconds
+        result["requires_lease"] = self.require_lease_for_env(agent_id, canonical) if action_value == ServiceAction.get_env.value else False
+        result["requires_lease_purpose"] = self.require_lease_purpose(agent_id, canonical)
+
+        if canonical not in agent.services:
+            result["reason"] = f"service '{canonical}' is not allowed for agent '{agent_id}'"
+            result["recommended_next_step"] = f"Add service '{canonical}' only if this agent genuinely needs it."
+            return result
+        result["service_allowed"] = True
+
+        entry = agent.service_actions.get(canonical) if agent.service_actions else None
+        if entry and entry.max_ttl_seconds is not None:
+            result["service_max_ttl_seconds"] = entry.max_ttl_seconds
+
+        allowed, reason = self.can(agent_id, canonical, action_value)
+        result["action_allowed"] = allowed
+        result["allowed"] = allowed
+        result["reason"] = reason
+        if requested_ttl is not None:
+            ttl_ok, ttl_reason, effective = self.enforce_ttl(agent_id, requested_ttl, canonical)
+            result["effective_ttl_seconds"] = effective if ttl_ok else None
+            if not ttl_ok:
+                result["allowed"] = False
+                result["reason"] = ttl_reason
+        if result["allowed"]:
+            if result["requires_lease"]:
+                result["recommended_next_step"] = "Issue or reuse an active lease before brokered env handoff."
+            else:
+                result["recommended_next_step"] = "Use brokered env materialization; do not handle raw secrets."
+        else:
+            result["recommended_next_step"] = f"Grant action '{action_value}' only if the task requires it."
+        return result
 
     def _matches_any(self, path: Path, patterns: list[str]) -> bool:
         text = str(path)

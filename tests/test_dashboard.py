@@ -39,7 +39,8 @@ agents:
   hermes:
     services:
       openai:
-        actions: [get_env, verify, metadata]
+        actions: [get_env, verify, metadata, issue_lease, list_leases, show_lease]
+        require_lease_for_env: true
     capabilities: [list_credentials]
     raw_secret_access: false
     ephemeral_env_only: true
@@ -127,6 +128,93 @@ def test_dashboard_api_credentials_are_sanitized(tmp_path: Path) -> None:
     assert payload["runtime"]["profile"] == "default"
     assert payload["runtime"]["profile_is_default"] is True
     assert "encrypted_payload" not in payload["credentials"][0]
+    assert "***" not in json.dumps(payload)
+
+
+def test_dashboard_agent_context_is_redacted(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    api = DashboardAPI(context_factory=lambda: ctx)
+
+    payload = api.agent_context("hermes")
+
+    assert payload["version"] == "agent-context-v1"
+    assert payload["services"][0]["requires_lease_for_env"] is True
+    assert "***" not in json.dumps(payload)
+    assert "encrypted_payload" not in json.dumps(payload)
+
+
+def test_dashboard_policy_explain_action(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    api = DashboardAPI(context_factory=lambda: ctx)
+
+    status, payload = api.action("policy_explain", {
+        "agent_id": "hermes",
+        "service": "openai",
+        "action": "get_env",
+        "ttl_seconds": 900,
+    })
+
+    assert status == 200
+    assert payload["version"] == "policy-explain-v1"
+    assert payload["requires_lease"] is True
+    assert payload["allowed"] is True
+
+
+def test_dashboard_request_access_and_approval_are_metadata_only(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    api = DashboardAPI(context_factory=lambda: ctx)
+
+    status, created = api.action("request_access", {
+        "agent_id": "hermes",
+        "service": "openai",
+        "purpose": "dashboard deploy",
+        "ttl_seconds": 60,
+    })
+
+    assert status == 200
+    assert created["metadata"]["request"]["status"] == "pending"
+    assert "***" not in json.dumps(created)
+    request_id = created["metadata"]["request"]["id"]
+
+    status, approved = api.action("request_approve", {
+        "request_id": request_id,
+        "issue_lease": True,
+        "ttl_seconds": 60,
+        "reason": "ok",
+    })
+
+    assert status == 200
+    assert approved["metadata"]["request"]["status"] == "approved"
+    assert approved["metadata"]["request"]["lease_id"]
+    assert "***" not in json.dumps(approved)
+
+
+def test_dashboard_requests_endpoint_lists_requests(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    api = DashboardAPI(context_factory=lambda: ctx)
+    api.action("request_access", {
+        "agent_id": "hermes",
+        "service": "openai",
+        "purpose": "dashboard deploy",
+    })
+
+    payload = api.requests(agent_id="hermes")
+
+    assert len(payload["requests"]) == 1
+    assert payload["requests"][0]["status"] == "pending"
+
+
+def test_dashboard_recovery_drill_action_is_redacted(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    backup_path = tmp_path / "backup.json"
+    backup_path.write_text(json.dumps(ctx.vault.export_backup()), encoding="utf-8")
+    api = DashboardAPI(context_factory=lambda: ctx)
+
+    status, payload = api.action("recovery_drill", {"path": str(backup_path)})
+
+    assert status == 200
+    assert payload["version"] == "recovery-drill-v1"
+    assert payload["backup_verify"]["decryptable"] is True
     assert "***" not in json.dumps(payload)
 
 

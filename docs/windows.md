@@ -144,7 +144,7 @@ Hermes Vault supports both systemd (Linux/macOS) and Windows Task Scheduler.
 To print a Windows Task Scheduler template:
 
 ```powershell
-hermes-vault maintain --print-systemd
+hermes-vault maintain --print-schedule
 ```
 
 This outputs a PowerShell script and `schtasks.exe` command. The template

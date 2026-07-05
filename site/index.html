@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hermes Vault, Lifecycle and Recovery Credential Broker</title>
-  <meta name="description" content="Hermes Vault turns plaintext .env files into policy-scoped safe agent access with local encryption, ephemeral env injection, lifecycle and recovery checks, and MCP auth tools.">
+  <title>Hermes Vault, Agent Control Plane</title>
+  <meta name="description" content="Hermes Vault turns plaintext .env files into explainable, lease-aware, policy-scoped agent access with local encryption, approvals, recovery drills, and MCP control-plane tools.">
   <meta name="theme-color" content="#030407">
   <meta property="og:title" content="Hermes Vault">
   <meta property="og:description" content="Credential lifecycle and recovery for Hermes operators.">
@@ -25,7 +25,7 @@
         <span class="brand-mark" aria-hidden="true">HV</span>
         <span class="brand-copy">
           <strong>Hermes Vault</strong>
-          <small>lifecycle and recovery layer</small>
+          <small>agent access control plane</small>
         </span>
       </a>
 
@@ -42,10 +42,10 @@
     <!-- Hero Section -->
     <section class="hero section-pad reveal hero-reveal-1">
       <div class="hero-copy">
-        <p class="eyebrow">v0.18.0 &bull; Operator Workflow Convergence &bull; guided operations</p>
+        <p class="eyebrow">v0.19.0 &bull; Agent Control Plane &bull; explainable access</p>
         <h1>From <span>.env</span> to safe agent access.</h1>
         <p class="lede">
-          Bootstrap a messy plaintext env file into an encrypted local vault, policy-scoped agent access, generated skill contracts, browserless OAuth options, and a release loop that proves freshness, drift, and recovery. Less key sprawl, fewer auth lies, fewer agent mistakes.
+          Bootstrap a messy plaintext env file into an encrypted local vault, explain every access decision, route approvals through an audit trail, bind env handoffs to leases, and prove recovery before the incident. Less key sprawl, fewer auth lies, fewer agent mistakes.
         </p>
 
         <div class="cta-row">
@@ -63,8 +63,8 @@
         <div class="hero-metrics" aria-label="Release and platform notes">
           <div class="metric-card">
             <span>Current Release</span>
-            <strong>0.18.0</strong>
-            <small>Operator Workflow Convergence: dashboard onboarding preview, recovery diff drills, searchable inventory, and MCP status metadata.</small>
+            <strong>0.19.0</strong>
+            <small>Agent Control Plane: policy explain, request approvals, lease checkout, agent context, recovery drills, and MCP control-plane metadata.</small>
           </div>
           <div class="metric-card">
             <span>Operator Loop</span>
@@ -283,6 +283,9 @@
             <figcaption>Local Agent Audit Logs</figcaption>
           </figure>
         </div>
+        <p class="gallery-note">
+          The published screenshot set below reflects the v0.18.0 console baseline and preserves the local-only, token-guarded boundary. The v0.19.0 Command Center needs a fresh capture set before those launch visuals replace this archive.
+        </p>
       </div>
     </section>
 
@@ -310,11 +313,12 @@
                 <span>Production Install</span>
                 <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
               </div>
-              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.18.0
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.19.0
 hermes-vault bootstrap --from-env .env --agent hermes --dry-run
 hermes-vault bootstrap --from-env .env --agent hermes
-hermes-vault oauth doctor google
-hermes-vault oauth login google --alias work --headless</code></pre>
+hermes-vault policy explain hermes openai --action get_env
+hermes-vault request access openai --agent hermes --purpose "release check" --ttl 600
+hermes-vault lease checkout openai --agent hermes --purpose "release check" --ttl 600</code></pre>
             </div>
             <div class="install-notes">
               <article class="note-card">
@@ -365,11 +369,15 @@ uv run pytest tests/ -q</code></pre>
       <div class="release-timeline">
         <article class="release-featured">
           <div class="release-badge">Current Release</div>
-          <h3>v0.18.0</h3>
-          <p>Operator Workflow Convergence: dry-run dashboard onboarding preview, recovery diff drills, searchable credential/lease/audit views, MCP <code>vault://status</code>, and fixes for lease metrics, key validation, and OAuth login state isolation.</p>
+          <h3>v0.19.0</h3>
+          <p>Agent Control Plane: explainable policy, access requests, approval decisions, lease checkout, redacted agent context, recovery drills, incident bundles, dashboard Command Center, and MCP control-plane resources.</p>
         </article>
 
         <div class="release-list">
+          <article class="release-row">
+            <span class="release-version">v0.18.0</span>
+            <p>Operator Workflow Convergence with dry-run dashboard onboarding preview, recovery diff drills, searchable credential/lease/audit views, MCP <code>vault://status</code>, and fixes for lease metrics, key validation, and OAuth login state isolation.</p>
+          </article>
           <article class="release-row">
             <span class="release-version">v0.17.0</span>
             <p>Lease Assurance with health visibility, scheduled cleanup, policy drift detection, backup lease diffing, and full lease lifecycle coverage.</p>

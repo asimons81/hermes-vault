@@ -21,7 +21,16 @@ from hermes_vault.crypto import (
     load_or_create_master_key,
     load_or_create_salt,
 )
-from hermes_vault.models import CredentialRecord, CredentialSecret, CredentialStatus, LeaseRecord, LeaseStatus, utc_now
+from hermes_vault.models import (
+    AccessRequestRecord,
+    AccessRequestStatus,
+    CredentialRecord,
+    CredentialSecret,
+    CredentialStatus,
+    LeaseRecord,
+    LeaseStatus,
+    utc_now,
+)
 from hermes_vault.service_ids import normalize
 
 
@@ -144,6 +153,29 @@ class Vault:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_leases_agent_id ON leases(agent_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_leases_status ON leases(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_leases_expires_at ON leases(expires_at)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS access_requests (
+                    id TEXT PRIMARY KEY,
+                    agent_id TEXT NOT NULL,
+                    service TEXT NOT NULL,
+                    alias TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    purpose TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    requested_ttl_seconds INTEGER,
+                    created_at TEXT NOT NULL,
+                    decided_at TEXT,
+                    decided_by TEXT,
+                    decision_reason TEXT,
+                    lease_id TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_access_requests_agent_id ON access_requests(agent_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_access_requests_service ON access_requests(service)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_access_requests_status ON access_requests(status)")
             conn.commit()
         self._secure_storage_files()
 
@@ -934,6 +966,155 @@ class Vault:
 
     def get_lease(self, lease_id: str) -> LeaseRecord | None:
         return self._find_lease(lease_id)
+
+    def find_active_lease(
+        self,
+        *,
+        agent_id: str,
+        service: str,
+        alias: str = "default",
+    ) -> LeaseRecord | None:
+        service = normalize(service)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            self._refresh_expired_leases(conn)
+            row = conn.execute(
+                """
+                SELECT * FROM leases
+                WHERE agent_id = ? AND service = ? AND alias = ? AND status = ?
+                ORDER BY expires_at DESC
+                LIMIT 1
+                """,
+                (agent_id, service, alias, LeaseStatus.active.value),
+            ).fetchone()
+        return self._row_to_lease_record(row) if row else None
+
+    def _row_to_access_request_record(self, row: sqlite3.Row) -> AccessRequestRecord:
+        payload = dict(row)
+        payload["status"] = AccessRequestStatus(payload["status"])
+        if payload.get("requested_ttl_seconds") is not None:
+            payload["requested_ttl_seconds"] = int(payload["requested_ttl_seconds"])
+        metadata_raw = payload.get("metadata_json") or "{}"
+        try:
+            payload["metadata"] = json.loads(metadata_raw)
+        except json.JSONDecodeError:
+            payload["metadata"] = {"raw": metadata_raw}
+        payload.pop("metadata_json", None)
+        return AccessRequestRecord.model_validate(payload)
+
+    def create_access_request(
+        self,
+        *,
+        agent_id: str,
+        service: str,
+        action: str,
+        purpose: str,
+        alias: str = "default",
+        requested_ttl_seconds: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> AccessRequestRecord:
+        request = AccessRequestRecord(
+            agent_id=agent_id,
+            service=normalize(service),
+            alias=alias,
+            action=action,
+            purpose=purpose,
+            requested_ttl_seconds=requested_ttl_seconds,
+            metadata=metadata or {},
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO access_requests (
+                    id, agent_id, service, alias, action, purpose, status,
+                    requested_ttl_seconds, created_at, decided_at, decided_by,
+                    decision_reason, lease_id, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request.id,
+                    request.agent_id,
+                    request.service,
+                    request.alias,
+                    request.action,
+                    request.purpose,
+                    request.status.value,
+                    request.requested_ttl_seconds,
+                    request.created_at.isoformat(),
+                    None,
+                    request.decided_by,
+                    request.decision_reason,
+                    request.lease_id,
+                    json.dumps(request.metadata, sort_keys=True),
+                ),
+            )
+            conn.commit()
+        return request
+
+    def list_access_requests(
+        self,
+        *,
+        agent_id: str | None = None,
+        service: str | None = None,
+        status: str | AccessRequestStatus | None = None,
+    ) -> list[AccessRequestRecord]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            conditions: list[str] = []
+            params: list[Any] = []
+            if agent_id is not None:
+                conditions.append("agent_id = ?")
+                params.append(agent_id)
+            if service is not None:
+                conditions.append("service = ?")
+                params.append(normalize(service))
+            if status is not None:
+                status_value = status.value if isinstance(status, AccessRequestStatus) else str(status)
+                conditions.append("status = ?")
+                params.append(status_value)
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            rows = conn.execute(
+                f"SELECT * FROM access_requests WHERE {where_clause} ORDER BY created_at DESC",
+                params,
+            ).fetchall()
+        return [self._row_to_access_request_record(row) for row in rows]
+
+    def get_access_request(self, request_id: str) -> AccessRequestRecord | None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM access_requests WHERE id = ?", (request_id,)).fetchone()
+        return self._row_to_access_request_record(row) if row else None
+
+    def decide_access_request(
+        self,
+        request_id: str,
+        *,
+        status: AccessRequestStatus | str,
+        decided_by: str,
+        reason: str | None = None,
+        lease_id: str | None = None,
+    ) -> AccessRequestRecord:
+        current = self.get_access_request(request_id)
+        if current is None:
+            raise KeyError(f"Access request '{request_id}' not found")
+        if current.status is not AccessRequestStatus.pending:
+            raise ValueError(f"Access request '{request_id}' is already {current.status.value}")
+        status_value = status.value if isinstance(status, AccessRequestStatus) else str(status)
+        decided_at = utc_now()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE access_requests
+                SET status = ?, decided_at = ?, decided_by = ?, decision_reason = ?, lease_id = ?
+                WHERE id = ?
+                """,
+                (status_value, decided_at.isoformat(), decided_by, reason, lease_id, request_id),
+            )
+            conn.commit()
+        updated = self.get_access_request(request_id)
+        if updated is None:
+            raise KeyError(f"Access request '{request_id}' not found after update")
+        return updated
 
     def renew_lease(
         self,

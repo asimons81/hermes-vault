@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hermes_vault import _platform
+from hermes_vault.agent_context import build_agent_context
 from hermes_vault.audit import AuditLogger
 from hermes_vault.backup import restore_dry_run, verify_backup_file
 from hermes_vault.broker import Broker
@@ -47,6 +48,11 @@ SAFE_ACTIONS = {
     "backup_diff",
     "onboarding_preview",
     "maintenance",
+    "policy_explain",
+    "request_access",
+    "request_approve",
+    "request_deny",
+    "recovery_drill",
 }
 DASHBOARD_DRY_RUN_ONLY_ACTIONS = {
     "oauth_refresh",
@@ -60,6 +66,8 @@ SECRET_REQUIRED_ACTIONS = {
     "restore_dry_run",
     "backup_diff",
     "maintenance",
+    "request_approve",
+    "recovery_drill",
 }
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
@@ -332,6 +340,19 @@ class DashboardAPI:
             "agents": _policy_agent_summary(ctx.policy),
         }
 
+    def agent_context(self, agent_id: str) -> dict[str, Any]:
+        ctx = self._context_factory()
+        return build_agent_context(agent_id=agent_id, vault=ctx.vault, policy=ctx.policy)
+
+    def requests(self, agent_id: str | None = None) -> dict[str, Any]:
+        ctx = self._context_factory()
+        decision = ctx.broker.list_access_requests(agent_id=agent_id)
+        return {
+            "version": DASHBOARD_VERSION,
+            "runtime": runtime_metadata(ctx),
+            "requests": decision.metadata.get("requests", []),
+        }
+
     def audit(self, limit: int = 50) -> dict[str, Any]:
         ctx = self._context_factory()
         bounded_limit = max(1, min(limit, 250))
@@ -444,6 +465,16 @@ class DashboardAPI:
                 return self._action_onboarding_preview(payload, ctx)
             if action == "maintenance":
                 return 200, self._action_maintenance(payload, ctx)
+            if action == "policy_explain":
+                return 200, self._action_policy_explain(payload, ctx)
+            if action == "request_access":
+                return 200, self._action_request_access(payload, ctx)
+            if action == "request_approve":
+                return 200, self._action_request_approve(payload, ctx)
+            if action == "request_deny":
+                return 200, self._action_request_deny(payload, ctx)
+            if action == "recovery_drill":
+                return 200, self._action_recovery_drill(payload, ctx)
         except Exception as exc:
             return 500, {"error": str(exc), "action": action}
         return 404, {"error": f"unknown dashboard action: {action}"}
@@ -464,6 +495,67 @@ class DashboardAPI:
             generated_skills_dir=ctx.settings.generated_skills_dir,
             strict=bool(payload.get("strict", False)),
         )
+        return report.as_dict(exclude_none=False)
+
+    def _action_policy_explain(self, payload: dict[str, Any], ctx: DashboardContext) -> dict[str, Any]:
+        agent_id = str(payload.get("agent_id") or "").strip()
+        service = str(payload.get("service") or "").strip()
+        action = str(payload.get("action") or "get_env").strip()
+        ttl = payload.get("ttl_seconds")
+        if not agent_id or not service:
+            raise ValueError("agent_id and service are required")
+        return ctx.policy.explain(
+            agent_id,
+            service,
+            action,
+            requested_ttl=int(ttl) if ttl not in (None, "") else None,
+        )
+
+    def _action_request_access(self, payload: dict[str, Any], ctx: DashboardContext) -> dict[str, Any]:
+        agent_id = str(payload.get("agent_id") or "").strip()
+        service = str(payload.get("service") or "").strip()
+        purpose = str(payload.get("purpose") or "").strip()
+        if not agent_id or not service or not purpose:
+            raise ValueError("agent_id, service, and purpose are required")
+        decision = ctx.broker.request_access(
+            agent_id=agent_id,
+            service=service,
+            alias=str(payload.get("alias") or "default"),
+            action=str(payload.get("action") or "get_env"),
+            purpose=purpose,
+            requested_ttl_seconds=int(payload["ttl_seconds"]) if payload.get("ttl_seconds") not in (None, "") else None,
+        )
+        return decision.model_dump(mode="json")
+
+    def _action_request_approve(self, payload: dict[str, Any], ctx: DashboardContext) -> dict[str, Any]:
+        request_id = str(payload.get("request_id") or "").strip()
+        if not request_id:
+            raise ValueError("request_id is required")
+        decision = ctx.broker.approve_access_request(
+            request_id,
+            reason=payload.get("reason"),
+            issue_lease=bool(payload.get("issue_lease", False)),
+            ttl_seconds=int(payload["ttl_seconds"]) if payload.get("ttl_seconds") not in (None, "") else None,
+        )
+        return decision.model_dump(mode="json")
+
+    def _action_request_deny(self, payload: dict[str, Any], ctx: DashboardContext) -> dict[str, Any]:
+        request_id = str(payload.get("request_id") or "").strip()
+        if not request_id:
+            raise ValueError("request_id is required")
+        decision = ctx.broker.deny_access_request(
+            request_id,
+            reason=payload.get("reason"),
+        )
+        return decision.model_dump(mode="json")
+
+    def _action_recovery_drill(self, payload: dict[str, Any], ctx: DashboardContext) -> dict[str, Any]:
+        backup_path = str(payload.get("path") or payload.get("backup_path") or "").strip()
+        if not backup_path:
+            raise ValueError("backup path is required")
+        from hermes_vault.recovery import run_recovery_drill
+
+        report = run_recovery_drill(backup_path=backup_path, vault=ctx.vault, policy=ctx.policy)
         return report.as_dict(exclude_none=False)
 
     def _action_verify(self, payload: dict[str, Any], ctx: DashboardContext) -> dict[str, Any]:
@@ -758,6 +850,15 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._write_json(self.server.api.credentials())
         elif path == "/api/policy":
             self._write_json(self.server.api.policy())
+        elif path == "/api/agent-context":
+            agent_id = query.get("agent_id", [""])[0]
+            if not agent_id:
+                self._write_json({"error": "agent_id is required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._write_json(self.server.api.agent_context(agent_id))
+        elif path == "/api/requests":
+            agent_id = query.get("agent_id", [None])[0]
+            self._write_json(self.server.api.requests(agent_id=agent_id))
         elif path == "/api/leases":
             self._write_json(self.server.api.leases())
         elif path == "/api/audit":

@@ -8,6 +8,31 @@
 4. Edit `~/.hermes/hermes-vault-data/policy.yaml` for the real agent allowlists.
 5. Back up both `vault.db` and `master_key_salt.bin` together. Losing the salt makes the vault unreadable.
 
+## v0.19.0 agent-control-plane runbook
+
+This release makes agent access explainable, requestable, lease-bound, and recoverable without exposing raw secrets:
+
+```bash
+hermes-vault policy explain hermes openai --action get_env --ttl 600
+hermes-vault policy simulate --agent hermes --service openai --actions get_env,verify,metadata
+hermes-vault request access openai --agent hermes --purpose "release verification" --ttl 600
+hermes-vault request list --status pending
+hermes-vault request approve <request-id> --issue-lease --ttl 600
+hermes-vault lease checkout openai --agent hermes --purpose "release verification" --ttl 600
+hermes-vault agent context hermes --format json
+hermes-vault recovery drill --backup ~/vault-backup.json --format json
+hermes-vault incident bundle --output ~/hv-incident.zip --since 24h
+```
+
+- `policy explain` is the first stop when an agent is denied or when a new workflow is being designed. It shows action permission, TTL, raw-secret boundary, lease requirement, and a safe next step.
+- `request access` creates a durable, metadata-only request. `request approve --issue-lease` can turn an approved request into a time-bound lease without bypassing the broker.
+- `lease checkout` reuses or issues a lease, then materializes env through the existing policy and broker path.
+- `agent context` returns a redacted manifest of services, credential metadata, leases, and access requests for one agent.
+- `recovery drill` combines backup verification, restore dry-run, metadata diff, and policy hash into one proof report.
+- `incident bundle` writes a redacted zip with audit slices, policy summary, health, leases, requests, and runtime metadata. It excludes vault databases, salts, encrypted payloads, raw secrets, provider responses, and env files.
+- Dashboard Command Center exposes agent context, policy explain, access requests, approval decisions, and recovery drills through the same local-only token-guarded boundary.
+- MCP exposes the same control-plane surfaces with `request_access`, `policy_explain`, `lease_checkout`, `vault://agent-context`, `vault://policy-explain`, `vault://requests`, and `vault://recovery`.
+
 ## v0.18.0 operator-workflow convergence runbook
 
 This release makes the console and MCP surfaces better at answering "what should I do next?" without exposing secrets:
@@ -330,12 +355,12 @@ Bottom line: use MCP when you want Hermes to operate as an in-loop client of the
 
 ## Maintenance
 
-`hermes-vault maintain` is the v0.7.0 scheduled run for token refresh and vault hygiene. It combines proactive OAuth refresh, health checks, stale-verification checks, and backup-age warnings in one report.
+`hermes-vault maintain` is the scheduled run for token refresh and vault hygiene. It combines proactive OAuth refresh, health checks, stale-verification checks, and backup-age warnings in one report.
 
 ```bash
 hermes-vault maintain --dry-run
 hermes-vault maintain
-hermes-vault maintain --print-systemd
+hermes-vault maintain --print-schedule
 ```
 
 - `--dry-run` reports what would be refreshed or warned about without mutating tokens.
@@ -343,11 +368,11 @@ hermes-vault maintain --print-systemd
 - Exit code `0` means the maintenance run completed cleanly.
 - Exit code `1` means warnings or refresh failures were found.
 - Exit code `2` means invalid arguments.
-- `print-systemd` is the safer way to generate a timer/service example when you want to inspect the unit before installation.
+- `--print-schedule` is the safer way to generate a systemd or Windows Task Scheduler example when you want to inspect the unit before installation. `--print-systemd` remains available as a compatibility alias.
 
 ## Dashboard
 
-`hermes-vault dashboard` starts the local Hermes Vault Console introduced in v0.8.0. Use it for daily operator visibility and bounded checks. Use the CLI for setup, imports, backups, policy edits, credential mutation, destructive recovery, release work, and any operation where you want an explicit command transcript.
+`hermes-vault dashboard` starts the local Hermes Vault Console introduced in v0.8.0 and expanded through v0.19.0. Use it for daily operator visibility, policy explanation, request review, and bounded checks. Use the CLI for setup, imports, backups, policy edits, credential mutation, destructive recovery, release work, and any operation where you want an explicit command transcript.
 
 ```bash
 hermes-vault dashboard
@@ -375,6 +400,10 @@ Safe dashboard actions include:
 - Run maintenance dry-run
 - Verify a backup file
 - Run restore dry-run
+- Explain a policy decision
+- Load a redacted agent context manifest
+- Create, approve, or deny an access request
+- Run a recovery drill
 
 The dashboard forces OAuth refresh and maintenance to dry-run-only even if a client posts `dry_run=false`. Live OAuth refresh and live maintenance remain CLI-only:
 

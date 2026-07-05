@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -33,7 +33,7 @@ from hermes_vault.update import UpdateError, UpdatePlan, perform_update, resolve
 from hermes_vault.verifier import Verifier
 from hermes_vault.vault import AmbiguousTargetError, Vault
 
-# ── Banner helpers ──────────────────────────────────────────────────────────────
+# â”€â”€ Banner helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _show_banner() -> None:
     """Write the splash to stdout. Swallows all exceptions."""
@@ -62,7 +62,7 @@ def _targets_root_command(argv: list[str]) -> bool:
     return not any(not arg.startswith("-") for arg in argv)
 
 
-# ── Typer app ────────────────────────────────────────────────────────────────────
+# â”€â”€ Typer app â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _typer_app = typer.Typer(
     help="Hermes-native local-first credential vault, scanner, and broker.",
 )
@@ -74,6 +74,14 @@ policy_pack_app = typer.Typer(help="Built-in policy pack templates.")
 policy_app.add_typer(policy_pack_app, name="pack")
 lease_app = typer.Typer(help="Lease lifecycle operations.")
 _typer_app.add_typer(lease_app, name="lease")
+request_app = typer.Typer(help="Access request and approval operations.")
+_typer_app.add_typer(request_app, name="request")
+agent_app = typer.Typer(help="Agent access context reports.")
+_typer_app.add_typer(agent_app, name="agent")
+recovery_app = typer.Typer(help="Recovery drill operations.")
+_typer_app.add_typer(recovery_app, name="recovery")
+incident_app = typer.Typer(help="Redacted incident bundle operations.")
+_typer_app.add_typer(incident_app, name="incident")
 console = Console()
 
 
@@ -130,12 +138,12 @@ def _print_update_plan(plan: UpdatePlan) -> None:
     console.print(table)
 
 
-# ── HermesGroup — Click Group with add_typer + banner invoke ───────────────────────
+# â”€â”€ HermesGroup â€” Click Group with add_typer + banner invoke â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # HermesGroup IS the app. Click Group gives add_typer.
 # Typer gives beautiful @decorator commands. Click Group gives invoke() pre-dispatch.
 class HermesGroup(click.Group, typer.Typer):
     def __init__(self, *args, **kwargs):
-        # params is a Click concept — pass only to Click Group, not Typer
+        # params is a Click concept â€” pass only to Click Group, not Typer
         _params = kwargs.pop("params", None)
         click.Group.__init__(self, *args, params=_params, **kwargs)
         typer.Typer.__init__(self, *args, **kwargs)
@@ -175,10 +183,10 @@ class HermesGroup(click.Group, typer.Typer):
                     typer_group = typer_main.get_command(typer_instance)
                     self.commands[group_name] = typer_group
                 except Exception:
-                    pass  # Sub-Typer with no commands — skip
+                    pass  # Sub-Typer with no commands â€” skip
         self._typer_groups_resolved = True
 
-    # ── get_command — bridge Click and Typer command namespaces ─────────────
+    # â”€â”€ get_command â€” bridge Click and Typer command namespaces â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Cache the TyperGroup built from _typer_app so we don't rebuild each call.
     _typer_group_cache: click.Command | None = None
 
@@ -198,7 +206,7 @@ class HermesGroup(click.Group, typer.Typer):
         cmd = click.Group.get_command(self, ctx, cmd_name)
         if cmd is not None:
             return cmd
-        # 2. Typer commands — lazily build and cache the TyperGroup
+        # 2. Typer commands â€” lazily build and cache the TyperGroup
         if HermesGroup._typer_group_cache is None:
             HermesGroup._typer_group_cache = typer_main.get_command(_typer_app)
         return HermesGroup._typer_group_cache.get_command(ctx, cmd_name)
@@ -258,13 +266,13 @@ def _parse_tags(values: list[str] | None) -> list[str]:
     return tags
 
 
-# ── Selector help text ───────────────────────────────────────────────────────────
+# â”€â”€ Selector help text â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 SELECTOR_HELP = (
     "Target a credential by:\n"
-    "  • credential ID (UUID) — exact match\n"
-    "  • service + --alias — exact match\n"
-    "  • service only — allowed only when exactly one credential exists for that service\n"
-    "Service names are normalized to canonical IDs (e.g. 'open_ai' → 'openai')."
+    "  - credential ID (UUID) - exact match\n"
+    "  - service + --alias - exact match\n"
+    "  - service only - allowed only when exactly one credential exists for that service\n"
+    "Service names are normalized to canonical IDs (e.g. 'open_ai' -> 'openai')."
 )
 
 
@@ -599,7 +607,7 @@ def import_credentials(
 @_typer_app.command()
 def add(
     ctx: typer.Context,
-    service: str = typer.Argument(help="Service name (normalized to canonical ID, e.g. 'open_ai' → 'openai')."),
+    service: str = typer.Argument(help="Service name (normalized to canonical ID, e.g. 'open_ai' -> 'openai')."),
     alias: str = typer.Option("default", "--alias", help="Alias for this credential. Required when adding a second credential for the same service."),
     credential_type: str = typer.Option("api_key", "--credential-type", help="Credential type (api_key, personal_access_token, oauth_access_token, etc.)."),
     secret: str | None = typer.Option(None, "--secret", help="The secret value. Prompts interactively if omitted."),
@@ -915,7 +923,7 @@ def status(
       hermes-vault status --expiring 30d
       hermes-vault status openai --alias primary --format json
     """
-    # ── Parse stale/expiring thresholds ───────────────────────────────────────
+    # â”€â”€ Parse stale/expiring thresholds â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     stale_days: int | None = None
     if stale is not None:
         m = re.match(r"^(\d+)d$", stale)
@@ -936,10 +944,10 @@ def status(
         console.print("[red]--format must be 'table' or 'json'[/red]")
         raise typer.Exit(code=1)
 
-    # ── Build services ─────────────────────────────────────────────────────────
+    # â”€â”€ Build services â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     vault, _, _, _ = build_services(prompt=True)
 
-    # ── Resolve target ─────────────────────────────────────────────────────────
+    # â”€â”€ Resolve target â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if target is not None:
         try:
             records = [vault.resolve_credential(target, alias=alias)]
@@ -953,7 +961,7 @@ def status(
     else:
         records = vault.list_credentials()
 
-    # ── Compute staleness / expiry ─────────────────────────────────────────────
+    # â”€â”€ Compute staleness / expiry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     now = datetime.now(timezone.utc)
     enriched: list[dict] = []
     for rec in records:
@@ -967,7 +975,7 @@ def status(
         else:
             days_since_verified = None  # Never verified = always stale
 
-        # is_stale — always computed (default 30-day threshold for display)
+        # is_stale â€” always computed (default 30-day threshold for display)
         stale_threshold = stale_days if stale_days is not None else 30
         is_stale = (days_since_verified is None) or (days_since_verified >= stale_threshold)
 
@@ -988,7 +996,7 @@ def status(
         # is_invalid
         is_invalid = rec.status in (CredentialStatus.invalid, CredentialStatus.expired)
 
-        # ── Apply filters ──────────────────────────────────────────────────────
+        # â”€â”€ Apply filters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if stale_days is not None and not is_stale:
             continue
         if invalid and not is_invalid:
@@ -1011,7 +1019,7 @@ def status(
             "days_until_expiry": days_until_expiry,
         })
 
-    # ── Output ─────────────────────────────────────────────────────────────────
+    # â”€â”€ Output â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if not enriched:
         return
 
@@ -1127,7 +1135,7 @@ def set_expiry(
         reason=f"expiry set to {expiry.isoformat()}",
     ))
 
-    console.print(f"Expiry set for {normalized_service}/{result.alias} → {result.expiry.isoformat()}")
+    console.print(f"Expiry set for {normalized_service}/{result.alias} -> {result.expiry.isoformat()}")
 
 
 @_typer_app.command("clear-expiry")
@@ -1290,7 +1298,7 @@ def verify(
             if reason_text:
                 reason = reason_text[:40] if len(reason_text) > 40 else reason_text
             status_code_str = str(status_code) if status_code is not None else "-"
-            result_str = "✓ valid" if success else "✗ invalid"
+            result_str = "valid" if success else "invalid"
             table.add_row(
                 r.service,
                 _table_alias_for(r),
@@ -1379,7 +1387,7 @@ def maintain(
     ctx: typer.Context,
     format: str = typer.Option("table", "--format", help="Output format: table or json."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Refresh dry-run; report what would happen without token updates."),
-    print_systemd: bool = typer.Option(False, "--print-systemd", help="Print a user systemd timer/unit for scheduled maintenance."),
+    print_systemd: bool = typer.Option(False, "--print-systemd", "--print-schedule", help="Print a system scheduler template for scheduled maintenance."),
     margin: int = typer.Option(300, "--margin", help="Proactive OAuth refresh margin in seconds."),
     stale_days: int = typer.Option(30, "--stale-days", help="Flag credentials not verified within this many days."),
     expiring_days: int = typer.Option(7, "--expiring-days", help="Flag credentials expiring within this many days."),
@@ -1575,6 +1583,112 @@ def policy_doctor(
     if report.strict_violation:
         raise typer.Exit(code=1)
     raise typer.Exit(code=0)
+
+
+@policy_app.command("explain")
+def policy_explain(
+    ctx: typer.Context,
+    agent: str = typer.Argument(help="Agent ID to evaluate."),
+    service: str = typer.Argument(help="Service name to evaluate."),
+    action: str = typer.Option("get_env", "--action", help="Service action to evaluate."),
+    ttl: int | None = typer.Option(None, "--ttl", help="Optional requested TTL in seconds."),
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+) -> None:
+    """Explain why an agent can or cannot perform an action."""
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=2)
+    policy = PolicyEngine.from_yaml(get_settings().effective_policy_path)
+    try:
+        report = policy.explain(agent, service, action, requested_ttl=ttl)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    if format == "json":
+        console.print_json(data=report)
+    else:
+        table = Table(title="Hermes Vault Policy Explain")
+        table.add_column("Field")
+        table.add_column("Value")
+        for key in (
+            "agent_id",
+            "service",
+            "action",
+            "allowed",
+            "reason",
+            "requires_lease",
+            "requires_lease_purpose",
+            "effective_ttl_seconds",
+            "recommended_next_step",
+        ):
+            table.add_row(key, str(report.get(key)))
+        console.print(table)
+    raise typer.Exit(code=0 if report["allowed"] else 1)
+
+
+@policy_app.command("simulate")
+def policy_simulate(
+    ctx: typer.Context,
+    agent: str = typer.Option(..., "--agent", help="Agent ID to evaluate."),
+    service: str = typer.Option(..., "--service", help="Service name to evaluate."),
+    actions: str = typer.Option("get_env", "--actions", help="Comma-separated service actions to evaluate."),
+    ttl: int | None = typer.Option(None, "--ttl", help="Optional requested TTL in seconds."),
+    format: str = typer.Option("json", "--format", help="Output format: json or table."),
+) -> None:
+    """Batch simulate policy decisions for a planned agent workflow."""
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=2)
+    policy = PolicyEngine.from_yaml(get_settings().effective_policy_path)
+    action_list = [item.strip() for item in actions.split(",") if item.strip()]
+    reports = [policy.explain(agent, service, action, requested_ttl=ttl) for action in action_list]
+    payload = {"version": "policy-simulate-v1", "decisions": reports, "allowed": all(item["allowed"] for item in reports)}
+    if format == "json":
+        console.print_json(data=payload)
+    else:
+        table = Table(title="Hermes Vault Policy Simulation")
+        table.add_column("Action")
+        table.add_column("Allowed")
+        table.add_column("Reason")
+        table.add_column("Next Step")
+        for item in reports:
+            table.add_row(str(item["action"]), str(item["allowed"]), str(item["reason"]), str(item["recommended_next_step"]))
+        console.print(table)
+    raise typer.Exit(code=0 if payload["allowed"] else 1)
+
+
+@agent_app.command("context")
+def agent_context(
+    ctx: typer.Context,
+    agent: str = typer.Argument(help="Agent ID to summarize."),
+    format: str = typer.Option("json", "--format", help="Output format: json or table."),
+) -> None:
+    """Show a redacted manifest of what an agent can access and why."""
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=2)
+    vault, policy, _, _ = build_services(prompt=True)
+    from hermes_vault.agent_context import build_agent_context
+
+    payload = build_agent_context(agent_id=agent, vault=vault, policy=policy)
+    if format == "json":
+        console.print_json(data=payload)
+    else:
+        table = Table(title=f"Hermes Vault Agent Context: {agent}")
+        table.add_column("Service")
+        table.add_column("Actions")
+        table.add_column("Lease")
+        table.add_column("Credentials")
+        for item in payload["services"]:
+            table.add_row(
+                item["service"],
+                ", ".join(item["actions"]) or "-",
+                "required" if item["requires_lease_for_env"] else "not required",
+                str(len(item["credentials"])),
+            )
+        console.print(table)
+        console.print(payload["recommended_next_step"])
+    raise typer.Exit(code=0 if payload["defined"] else 1)
 
 
 @policy_pack_app.command("list")
@@ -1813,6 +1927,111 @@ def lease_revoke(
         raise typer.Exit(code=1)
 
 
+@lease_app.command("checkout")
+def lease_checkout(
+    ctx: typer.Context,
+    service: str = typer.Argument(help="Service name (normalized to canonical ID)."),
+    agent: str = typer.Option(..., "--agent", help="Agent ID receiving env material."),
+    ttl: int = typer.Option(900, "--ttl", help="Requested handoff TTL in seconds."),
+    alias: str = typer.Option("default", "--alias", help="Credential alias."),
+    purpose: str = typer.Option("task", "--purpose", help="Lease purpose when a lease must be issued."),
+) -> None:
+    """Issue or reuse a lease, then materialize env through the broker."""
+    _, _, broker, _ = build_services(prompt=True)
+    decision = broker.lease_checkout(
+        agent_id=agent,
+        service=service,
+        ttl_seconds=ttl,
+        alias=alias,
+        purpose=purpose,
+    )
+    console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        raise typer.Exit(code=1)
+
+
+@request_app.command("access")
+def request_access(
+    ctx: typer.Context,
+    service: str = typer.Argument(help="Service name being requested."),
+    agent: str = typer.Option(..., "--agent", help="Agent ID requesting access."),
+    action: str = typer.Option("get_env", "--action", help="Requested service action."),
+    alias: str = typer.Option("default", "--alias", help="Credential alias requested."),
+    purpose: str = typer.Option(..., "--purpose", help="Specific purpose for the request."),
+    ttl: int | None = typer.Option(None, "--ttl", help="Optional requested TTL in seconds."),
+) -> None:
+    """Create a pending metadata-only access request."""
+    _, _, broker, _ = build_services(prompt=True)
+    decision = broker.request_access(
+        agent_id=agent,
+        service=service,
+        alias=alias,
+        action=action,
+        purpose=purpose,
+        requested_ttl_seconds=ttl,
+    )
+    console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        raise typer.Exit(code=1)
+
+
+@request_app.command("list")
+def request_list(
+    ctx: typer.Context,
+    agent: str | None = typer.Option(None, "--agent", help="Optional agent filter."),
+    service: str | None = typer.Option(None, "--service", help="Optional service filter."),
+    status: str | None = typer.Option(None, "--status", help="Optional request status filter."),
+) -> None:
+    _, _, broker, _ = build_services(prompt=True)
+    decision = broker.list_access_requests(agent_id=agent, service=service, status=status)
+    console.print_json(data=decision.model_dump(mode="json"))
+
+
+@request_app.command("show")
+def request_show(
+    ctx: typer.Context,
+    request_id: str = typer.Argument(help="Access request ID."),
+) -> None:
+    _, _, broker, _ = build_services(prompt=True)
+    decision = broker.show_access_request(request_id)
+    console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        raise typer.Exit(code=1)
+
+
+@request_app.command("approve")
+def request_approve(
+    ctx: typer.Context,
+    request_id: str = typer.Argument(help="Access request ID."),
+    reason: str | None = typer.Option(None, "--reason", help="Optional approval reason."),
+    issue_lease: bool = typer.Option(False, "--issue-lease", help="Issue a lease as part of approval."),
+    ttl: int | None = typer.Option(None, "--ttl", help="Lease TTL when --issue-lease is used."),
+) -> None:
+    _, _, broker, _ = build_services(prompt=True)
+    decision = broker.approve_access_request(
+        request_id,
+        reason=reason,
+        issue_lease=issue_lease,
+        ttl_seconds=ttl,
+    )
+    console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        raise typer.Exit(code=1)
+
+
+@request_app.command("deny")
+def request_deny(
+    ctx: typer.Context,
+    request_id: str = typer.Argument(help="Access request ID."),
+    reason: str | None = typer.Option(None, "--reason", help="Optional denial reason."),
+) -> None:
+    _, _, broker, _ = build_services(prompt=True)
+    decision = broker.deny_access_request(request_id, reason=reason)
+    console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        raise typer.Exit(code=1)
+
+
 @broker_app.command("list")
 def broker_list(
     ctx: typer.Context,
@@ -1831,7 +2050,7 @@ def broker_list(
 @_typer_app.command("rotate-master-key")
 def rotate_master_key(
     ctx: typer.Context,
-    skip_backup_dangerous: bool = typer.Option(False, "--skip-backup-dangerous", help="Skip the pre-rotation encrypted backup. DANGEROUS — you will not have a rollback point."),
+    skip_backup_dangerous: bool = typer.Option(False, "--skip-backup-dangerous", help="Skip the pre-rotation encrypted backup. DANGEROUS - you will not have a rollback point."),
 ) -> None:
     """Rotate the vault master key (re-encrypt all credentials).
 
@@ -2005,6 +2224,82 @@ def backup_vault(
     console.print(f"  {len(backup['credentials'])} credential(s) exported")
 
 
+@recovery_app.command("drill")
+def recovery_drill(
+    ctx: typer.Context,
+    backup: Path = typer.Option(..., "--backup", help="Path to a full vault backup file."),
+    format: str = typer.Option("table", "--format", help="Output format: table or json."),
+) -> None:
+    """Run a redacted recovery drill against a backup."""
+    if format not in ("table", "json"):
+        console.print("[red]--format must be 'table' or 'json'[/red]")
+        raise typer.Exit(code=2)
+    vault, policy, _, _ = build_services(prompt=True)
+    from hermes_vault.recovery import run_recovery_drill
+
+    report = run_recovery_drill(backup_path=backup, vault=vault, policy=policy)
+    audit = AuditLogger(get_settings().db_path)
+    audit.record(
+        AccessLogRecord(
+            agent_id=OPERATOR_AGENT_ID,
+            service="*",
+            action="recovery_drill",
+            decision=Decision.allow if report.healthy else Decision.deny,
+            reason=report.recommended_next_step,
+            metadata=report.as_dict(exclude_none=False),
+        )
+    )
+    if format == "json":
+        console.print_json(data=report.as_dict(exclude_none=False))
+    else:
+        table = Table(title="Hermes Vault Recovery Drill")
+        table.add_column("Field")
+        table.add_column("Value")
+        table.add_row("Healthy", "yes" if report.healthy else "no")
+        table.add_row("Backup decryptable", "yes" if report.backup_verify.get("decryptable") else "no")
+        table.add_row("Restore dry-run", "yes" if report.restore_dry_run.get("decryptable") else "no")
+        table.add_row("Diff entries", str(report.diff.get("entry_count", 0)))
+        table.add_row("Next step", report.recommended_next_step)
+        console.print(table)
+        for finding in report.findings:
+            console.print(f"[red]{finding}[/red]")
+    raise typer.Exit(code=0 if report.healthy else 1)
+
+
+@incident_app.command("bundle")
+def incident_bundle(
+    ctx: typer.Context,
+    output: Path = typer.Option(..., "--output", "-o", help="Output zip path for the redacted bundle."),
+    since: str | None = typer.Option("24h", "--since", help="Audit window, e.g. 24h, 7d, or ISO timestamp."),
+    agent: str | None = typer.Option(None, "--agent", help="Optional agent filter."),
+    service: str | None = typer.Option(None, "--service", help="Optional service filter."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the bundle manifest without writing files."),
+) -> None:
+    """Create a redacted support bundle for access incidents."""
+    vault, policy, _, _ = build_services(prompt=True)
+    settings = get_settings()
+    audit = AuditLogger(settings.db_path)
+    from hermes_vault.incident import build_incident_bundle
+
+    try:
+        report = build_incident_bundle(
+            output_path=output,
+            settings=settings,
+            vault=vault,
+            policy=policy,
+            audit=audit,
+            since=since,
+            agent=agent,
+            service=service,
+            dry_run=dry_run,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    console.print_json(data=report.as_dict())
+    raise typer.Exit(code=0)
+
+
 @_typer_app.command("restore")
 def restore_vault(
     ctx: typer.Context,
@@ -2124,7 +2419,7 @@ def diff(
     """Compare current vault metadata against a backup file.
 
     Shows which credentials have been added, removed, or changed.
-    Never exposes secrets — only metadata deltas.
+    Never exposes secrets - only metadata deltas.
 
     Accepts both full backups and metadata-only backups.
 
@@ -2161,7 +2456,7 @@ def diff(
     table.add_column("CHANGES")
     for e in entries:
         changes_str = ", ".join(
-            f"{ch['field']}: {ch['from']} → {ch['to']}" for ch in e.changes
+            f"{ch['field']}: {ch['from']} -> {ch['to']}" for ch in e.changes
         ) if e.changes else "-"
         table.add_row(
             e.kind.upper(),
@@ -2238,7 +2533,7 @@ def update(
     console.print(f"[green]Hermes Vault updated successfully to {verified_version}.[/green]")
 
 
-# ── OAuth subcommands ────────────────────────────────────────────────────────────
+# â”€â”€ OAuth subcommands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 oauth_app = typer.Typer(help="OAuth operations.")
 _typer_app.add_typer(oauth_app, name="oauth")
 
@@ -2524,7 +2819,7 @@ def oauth_normalize(
     )
 
 
-# ── App proxy ──────────────────────────────────────────────────────────────────
+# â”€â”€ App proxy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # The setuptools entry point imports `app` from this module.
 # Strips deprecated --banner so neither Click nor Typer ever sees it.
 def app() -> int:
@@ -2537,3 +2832,4 @@ def app() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(app())
+

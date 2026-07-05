@@ -556,6 +556,60 @@ def test_capabilities_loaded_from_yaml(tmp_path: Path) -> None:
     assert "not granted" in reason
 
 
+def test_policy_explain_reports_lease_required_and_effective_ttl() -> None:
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "coder": AgentPolicy(
+                    services=["openai"],
+                    service_actions={
+                        "openai": ServicePolicyEntry(
+                            actions=[ServiceAction.get_env],
+                            max_ttl_seconds=300,
+                            require_lease_for_env=True,
+                            require_lease_purpose=True,
+                        )
+                    },
+                    max_ttl_seconds=900,
+                    require_lease_for_env=False,
+                )
+            }
+        )
+    )
+
+    report = policy.explain("coder", "open_ai", "get_env", requested_ttl=600)
+
+    assert report["version"] == "policy-explain-v1"
+    assert report["allowed"] is True
+    assert report["service"] == "openai"
+    assert report["requires_lease"] is True
+    assert report["requires_lease_purpose"] is True
+    assert report["effective_ttl_seconds"] == 300
+    assert "policy_hash" in report
+
+
+def test_policy_explain_denies_missing_action() -> None:
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "auditor": AgentPolicy(
+                    services=["github"],
+                    service_actions={
+                        "github": ServicePolicyEntry(actions=[ServiceAction.metadata])
+                    },
+                )
+            }
+        )
+    )
+
+    report = policy.explain("auditor", "github", "get_env")
+
+    assert report["allowed"] is False
+    assert report["service_allowed"] is True
+    assert report["action_allowed"] is False
+    assert "not permitted" in report["reason"]
+
+
 def test_capabilities_backward_compat_legacy_yaml(tmp_path: Path) -> None:
     """Legacy YAML with no capabilities field should grant all capabilities."""
     policy_yaml = {

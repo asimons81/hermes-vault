@@ -218,6 +218,64 @@ agents:
     assert any(f["kind"] == "raw_secret_access_enabled" for f in payload["findings"])
 
 
+def test_policy_explain_json_reports_lease_requirement(monkeypatch, tmp_path: Path) -> None:
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        """
+agents:
+  coder:
+    services:
+      openai:
+        actions: [get_env]
+        require_lease_for_env: true
+        max_ttl_seconds: 300
+    max_ttl_seconds: 900
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_POLICY", str(policy_path))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["policy", "explain", "coder", "openai", "--action", "get_env", "--ttl", "600", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["version"] == "policy-explain-v1"
+    assert payload["requires_lease"] is True
+    assert payload["effective_ttl_seconds"] == 300
+
+
+def test_policy_simulate_denies_missing_action(monkeypatch, tmp_path: Path) -> None:
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        """
+agents:
+  auditor:
+    services:
+      github:
+        actions: [metadata]
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_POLICY", str(policy_path))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["policy", "simulate", "--agent", "auditor", "--service", "github", "--actions", "metadata,get_env"],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["version"] == "policy-simulate-v1"
+    assert payload["allowed"] is False
+
+
 def test_maintain_json_output(monkeypatch) -> None:
     monkeypatch.setattr("hermes_vault.cli.build_services", _fake_build_services())
 
@@ -292,6 +350,16 @@ def test_maintain_print_systemd(monkeypatch) -> None:
     monkeypatch.setattr(_platform, "current_platform", lambda: _platform.PlatformKind.POSIX)
     runner = CliRunner()
     result = runner.invoke(_hermes_group, ["maintain", "--print-systemd"])
+
+    assert result.exit_code == 0
+    assert "hermes-vault-maintain.service" in result.output
+    assert "hermes-vault --no-banner maintain --format json" in result.output
+
+
+def test_maintain_print_schedule_alias(monkeypatch) -> None:
+    monkeypatch.setattr(_platform, "current_platform", lambda: _platform.PlatformKind.POSIX)
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["maintain", "--print-schedule"])
 
     assert result.exit_code == 0
     assert "hermes-vault-maintain.service" in result.output
@@ -492,6 +560,119 @@ def test_restore_dry_run_json_output_does_not_require_yes(monkeypatch, tmp_path:
     payload = json.loads(result.output)
     assert payload["mode"] == "restore-dry-run"
     assert payload["would_restore_count"] == 1
+
+
+def test_agent_context_json_is_redacted(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        """
+agents:
+  coder:
+    services:
+      openai:
+        actions: [get_env, issue_lease]
+        require_lease_for_env: true
+    max_ttl_seconds: 900
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_VAULT_POLICY", str(policy_path))
+    vault = Vault(tmp_path / "vault.db", tmp_path / "master_key_salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-super-secret", "api_key")
+
+    runner = CliRunner()
+    result = runner.invoke(_hermes_group, ["--no-banner", "agent", "context", "coder", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert "sk-super-secret" not in result.output
+    payload = json.loads(result.output)
+    assert payload["version"] == "agent-context-v1"
+    assert payload["services"][0]["requires_lease_for_env"] is True
+
+
+def test_request_access_and_approve_cli_without_secret_leak(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        """
+agents:
+  coder:
+    services:
+      openai:
+        actions: [get_env, issue_lease]
+        require_lease_for_env: true
+    max_ttl_seconds: 900
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_VAULT_POLICY", str(policy_path))
+    vault = Vault(tmp_path / "vault.db", tmp_path / "master_key_salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-request-secret", "api_key")
+
+    runner = CliRunner()
+    created = runner.invoke(
+        _hermes_group,
+        ["--no-banner", "request", "access", "openai", "--agent", "coder", "--purpose", "deploy", "--ttl", "60"],
+    )
+    assert created.exit_code == 0, created.output
+    assert "sk-request-secret" not in created.output
+    request_id = json.loads(created.output)["metadata"]["request"]["id"]
+
+    approved = runner.invoke(
+        _hermes_group,
+        ["--no-banner", "request", "approve", request_id, "--issue-lease", "--ttl", "60", "--reason", "ok"],
+    )
+
+    assert approved.exit_code == 0, approved.output
+    assert "sk-request-secret" not in approved.output
+    payload = json.loads(approved.output)
+    assert payload["metadata"]["request"]["status"] == "approved"
+    assert payload["metadata"]["request"]["lease_id"]
+
+
+def test_recovery_drill_json_composes_backup_checks(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+    vault = Vault(tmp_path / "vault.db", tmp_path / "master_key_salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-recovery-secret", "api_key")
+    backup_path = tmp_path / "backup.json"
+    backup_path.write_text(json.dumps(vault.export_backup()), encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["--no-banner", "recovery", "drill", "--backup", str(backup_path), "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "sk-recovery-secret" not in result.output
+    payload = json.loads(result.output)
+    assert payload["version"] == "recovery-drill-v1"
+    assert payload["backup_verify"]["decryptable"] is True
+    assert payload["restore_dry_run"]["decryptable"] is True
+
+
+def test_incident_bundle_dry_run_lists_redacted_manifest(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+    vault = Vault(tmp_path / "vault.db", tmp_path / "master_key_salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-incident-secret", "api_key")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["--no-banner", "incident", "bundle", "--output", str(tmp_path / "incident.zip"), "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "sk-incident-secret" not in result.output
+    payload = json.loads(result.output)
+    assert payload["version"] == "incident-bundle-v1"
+    assert payload["dry_run"] is True
+    assert "audit.json" in payload["files"]
 
 
 # ── verify (positional target — post issue #6) ────────────────────────────

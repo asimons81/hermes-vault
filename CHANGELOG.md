@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.19.0 -- Agent Control Plane
+
+### Added
+
+- Explainable policy decisions through `hermes-vault policy explain`, `policy simulate`, dashboard policy explain, MCP `policy_explain`, and `vault://policy-explain`.
+- Lease-enforced env handoffs with opt-in `require_lease_for_env` and `require_lease_purpose` policy fields, broker-side lease reuse, `lease checkout`, MCP `lease_checkout`, and metadata showing the lease boundary.
+- Operator access-request workflow across vault persistence, broker audit, CLI `request access/list/show/approve/deny`, dashboard Approval Inbox, MCP `request_access`, and `vault://requests`.
+- Agent context manifests through `hermes-vault agent context`, dashboard Agent Context, and MCP `vault://agent-context`; responses are metadata-only and include redaction boundaries.
+- Recovery and incident evidence upgrades with `recovery drill`, dashboard Recovery Drill, MCP `vault://recovery`, and redacted `incident bundle` archives.
+- Dashboard Command Center for agent context, policy explain, access requests, approval decisions, and recovery drills.
+
+### Fixed
+
+- `maintain` now accepts the clearer `--print-schedule` alias while preserving `--print-systemd` compatibility.
+- Windows CLI help no longer crashes when Rich renders service-normalization help in legacy code pages.
+- MCP asyncio tests use `asyncio.run`, removing the release-regression deprecation warning.
+- The example policy file is plain ASCII again and documents v0.19 lease enforcement fields.
+- Incident bundle live generation now calls health with the supported argument set.
+
+### Changed
+
+- Version surfaces now report `0.19.0` in `pyproject.toml`, `src/hermes_vault/__init__.py`, and MCP server metadata.
+- README, operator docs, MCP docs, and site copy now present Agent Control Plane as the current release.
+
+### Verification
+
+- Focused suites: `uv run python -m pytest tests/test_policy.py tests/test_broker.py tests/test_cli.py tests/test_mcp_server.py tests/test_dashboard.py -q --tb=short`
+- Full release validation: `uv run python -m pytest tests/ -q --tb=short`
+- Build validation: `uv run --with build python -m build`
+
 ## 0.18.0 -- Operator Workflow Convergence
 
 ### Added

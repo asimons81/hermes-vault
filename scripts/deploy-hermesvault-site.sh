@@ -10,7 +10,7 @@ PROJECT_JSON="$SITE_DIR/.vercel/project.json"
 cd "$SITE_DIR"
 
 if [[ -f "$PROJECT_JSON" ]]; then
-linked_project="$(python3 - <<'PY'
+linked_project="$(python - <<'PY'
 import json
 from pathlib import Path
 print(json.loads(Path('.vercel/project.json').read_text()).get('projectName', ''))

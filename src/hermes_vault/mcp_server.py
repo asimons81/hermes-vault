@@ -193,6 +193,39 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         "required": ["service"],
     },
+    "request_access": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
+            "service": {"type": "string", "description": "Requested service"},
+            "alias": {"type": "string", "description": "Requested alias"},
+            "action": {"type": "string", "description": "Requested action"},
+            "purpose": {"type": "string", "description": "Specific task purpose"},
+            "ttl_seconds": {"type": "integer", "description": "Optional requested TTL"},
+        },
+        "required": ["service", "purpose"],
+    },
+    "policy_explain": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
+            "service": {"type": "string", "description": "Service to explain"},
+            "action": {"type": "string", "description": "Action to explain"},
+            "ttl_seconds": {"type": "integer", "description": "Optional requested TTL"},
+        },
+        "required": ["service"],
+    },
+    "lease_checkout": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "Optional agent identity; omitted only when MCP binding supplies a default"},
+            "service": {"type": "string", "description": "Service name"},
+            "alias": {"type": "string", "description": "Credential alias"},
+            "ttl_seconds": {"type": "integer", "description": "Requested handoff TTL"},
+            "purpose": {"type": "string", "description": "Lease purpose if a lease is issued"},
+        },
+        "required": ["service"],
+    },
 }
 
 
@@ -352,6 +385,14 @@ def _resource_arguments(uri: Any) -> dict[str, Any]:
         arguments["alias"] = query["alias"][0]
     if query.get("id"):
         arguments["id"] = query["id"][0]
+    if query.get("service"):
+        arguments["service"] = query["service"][0]
+    if query.get("action"):
+        arguments["action"] = query["action"][0]
+    if query.get("ttl_seconds"):
+        arguments["ttl_seconds"] = query["ttl_seconds"][0]
+    if query.get("backup"):
+        arguments["backup"] = query["backup"][0]
     return arguments
 
 
@@ -363,7 +404,7 @@ def _resource_key(uri: Any) -> str:
         return "vault://services/{name}"
     if parsed.netloc == "leases" and parsed.path not in ("", "/"):
         return "vault://leases/{id}"
-    if parsed.netloc in {"services", "health", "policy", "leases", "status"} and parsed.path in ("", "/"):
+    if parsed.netloc in {"services", "health", "policy", "leases", "status", "agent-context", "policy-explain", "requests", "recovery"} and parsed.path in ("", "/"):
         return f"vault://{parsed.netloc}"
     raise ValueError(f"Unknown resource URI: {uri}")
 
@@ -673,10 +714,60 @@ def _policy_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict
     }
 
 
+def _agent_context_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    agent_id = binding.effective_agent_id or ""
+    from hermes_vault.agent_context import build_agent_context
+
+    return build_agent_context(agent_id=agent_id, vault=broker.vault, policy=broker.policy)
+
+
+def _policy_explain_resource_payload(uri: Any, broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    agent_id = binding.effective_agent_id or ""
+    args = _resource_arguments(uri)
+    service = args.get("service")
+    if not service:
+        raise ValueError("Missing required query parameter: service")
+    action = args.get("action") or "get_env"
+    ttl_raw = args.get("ttl_seconds")
+    ttl = int(ttl_raw) if ttl_raw is not None else None
+    return broker.policy.explain(agent_id, service, action, requested_ttl=ttl)
+
+
+def _requests_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    agent_id = binding.effective_agent_id or ""
+    result = broker.list_access_requests(agent_id=agent_id)
+    if not result.allowed:
+        raise ValueError(result.reason)
+    return {
+        "version": "vault-requests-v1",
+        "generated_at": _generated_at(),
+        "agent_id": agent_id,
+        "binding_mode": binding.binding_mode,
+        "requests": result.metadata.get("requests", []),
+    }
+
+
+def _recovery_resource_payload(uri: Any, broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    args = _resource_arguments(uri)
+    backup = args.get("backup")
+    if not backup:
+        raise ValueError("Missing required query parameter: backup")
+    from hermes_vault.recovery import run_recovery_drill
+
+    report = run_recovery_drill(backup_path=backup, vault=broker.vault, policy=broker.policy)
+    payload = report.as_dict(exclude_none=False)
+    payload["agent_id"] = binding.effective_agent_id or ""
+    payload["binding_mode"] = binding.binding_mode
+    payload["raw_secret_values_returned"] = False
+    return payload
+
+
 def _preflight_tool_arguments(name: str, arguments: dict[str, Any]) -> str | None:
-    if name in {"get_credential_metadata", "get_ephemeral_env", "verify_credential", "rotate_credential", "oauth_refresh"}:
+    if name in {"get_credential_metadata", "get_ephemeral_env", "verify_credential", "rotate_credential", "oauth_refresh", "request_access", "policy_explain", "lease_checkout"}:
         if _normalize_agent_id(arguments.get("service")) is None:
             return "Missing required parameter: service"
+    if name == "request_access" and _normalize_agent_id(arguments.get("purpose")) is None:
+        return "Missing required parameter: purpose"
     if name in {"lease_issue", "lease_list", "lease_show", "lease_renew", "lease_revoke"}:
         if name in {"lease_issue", "lease_renew"} and arguments.get("ttl_seconds") is None:
             return "Missing required parameter: ttl_seconds"
@@ -777,6 +868,21 @@ async def list_tools() -> list[Tool]:
             description="Trigger token refresh for a service using stored refresh token.",
             inputSchema=_TOOL_SCHEMAS["oauth_refresh"],
         ),
+        Tool(
+            name="request_access",
+            description="Create a pending metadata-only access request. Does not return credentials.",
+            inputSchema=_TOOL_SCHEMAS["request_access"],
+        ),
+        Tool(
+            name="policy_explain",
+            description="Explain why the effective agent can or cannot perform a service action.",
+            inputSchema=_TOOL_SCHEMAS["policy_explain"],
+        ),
+        Tool(
+            name="lease_checkout",
+            description="Issue or reuse a lease and perform brokered env handoff through the same policy path.",
+            inputSchema=_TOOL_SCHEMAS["lease_checkout"],
+        ),
     ]
 
 
@@ -851,6 +957,34 @@ async def list_resources() -> list[Resource]:
             description="Policy-scoped lease inventory for the effective agent.",
             mimeType="application/json",
         ),
+        Resource(
+            name="vault-agent-context",
+            title="Hermes Vault agent context",
+            uri=AnyUrl("vault://agent-context"),
+            description="Redacted manifest of effective-agent access, leases, and pending requests.",
+            mimeType="application/json",
+        ),
+        Resource(
+            name="vault-policy-explain",
+            title="Hermes Vault policy explain",
+            uri=AnyUrl("vault://policy-explain"),
+            description="Policy explanation resource. Requires query parameters: service; optional action and ttl_seconds.",
+            mimeType="application/json",
+        ),
+        Resource(
+            name="vault-requests",
+            title="Hermes Vault access requests",
+            uri=AnyUrl("vault://requests"),
+            description="Metadata-only access requests for the effective agent.",
+            mimeType="application/json",
+        ),
+        Resource(
+            name="vault-recovery",
+            title="Hermes Vault recovery drill",
+            uri=AnyUrl("vault://recovery"),
+            description="Redacted recovery drill resource. Requires query parameter: backup.",
+            mimeType="application/json",
+        ),
     ]
     resources.extend(await _default_agent_service_resources())
     return resources
@@ -871,6 +1005,20 @@ async def list_resource_templates() -> list[ResourceTemplate]:
             title="Hermes Vault lease metadata",
             uriTemplate="vault://leases/{id}",
             description="Metadata for one policy-visible lease. Optional query parameter: agent_id.",
+            mimeType="application/json",
+        ),
+        ResourceTemplate(
+            name="vault-policy-explain-query",
+            title="Hermes Vault policy explain query",
+            uriTemplate="vault://policy-explain?service={service}&action={action}",
+            description="Explain an effective-agent service action. Optional query parameters: agent_id, ttl_seconds.",
+            mimeType="application/json",
+        ),
+        ResourceTemplate(
+            name="vault-recovery-query",
+            title="Hermes Vault recovery drill query",
+            uriTemplate="vault://recovery?backup={path}",
+            description="Run a redacted recovery drill for a local backup path. Optional query parameter: agent_id.",
             mimeType="application/json",
         ),
     ]
@@ -903,6 +1051,14 @@ async def read_resource(uri: Any) -> Any:
             payload = _leases_resource_payload(broker, binding)
         elif key == "vault://leases/{id}":
             payload = _lease_detail_resource_payload(uri, broker, binding)
+        elif key == "vault://agent-context":
+            payload = _agent_context_resource_payload(broker, binding)
+        elif key == "vault://policy-explain":
+            payload = _policy_explain_resource_payload(uri, broker, binding)
+        elif key == "vault://requests":
+            payload = _requests_resource_payload(broker, binding)
+        elif key == "vault://recovery":
+            payload = _recovery_resource_payload(uri, broker, binding)
         else:
             raise ValueError(f"Unknown resource URI: {uri}")
     except ValueError as exc:
@@ -959,7 +1115,6 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 return [TextContent(type="text", text=f"Denied: {result.reason}")]
             expires_at = None
             if result.ttl_seconds is not None:
-                from datetime import datetime, timezone, timedelta
                 expires_at = (datetime.now(timezone.utc) + timedelta(seconds=result.ttl_seconds)).isoformat()
             return [TextContent(type="text", text=_json_text({
                 "env": result.env,
@@ -1060,6 +1215,49 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         # ── OAuth: refresh token ─────────────────────────────────────────────
         if name == "oauth_refresh":
             return _handle_oauth_refresh(arguments, broker, binding.effective_agent_id or "")
+
+        if name == "request_access":
+            agent_id = binding.effective_agent_id or ""
+            result = broker.request_access(
+                agent_id=agent_id,
+                service=arguments["service"],
+                alias=arguments.get("alias") or "default",
+                action=arguments.get("action") or "get_env",
+                purpose=arguments["purpose"],
+                requested_ttl_seconds=arguments.get("ttl_seconds"),
+            )
+            return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
+
+        if name == "policy_explain":
+            agent_id = binding.effective_agent_id or ""
+            payload = broker.policy.explain(
+                agent_id,
+                arguments["service"],
+                arguments.get("action") or "get_env",
+                requested_ttl=arguments.get("ttl_seconds"),
+            )
+            return [TextContent(type="text", text=_json_text(payload))]
+
+        if name == "lease_checkout":
+            agent_id = binding.effective_agent_id or ""
+            result = broker.lease_checkout(
+                agent_id=agent_id,
+                service=arguments["service"],
+                alias=arguments.get("alias"),
+                ttl_seconds=arguments.get("ttl_seconds") or 900,
+                purpose=arguments.get("purpose") or "task",
+            )
+            if not result.allowed:
+                return [TextContent(type="text", text=f"Denied: {result.reason}")]
+            expires_at = None
+            if result.ttl_seconds is not None:
+                expires_at = (datetime.now(timezone.utc) + timedelta(seconds=result.ttl_seconds)).isoformat()
+            return [TextContent(type="text", text=_json_text({
+                "env": result.env,
+                "ttl_seconds": result.ttl_seconds,
+                "expires_at": expires_at,
+                "metadata": result.metadata,
+            }))]
 
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 

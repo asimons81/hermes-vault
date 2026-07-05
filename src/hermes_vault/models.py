@@ -98,6 +98,29 @@ class LeaseRecord(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class AccessRequestStatus(str, Enum):
+    pending = "pending"
+    approved = "approved"
+    denied = "denied"
+
+
+class AccessRequestRecord(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    agent_id: str
+    service: str
+    alias: str = "default"
+    action: str
+    purpose: str
+    status: AccessRequestStatus = AccessRequestStatus.pending
+    requested_ttl_seconds: int | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    decided_at: datetime | None = None
+    decided_by: str | None = None
+    decision_reason: str | None = None
+    lease_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class CredentialSecret(BaseModel):
     secret: str
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -163,6 +186,8 @@ class ServicePolicyEntry(BaseModel):
 
     actions: list[ServiceAction]
     max_ttl_seconds: int | None = None
+    require_lease_for_env: bool | None = None
+    require_lease_purpose: bool | None = None
 
 
 class AgentPolicy(BaseModel):
@@ -179,6 +204,8 @@ class AgentPolicy(BaseModel):
     require_verification_before_reauth: bool = True
     max_ttl_seconds: int = 900
     approval_required_services: list[str] = Field(default_factory=list)
+    require_lease_for_env: bool = False
+    require_lease_purpose: bool = False
 
 
 class PolicyConfig(BaseModel):

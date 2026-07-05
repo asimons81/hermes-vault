@@ -611,11 +611,36 @@ h2 {
   background: rgba(255, 255, 255, 0.04);
 }
 
-.ghost-button.compact {
+.ghost-button.compact,
+.primary-button.compact {
   min-height: 28px;
   padding: 4px 10px;
   font-size: 11px;
   border-radius: 6px;
+}
+
+.request-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.request-actions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.request-actions input[type="checkbox"] {
+  width: 14px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0;
+  accent-color: var(--cyan);
 }
 
 .is-busy::after {
@@ -701,7 +726,8 @@ h2 {
 }
 
 .two-col,
-.ops-grid {
+.ops-grid,
+.command-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
@@ -711,7 +737,16 @@ h2 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.command-grid {
+  align-items: start;
+}
+
+.command-wide {
+  grid-column: 1 / -1;
+}
+
 .panel {
+  min-width: 0;
   padding: 24px;
 }
 
@@ -749,6 +784,15 @@ h2 {
 .form-grid {
   grid-template-columns: minmax(0, 1.3fr) minmax(160px, 0.7fr);
   margin-bottom: 16px;
+}
+
+.form-grid.command-form,
+.form-grid.compact-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.form-grid.compact-form {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .form-grid .wide {
@@ -811,6 +855,11 @@ h2 {
 .stack {
   display: grid;
   gap: 10px;
+}
+
+.command-stack {
+  max-height: 360px;
+  overflow: auto;
 }
 
 .item {
@@ -1191,7 +1240,7 @@ pre.error {
     padding: 20px;
   }
   .nav {
-    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-template-columns: repeat(8, minmax(0, 1fr));
     gap: 8px;
   }
   .nav-item {
@@ -1205,7 +1254,8 @@ pre.error {
   .rail-status {
     margin-top: 10px;
   }
-  .ops-grid {
+  .ops-grid,
+  .command-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -1228,6 +1278,8 @@ pre.error {
   }
   .filter-bar,
   .form-grid,
+  .form-grid.command-form,
+  .form-grid.compact-form,
   .summary-grid,
   .summary-grid.compact {
     grid-template-columns: 1fr;
@@ -1265,8 +1317,12 @@ pre.error {
     align-items: stretch;
     gap: 10px;
   }
-  .panel-head .ghost-button {
+  .panel-head .ghost-button,
+  .panel-head .primary-button {
     width: 100%;
+    min-height: 42px;
+    color: var(--text);
+    line-height: 1.2;
   }
   .topbar-actions {
     flex-direction: column;

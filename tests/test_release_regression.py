@@ -29,16 +29,26 @@ def test_release_version_surfaces_align() -> None:
     from hermes_vault.mcp_server import list_resources, list_tools, server
     import asyncio
 
-    assert pyproject["project"]["version"] == "0.18.0"
-    assert hermes_vault.__version__ == "0.18.0"
+    assert pyproject["project"]["version"] == "0.19.0"
+    assert hermes_vault.__version__ == "0.19.0"
     assert server.version == hermes_vault.__version__
-    tool_names = {tool.name for tool in asyncio.get_event_loop().run_until_complete(list_tools())}
-    assert {"lease_issue", "lease_list", "lease_show", "lease_renew", "lease_revoke"}.issubset(tool_names)
-    resource_uris = {str(resource.uri) for resource in asyncio.get_event_loop().run_until_complete(list_resources())}
+    tool_names = {tool.name for tool in asyncio.run(list_tools())}
+    assert {
+        "lease_issue",
+        "lease_list",
+        "lease_show",
+        "lease_renew",
+        "lease_revoke",
+        "request_access",
+        "policy_explain",
+        "lease_checkout",
+    }.issubset(tool_names)
+    resource_uris = {str(resource.uri) for resource in asyncio.run(list_resources())}
     assert "vault://status" in resource_uris
+    assert {"vault://agent-context", "vault://policy-explain", "vault://requests", "vault://recovery"}.issubset(resource_uris)
 
 
-def test_release_story_mentions_operator_workflow_convergence() -> None:
+def test_release_story_mentions_agent_control_plane() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     readme = (repo_root / "README.md").read_text(encoding="utf-8")
     changelog = (repo_root / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -46,13 +56,16 @@ def test_release_story_mentions_operator_workflow_convergence() -> None:
     site = (repo_root / "site" / "index.html").read_text(encoding="utf-8")
     dashboard_html = (repo_root / "src" / "hermes_vault" / "dashboard_static" / "index.html").read_text(encoding="utf-8")
 
-    assert "Operator Workflow Convergence" in changelog
-    assert "What's New in 0.18.0" in readme
-    assert "vault://status" in operator_guide
-    assert "v0.18.0" in site
-    assert "git@v0.18.0" in site
-    assert "onboarding-preview" in dashboard_html
-    assert "backup-diff" in dashboard_html
+    assert "Agent Control Plane" in changelog
+    assert "What's New in 0.19.0" in readme
+    assert "policy explain" in operator_guide
+    assert "request access" in operator_guide
+    assert "v0.19.0" in site
+    assert "git@v0.19.0" in site
+    assert "Command Center" in dashboard_html
+    assert "policy-explain" in dashboard_html
+    assert "request-access" in dashboard_html
+    assert "recovery-drill" in dashboard_html
     assert "dry-run-only in v0.8" not in dashboard_html
 
 

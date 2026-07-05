@@ -58,6 +58,21 @@ Reduce false auth failures, secret sprawl, and uncontrolled credential access in
 - Operators are expected to consolidate plaintext and imported copies into a single canonical vault record
 - Long-lived plaintext duplicates under managed Hermes paths are not considered acceptable steady state
 
+### Unreviewed agent access
+
+- v0.19.0 adds policy explanation before access, so operators and agents can inspect why a request would be allowed or denied without decrypting a credential
+- Access requests are durable metadata records; requesting access does not grant access or return env material
+- Approval and denial decisions are audited, and approved requests can optionally issue a lease through the existing broker path
+- Lease-required policies fail closed when no active lease exists for the agent, service, and alias
+- Purpose-required policies reject generic or empty lease purposes, reducing unexplained access windows
+
+### Incident evidence leaking secrets
+
+- v0.19.0 incident bundles are metadata-only archives
+- Bundles include audit slices, policy hash, health, leases, requests, and runtime metadata
+- Bundles exclude vault databases, salts, encrypted payloads, raw secrets, provider responses, and env files
+- Recovery drills prove backup decryptability and restore posture without mutating the live vault or exporting raw credentials
+
 ## Residual Risks
 
 ### Audit and status visibility

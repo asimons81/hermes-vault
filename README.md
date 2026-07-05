@@ -2,19 +2,20 @@
 
 ![Hermes Vault promo image](assets/hermes-vault-promo-image.png)
 
-Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into observable operator workflows.
+Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.18.0 is the Operator Workflow Convergence release. The local console now brings onboarding preview, searchable inventory, recovery diff drills, and lease-aware status into one operator surface, while MCP gains a consolidated metadata-only `vault://status` resource.
+v0.19.0 is the Agent Control Plane release. Hermes Vault can now explain policy decisions before access, require leases for env handoffs, route requests through an auditable approval queue, generate redacted agent-context manifests, and prove recovery posture through drills and incident bundles.
 
-## What's New in 0.18.0
+## What's New in 0.19.0
 
-v0.18.0 makes Hermes Vault easier to operate day to day without widening the secret-exposure boundary.
+v0.19.0 makes Hermes Vault harder to misuse without widening the secret-exposure boundary.
 
-- Dashboard Onboarding Preview wraps the existing bootstrap dry-run report with redacted import counts, policy doctor summary, skill next step, and MCP config snippet.
-- Dashboard Recovery Hub adds metadata-only backup diff next to backup verification and restore dry-run.
-- Credential, lease, and audit tables now have client-side search, status filters, and sorting.
-- MCP exposes `vault://status` for policy-scoped health, lease, backup, policy, and next-step metadata.
-- Dashboard lease metrics, full vault-key validation, MCP OAuth login isolation, and stale dashboard release copy are fixed.
+- `policy explain` and `policy simulate` show allow/deny reasons, action gates, TTL ceilings, raw-secret boundaries, lease requirements, and next steps before an agent asks for material.
+- Lease-enforced handoffs add `require_lease_for_env`, `require_lease_purpose`, and `lease checkout` so env materialization can be bound to a short-lived purpose.
+- Access requests now have a durable lifecycle: request, list, inspect, approve, deny, optional lease issuance, audit entries, dashboard inbox, and MCP request creation.
+- Agent-context manifests summarize policy, credentials, leases, and pending requests for one agent without decrypting or exposing secret payloads.
+- Recovery drills and incident bundles produce redacted evidence for backup health, restore dry-run posture, policy hash, audit slices, requests, leases, and runtime metadata.
+- The dashboard Command Center and MCP resources (`vault://agent-context`, `vault://policy-explain`, `vault://requests`, `vault://recovery`) expose the same metadata-first control plane.
 
 ## What It Does
 
@@ -47,10 +48,10 @@ Hermes Vault runs natively on Windows -- no WSL required.
 
 ```powershell
 # Install with uv (recommended)
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.18.0
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.19.0
 
 # Or with pipx
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.18.0
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.19.0
 
 # Or with pip (editable dev install)
 python -m venv .venv
@@ -140,8 +141,10 @@ hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes --dry-run
 hermes-vault bootstrap --from-env ~/.hermes/.env --agent hermes
 hermes-vault verify --all
 hermes-vault policy doctor
+hermes-vault policy explain hermes openai --action get_env
 hermes-vault policy pack list
-hermes-vault lease issue openai --agent hermes --ttl 600
+hermes-vault request access openai --agent hermes --purpose "demo task" --ttl 600
+hermes-vault lease checkout openai --agent hermes --purpose "demo task" --ttl 600
 hermes-vault generate-skill --all-agents
 hermes-vault dashboard --no-open
 ```
@@ -195,7 +198,7 @@ When `--redact-source` is used, only successfully imported env lines are comment
 
 ## Hermes Vault Console
 
-Hermes Vault Console, introduced in v0.8.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, recovery posture, and safe operations without turning the browser into a secret viewer.
+Hermes Vault Console, introduced in v0.8.0 and expanded through v0.19.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
 
 Launch it from the same machine that owns the vault:
 
@@ -210,9 +213,9 @@ Use `--no-open` for headless or remote terminal sessions, then open the printed 
 
 The console runs locally on `127.0.0.1` with token-guarded access. The launch command prints a process-local tokenized URL, and API calls need that token until the TTL expires or the process stops. The browser UI is served from packaged static assets under `hermes_vault/dashboard_static/`; packaged installs need those assets present in the wheel or source distribution. API responses redact raw secret and token material, so browser clients receive metadata and bounded action results rather than credential payloads. Keep treating the browser session as local operator access, not as a remote admin surface.
 
-Dashboard views include Health, Credential Inventory, Policy Findings, Audit Activity, MCP Binding Status, Recovery Posture, and Operations Panel. Together they answer the questions an agent operator needs before handing credentials to autonomous systems: is the vault healthy, are credentials stale or invalid, is policy least-privilege, is MCP bound to the expected agents, can backups be verified, and what would maintenance do next?
+Dashboard views include Health, Credential Inventory, Policy Findings, Command Center, Lease Inventory, Audit Activity, and Operations Panel. Together they answer the questions an agent operator needs before handing credentials to autonomous systems: is the vault healthy, what can this agent do, why would access be allowed or denied, which requests need approval, are leases bounded, can backups be drilled, and what would maintenance do next?
 
-Dashboard actions stay inside a conservative safety boundary. The console can run health checks, policy doctor, credential verification, OAuth refresh dry-run, maintenance dry-run, backup verification, and restore dry-runs. Live token refresh, live maintenance mutation, credential editing, policy editing, destructive restore, cloud sync, raw encrypted payload display, and remote binding stay out of the console.
+Dashboard actions stay inside a conservative safety boundary. The console can run health checks, policy doctor, credential verification, OAuth refresh dry-run, maintenance dry-run, backup verification, restore dry-runs, policy explain, agent context, access request creation, request approval/denial, and recovery drills. Live token refresh, live maintenance mutation, credential editing, policy editing, destructive restore, cloud sync, raw encrypted payload display, and remote binding stay out of the console.
 
 ![Hermes Vault Console overview](docs/assets/v0.8.0-dashboard/dashboard-overview.png)
 
@@ -225,7 +228,7 @@ Screenshot set captured with a temporary demo vault and fake/demo credentials on
 - [Recovery Posture view](docs/assets/v0.8.0-dashboard/dashboard-recovery-posture.png)
 - [Operations Panel view](docs/assets/v0.8.0-dashboard/dashboard-operations.png)
 
-The screenshots and launch notes above document the v0.8.0 dashboard launch. They remain accurate for the current local console safety boundary unless a later release note says otherwise.
+The screenshots and launch notes above are the legacy v0.8.0 baseline. They still document the local-only, token-guarded safety boundary, but the dashboard has grown since then and the v0.19.0 Command Center needs a fresh screenshot set before publishing updated launch visuals.
 
 ## MCP Server
 
@@ -309,7 +312,7 @@ hermes-vault health --format json
 hermes-vault health --verify-live --service openai
 hermes-vault maintain --dry-run
 hermes-vault maintain
-hermes-vault maintain --print-systemd
+hermes-vault maintain --print-schedule
 hermes-vault dashboard --no-open
 hermes-vault policy doctor
 hermes-vault oauth normalize
@@ -466,8 +469,8 @@ v0.7.0 adds `hermes-vault oauth normalize` to migrate older OAuth records to san
 ### Backup verification and drill
 v0.7.0 adds `hermes-vault backup-verify --input <backup-file>` and a non-mutating restore drill (`hermes-vault restore --dry-run --input <backup-file>`) so operators can prove recovery before they need it. `maintain` can fold backup-age warnings into the same scheduled run.
 
-### Systemd helper output
-`hermes-vault maintain --print-systemd` emits a safe service/timer example for recurring maintenance without forcing the CLI to install units automatically.
+### Scheduler helper output
+`hermes-vault maintain --print-schedule` emits a safe systemd or Windows Task Scheduler example for recurring maintenance without forcing the CLI to install units automatically. `--print-systemd` remains available as a compatibility alias.
 
 ## What's New in 0.6.0 - OAuth PKCE and Token Auto-Refresh
 

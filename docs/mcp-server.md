@@ -247,6 +247,30 @@ Triggers an automatic token refresh for a service using its stored refresh token
 - An `oauth_access_token` must exist for the service+alias
 - A paired `oauth_refresh_token` must exist in the vault. New records use the deterministic alias `refresh:<alias>`; legacy alias `refresh` remains readable during migration.
 
+## v0.19.0 Agent Control Plane
+
+v0.19.0 adds metadata-first control-plane surfaces for hosts that need to understand access before materializing it. These tools and resources reuse the same broker, policy, lease, and audit paths as the CLI and dashboard.
+
+Resources:
+
+- `vault://agent-context?agent_id=<agent>` returns a redacted manifest of policy services, credential metadata, active leases, and access requests for one agent.
+- `vault://policy-explain?agent_id=<agent>&service=<service>&action=<action>&ttl_seconds=<ttl>` returns the shared policy explanation payload.
+- `vault://requests?agent_id=<agent>` lists access requests visible for the agent.
+- `vault://recovery?backup=<path>` runs a redacted recovery drill for a local backup path.
+- `vault://leases/{id}` remains the lease detail resource.
+
+Tools:
+
+- `request_access` creates a durable metadata-only access request with purpose and optional requested TTL.
+- `policy_explain` returns the same allow/deny explanation used by the CLI and dashboard.
+- `lease_checkout` reuses or issues a lease, then materializes env through the existing broker path.
+
+Security boundary:
+
+- Resources never return raw secret values, raw OAuth tokens, provider responses, encrypted payloads, vault databases, or salt files.
+- `lease_checkout` can return env material because it is an access-materialization tool, not a passive resource. It remains policy-gated and audited through the broker.
+- Bound MCP deployments should still set `HERMES_VAULT_MCP_ALLOWED_AGENTS` and `HERMES_VAULT_MCP_DEFAULT_AGENT` so the host cannot silently impersonate arbitrary agents.
+
 ## Tool Naming in Hermes
 
 MCP tools are auto-registered by Hermes with the convention:

@@ -179,7 +179,7 @@ OAuth and maintenance responses are sanitized before they reach the browser. Raw
 
 ### Dry-run action boundary
 
-Dashboard actions are intentionally narrower than the CLI. Health, policy doctor, credential verification, onboarding preview, backup verification, backup diff, and restore dry-run are available. OAuth refresh and maintenance are forced to `dry_run=True` server-side, even if a client sends `dry_run=false`.
+Dashboard actions are intentionally narrower than the CLI. Health, policy doctor, credential verification, onboarding preview, policy explain, agent context, access request review, backup verification, backup diff, recovery drill, and restore dry-run are available. OAuth refresh and maintenance are forced to `dry_run=True` server-side, even if a client sends `dry_run=false`.
 
 Live OAuth refresh, live maintenance, credential add/import/rotate/delete, policy editing, destructive restore, master-key rotation, plaintext export, cloud sync, and remote binding remain CLI-only or out of scope for this release. Expanding that boundary requires Hermes/Tony review before release.
 
@@ -193,9 +193,9 @@ Live OAuth refresh, live maintenance, credential add/import/rotate/delete, polic
 - MCP transport is a thin wrapper: all policy enforcement reuses the broker; no parallel authority
 - MCP access defaults to policy-gated ephemeral environment materialization rather than direct raw-secret handling
 - v0.7.0 adds maintenance, policy doctor, OAuth normalization, and backup verification/drill without changing the local-first storage model
-- v0.8.0 adds the local dashboard as a token-guarded localhost operator surface; it is not a remote service or a raw-secret UI
+- v0.8.0 adds the local dashboard as a token-guarded localhost operator surface; v0.18.0 expands it with onboarding preview, searchable inventory views, backup diff drills, and MCP `vault://status` without widening raw-secret exposure
 - v0.10.1 adds unattended OAuth refresh for existing OAuth credentials plus browserless device-code first login on supported providers
-- v0.18.0 adds dashboard onboarding preview, backup diff drills, searchable inventory views, and MCP `vault://status` without widening raw-secret exposure
+- v0.19.0 adds explainable policy, lease-enforced env handoffs, access requests, agent context, recovery drills, incident bundles, dashboard Command Center, and MCP control-plane resources without creating a second permission model
 - Dashboard visual polish is a release concern only when bundled assets, responsive layouts, and first-run intro behavior pass smoke checks
 - **OAuth-specific:**
   - CSRF protection via randomly-generated state parameter validated with timing-safe comparison

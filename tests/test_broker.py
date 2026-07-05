@@ -348,12 +348,15 @@ def _make_lease_broker(
     *,
     actions: dict[str, list[ServiceAction]] | None = None,
     max_ttl_seconds: int = 900,
+    require_lease_for_env: bool = False,
+    require_lease_purpose: bool = False,
 ) -> tuple[Vault, Broker]:
     vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
     vault.add_credential("openai", "sk-openai", "api_key", alias="primary", scopes=["models.read"])
     vault.add_credential("github", "ghp-token", "personal_access_token", alias="work", scopes=["repo"])
     actions = actions or {
         "openai": [
+            ServiceAction.get_env,
             ServiceAction.issue_lease,
             ServiceAction.list_leases,
             ServiceAction.show_lease,
@@ -361,6 +364,7 @@ def _make_lease_broker(
             ServiceAction.revoke_lease,
         ],
         "github": [
+            ServiceAction.get_env,
             ServiceAction.issue_lease,
             ServiceAction.list_leases,
             ServiceAction.show_lease,
@@ -380,6 +384,8 @@ def _make_lease_broker(
                     max_ttl_seconds=max_ttl_seconds,
                     raw_secret_access=False,
                     ephemeral_env_only=True,
+                    require_lease_for_env=require_lease_for_env,
+                    require_lease_purpose=require_lease_purpose,
                 )
             }
         )
@@ -577,6 +583,92 @@ class TestLeaseBroker:
 
         assert decision.allowed is False
         assert "already been revoked" in decision.reason
+
+    def test_get_env_denied_when_policy_requires_lease_without_active_lease(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path, require_lease_for_env=True)
+
+        decision = broker.get_ephemeral_env("openai", "lease-agent", ttl=600, alias="primary")
+
+        assert decision.allowed is False
+        assert "requires an active lease" in decision.reason
+        assert decision.metadata["lease_required"] is True
+        assert "sk-openai" not in str(decision.model_dump(mode="json"))
+
+    def test_get_env_allowed_with_active_lease_and_lease_metadata(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path, require_lease_for_env=True)
+        lease = broker.issue_lease("lease-agent", "openai", 60, alias="primary", purpose="deploy").metadata["lease"]
+
+        decision = broker.get_ephemeral_env("openai", "lease-agent", ttl=600, alias="primary")
+
+        assert decision.allowed is True
+        assert decision.ttl_seconds <= 60
+        assert decision.metadata["lease_id"] == lease["id"]
+        assert decision.metadata["lease_required"] is True
+
+    def test_issue_lease_requires_specific_purpose_when_policy_requires_it(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path, require_lease_purpose=True)
+
+        decision = broker.issue_lease("lease-agent", "openai", 60, alias="primary", purpose="task")
+
+        assert decision.allowed is False
+        assert "specific lease purpose" in decision.reason
+
+    def test_lease_checkout_issues_lease_and_returns_env(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path, require_lease_for_env=True)
+
+        decision = broker.lease_checkout(
+            agent_id="lease-agent",
+            service="openai",
+            ttl_seconds=60,
+            alias="primary",
+            purpose="deploy",
+        )
+
+        assert decision.allowed is True
+        assert decision.env["OPENAI_API_KEY"] == "sk-openai"
+        assert decision.metadata["lease_checkout"]["lease_issued"] is True
+
+    def test_request_access_persists_metadata_without_env(self, tmp_path: Path) -> None:
+        vault, broker = _make_lease_broker(tmp_path, require_lease_for_env=True)
+
+        decision = broker.request_access(
+            agent_id="lease-agent",
+            service="openai",
+            alias="primary",
+            action="get_env",
+            purpose="deploy",
+            requested_ttl_seconds=60,
+        )
+
+        assert decision.allowed is True
+        assert decision.env == {}
+        request = decision.metadata["request"]
+        assert request["status"] == "pending"
+        assert request["metadata"]["policy_explain"]["requires_lease"] is True
+        assert vault.get_access_request(request["id"]) is not None
+        assert "sk-openai" not in str(decision.model_dump(mode="json"))
+
+    def test_approve_access_request_can_issue_lease(self, tmp_path: Path) -> None:
+        _, broker = _make_lease_broker(tmp_path, require_lease_for_env=True)
+        request = broker.request_access(
+            agent_id="lease-agent",
+            service="openai",
+            alias="primary",
+            action="get_env",
+            purpose="deploy",
+            requested_ttl_seconds=60,
+        ).metadata["request"]
+
+        decision = broker.approve_access_request(
+            request["id"],
+            reason="approved for deploy",
+            issue_lease=True,
+            ttl_seconds=60,
+        )
+
+        assert decision.allowed is True
+        assert decision.metadata["request"]["status"] == "approved"
+        assert decision.metadata["request"]["lease_id"]
 
 
 def test_broker_scan_allowed_with_capability(tmp_path: Path) -> None:

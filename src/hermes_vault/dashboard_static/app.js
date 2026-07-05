@@ -41,6 +41,9 @@ const state = {
   policy: null,
   profiles: [],
   audit: [],
+  requests: [],
+  agentContext: null,
+  policyExplain: null,
   filters: {
     credentials: "",
     credentialStatus: "",
@@ -53,6 +56,7 @@ const state = {
   },
   onboardingPreview: null,
   recovery: {},
+  recoveryDrill: null,
 };
 
 const qs = (selector) => document.querySelector(selector);
@@ -296,13 +300,14 @@ async function loadAll(button) {
   setConnection("Refreshing", "busy");
   renderLoading();
   try {
-    const [overview, credentials, policy, audit, profiles, leases] = await Promise.all([
+    const [overview, credentials, policy, audit, profiles, leases, requests] = await Promise.all([
       api("/api/overview"),
       api("/api/credentials"),
       api("/api/policy"),
       api("/api/audit?limit=60"),
       api("/api/profiles"),
       api("/api/leases"),
+      api("/api/requests"),
     ]);
     state.overview = overview;
     state.credentials = credentials.credentials || [];
@@ -311,6 +316,7 @@ async function loadAll(button) {
     state.audit = audit.entries || [];
     state.profiles = profiles.profiles || [];
     state.leases = leases.leases || [];
+    state.requests = requests.requests || [];
     render();
     setConnection("Local session", "ready");
   } catch (error) {
@@ -330,6 +336,7 @@ function render() {
   renderOnboarding();
   renderCredentials();
   renderPolicy();
+  renderCommand();
   renderLeases();
   renderAudit();
   renderRecoverySummary();
@@ -486,6 +493,116 @@ function renderPolicy() {
   renderItems(qs("#agent-list"), agents, "No agents configured.");
 }
 
+function renderCommand() {
+  renderAgentContext();
+  renderPolicyExplain();
+  renderRequestInbox();
+  renderRecoveryDrill();
+}
+
+function renderAgentContext() {
+  const summary = qs("#agent-context-summary");
+  const servicesTarget = qs("#agent-context-services");
+  if (!summary || !servicesTarget) return;
+  const context = state.agentContext;
+  if (!context) {
+    summary.innerHTML = `
+      <article class="summary-card"><span>Agent</span><strong>-</strong></article>
+      <article class="summary-card"><span>Services</span><strong>-</strong></article>
+      <article class="summary-card"><span>Boundary</span><strong>Redacted</strong></article>
+    `;
+    servicesTarget.innerHTML = "";
+    return;
+  }
+  const services = Array.isArray(context.services) ? context.services : [];
+  const leases = Array.isArray(context.leases) ? context.leases : [];
+  const requests = Array.isArray(context.access_requests) ? context.access_requests : [];
+  summary.innerHTML = `
+    <article class="summary-card"><span>Agent</span><strong>${escapeHtml(context.agent_id)}</strong></article>
+    <article class="summary-card"><span>Services</span><strong>${escapeHtml(services.length)}</strong></article>
+    <article class="summary-card"><span>Leases</span><strong>${escapeHtml(leases.length)}</strong></article>
+    <article class="summary-card"><span>Requests</span><strong>${escapeHtml(requests.length)}</strong></article>
+  `;
+  const items = services.map((service) => itemNode({
+    title: service.service || "service",
+    detail: `Actions: ${(service.actions || []).join(", ") || "-"}. TTL: ${service.max_ttl_seconds || "-"}. Lease required: ${service.require_lease_for_env ? "yes" : "no"}.`,
+    tone: service.require_lease_for_env ? "warning" : "",
+    meta: service.raw_secret_access ? "elevated" : "env",
+  }));
+  renderItems(servicesTarget, items, "No services are visible to this agent.");
+}
+
+function renderPolicyExplain() {
+  const target = qs("#policy-explain-summary");
+  if (!target) return;
+  const explain = state.policyExplain;
+  if (!explain) {
+    target.innerHTML = `
+      <article class="summary-card"><span>Decision</span><strong>-</strong></article>
+      <article class="summary-card"><span>Lease</span><strong>-</strong></article>
+      <article class="summary-card"><span>TTL</span><strong>-</strong></article>
+    `;
+    return;
+  }
+  target.innerHTML = `
+    <article class="summary-card"><span>Decision</span><strong>${explain.allowed ? "Allowed" : "Denied"}</strong></article>
+    <article class="summary-card"><span>Reason</span><strong>${escapeHtml(explain.reason || "-")}</strong></article>
+    <article class="summary-card"><span>Lease</span><strong>${explain.requires_lease ? "Required" : "Optional"}</strong></article>
+    <article class="summary-card"><span>Effective TTL</span><strong>${escapeHtml(explain.effective_ttl_seconds || "-")}</strong></article>
+  `;
+}
+
+function renderRequestInbox() {
+  const target = qs("#request-inbox");
+  if (!target) return;
+  const rows = (state.requests || []).map((request) => {
+    const pending = request.status === "pending";
+    return `
+      <tr>
+        <td><strong>${escapeHtml(request.agent_id)}</strong><p class="cell-note metadata-note">${escapeHtml(request.id)}</p></td>
+        <td>${escapeHtml(request.service)}</td>
+        <td>${escapeHtml(request.alias || "default")}</td>
+        <td>${escapeHtml(request.action)}</td>
+        <td><span class="status ${escapeHtml(request.status)}">${escapeHtml(request.status)}</span></td>
+        <td>${request.purpose ? `<p class="cell-note metadata-note">${escapeHtml(request.purpose)}</p>` : "-"}</td>
+        <td>${escapeHtml(shortDate(request.created_at))}</td>
+        <td>
+          <div class="request-actions">
+            <button class="ghost-button compact" type="button" data-request-deny="${escapeHtml(request.id)}" ${pending ? "" : "disabled"}>Deny</button>
+            <button class="primary-button compact" type="button" data-request-approve="${escapeHtml(request.id)}" ${pending ? "" : "disabled"}>Approve</button>
+            <label><input type="checkbox" data-request-lease="${escapeHtml(request.id)}" ${pending ? "" : "disabled"} /> Lease</label>
+          </div>
+        </td>
+      </tr>
+    `;
+  });
+  renderTable(
+    target,
+    ["Agent", "Service", "Alias", "Action", "Status", "Purpose", "Created", "Decision"],
+    rows,
+    "No access requests yet.",
+  );
+}
+
+function renderRecoveryDrill() {
+  const target = qs("#recovery-drill-summary");
+  if (!target) return;
+  const drill = state.recoveryDrill;
+  if (!drill) {
+    target.innerHTML = `
+      <article class="summary-card"><span>Status</span><strong>-</strong></article>
+      <article class="summary-card"><span>Findings</span><strong>-</strong></article>
+      <article class="summary-card"><span>Diff Entries</span><strong>-</strong></article>
+    `;
+    return;
+  }
+  target.innerHTML = `
+    <article class="summary-card"><span>Status</span><strong>${drill.healthy ? "Healthy" : "Review"}</strong></article>
+    <article class="summary-card"><span>Findings</span><strong>${escapeHtml((drill.findings || []).length)}</strong></article>
+    <article class="summary-card"><span>Diff Entries</span><strong>${escapeHtml((drill.diff || {}).count || 0)}</strong></article>
+  `;
+}
+
 function renderLeases() {
   const leases = sortBy(
     (state.leases || []).filter((lease) => {
@@ -555,7 +672,7 @@ function renderRecoverySummary() {
 }
 
 async function runAction(action, payload = {}, button) {
-  const output = qs("#action-output");
+  const output = state.view === "command" ? qs("#command-output") : qs("#action-output");
   setButtonBusy(button, true, "Running");
   setConnection("Action running", "busy");
   output.classList.remove("error");
@@ -578,8 +695,69 @@ async function runAction(action, payload = {}, button) {
     if (["backup_verify", "restore_dry_run", "backup_diff"].includes(action)) {
       state.recovery[action] = result;
     }
+    if (action === "policy_explain") {
+      state.policyExplain = result;
+    }
+    if (action === "request_access") {
+      state.requests = [result.metadata.request, ...(state.requests || [])].filter(Boolean);
+    }
+    if (action === "request_approve" || action === "request_deny") {
+      const updated = result.metadata && result.metadata.request;
+      if (updated) {
+        state.requests = (state.requests || []).map((request) => request.id === updated.id ? updated : request);
+      }
+    }
+    if (action === "recovery_drill") {
+      state.recoveryDrill = result;
+    }
     output.textContent = JSON.stringify(result, null, 2);
     await loadAll();
+  } catch (error) {
+    output.classList.add("error");
+    output.textContent = String(error.message || error);
+    setConnection("Action failed", "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function loadAgentContext(button) {
+  const output = qs("#command-output");
+  const agentId = qs("#agent-context-agent").value.trim();
+  if (!agentId) {
+    output.classList.add("error");
+    output.textContent = "Agent is required.";
+    return;
+  }
+  setButtonBusy(button, true, "Loading");
+  setConnection("Loading context", "busy");
+  output.classList.remove("error");
+  try {
+    const result = await api(`/api/agent-context?agent_id=${encodeURIComponent(agentId)}`);
+    state.agentContext = result;
+    output.textContent = JSON.stringify(result, null, 2);
+    renderCommand();
+    setConnection("Local session", "ready");
+  } catch (error) {
+    output.classList.add("error");
+    output.textContent = String(error.message || error);
+    setConnection("Action failed", "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function refreshRequests(button) {
+  const output = qs("#command-output");
+  setButtonBusy(button, true, "Refreshing");
+  setConnection("Refreshing requests", "busy");
+  try {
+    const result = await api("/api/requests");
+    state.requests = result.requests || [];
+    renderRequestInbox();
+    output.classList.remove("error");
+    output.textContent = JSON.stringify(result, null, 2);
+    setConnection("Local session", "ready");
   } catch (error) {
     output.classList.add("error");
     output.textContent = String(error.message || error);
@@ -672,6 +850,40 @@ document.body.addEventListener("click", (event) => {
       agent: qs("#onboarding-agent").value || "hermes",
       map: qs("#onboarding-map").value,
     }, target);
+  } else if (target.dataset.action === "agent-context") {
+    loadAgentContext(target);
+  } else if (target.dataset.action === "policy-explain") {
+    runAction("policy_explain", {
+      agent_id: qs("#policy-explain-agent").value,
+      service: qs("#policy-explain-service").value,
+      action: qs("#policy-explain-action").value,
+      ttl_seconds: qs("#policy-explain-ttl").value,
+    }, target);
+  } else if (target.dataset.action === "request-access") {
+    runAction("request_access", {
+      agent_id: qs("#request-agent").value,
+      service: qs("#request-service").value,
+      alias: qs("#request-alias").value || "default",
+      action: "get_env",
+      purpose: qs("#request-purpose").value,
+      ttl_seconds: qs("#request-ttl").value,
+    }, target);
+  } else if (target.dataset.action === "requests-refresh") {
+    refreshRequests(target);
+  } else if (target.dataset.requestApprove) {
+    const lease = qsa("[data-request-lease]").find((item) => item.dataset.requestLease === target.dataset.requestApprove);
+    runAction("request_approve", {
+      request_id: target.dataset.requestApprove,
+      reason: "Approved from dashboard command center.",
+      issue_lease: Boolean(lease && lease.checked),
+    }, target);
+  } else if (target.dataset.requestDeny) {
+    runAction("request_deny", {
+      request_id: target.dataset.requestDeny,
+      reason: "Denied from dashboard command center.",
+    }, target);
+  } else if (target.dataset.action === "recovery-drill") {
+    runAction("recovery_drill", { backup_path: qs("#recovery-drill-path").value }, target);
   }
 });
 

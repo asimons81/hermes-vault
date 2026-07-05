@@ -8,6 +8,7 @@ from typing import Any
 from hermes_vault.audit import AuditLogger
 from hermes_vault.models import (
     AccessLogRecord,
+    AccessRequestStatus,
     AgentCapability,
     BrokerDecision,
     CredentialStatus,
@@ -103,6 +104,39 @@ class Broker:
             record = self.vault.resolve_credential(canonical, alias=alias)
         except (AmbiguousTargetError, KeyError) as exc:
             return self._deny(agent_id, canonical, "get_ephemeral_env", str(exc), ttl_seconds=effective_ttl)
+        lease_metadata: dict[str, object] = {}
+        if self.policy.require_lease_for_env(agent_id, canonical):
+            lease = self.vault.find_active_lease(
+                agent_id=agent_id,
+                service=record.service,
+                alias=record.alias,
+            )
+            if lease is None:
+                return self._deny(
+                    agent_id,
+                    canonical,
+                    "get_ephemeral_env",
+                    "policy requires an active lease before env handoff",
+                    ttl_seconds=effective_ttl,
+                    metadata={"lease_required": True, "alias": record.alias},
+                )
+            remaining = int((lease.expires_at - datetime.now(timezone.utc)).total_seconds())
+            if remaining <= 0:
+                return self._deny(
+                    agent_id,
+                    canonical,
+                    "get_ephemeral_env",
+                    "lease expired before env handoff",
+                    ttl_seconds=effective_ttl,
+                    metadata={"lease_required": True, "lease_id": lease.id},
+                )
+            effective_ttl = min(effective_ttl, remaining)
+            lease_metadata = {
+                "lease_required": True,
+                "lease_id": lease.id,
+                "lease_expires_at": lease.expires_at.isoformat(),
+                "lease_purpose": lease.purpose,
+            }
         secret = self.vault.get_secret(record.id)
         if not secret:
             return self._deny(agent_id, canonical, "get_ephemeral_env", "credential not found in vault", ttl_seconds=effective_ttl)
@@ -135,6 +169,7 @@ class Broker:
         oauth_meta = freshness_result.get("oauth_refresh")
         if oauth_meta is not None:
             metadata["oauth_refresh"] = oauth_meta
+        metadata.update(lease_metadata)
         return self._allow(
             agent_id,
             canonical,
@@ -648,6 +683,14 @@ class Broker:
         allowed, policy_reason = self.policy.can(agent_id, record.service, ServiceAction.issue_lease)
         if not allowed:
             return self._deny(agent_id, record.service, "issue_lease", policy_reason, ttl_seconds=ttl_seconds)
+        if self.policy.require_lease_purpose(agent_id, record.service) and purpose.strip().lower() in {"", "task", "default"}:
+            return self._deny(
+                agent_id,
+                record.service,
+                "issue_lease",
+                "policy requires a specific lease purpose",
+                ttl_seconds=ttl_seconds,
+            )
 
         ttl_ok, ttl_reason, effective_ttl = self.policy.enforce_ttl(agent_id, ttl_seconds, record.service)
         if not ttl_ok:
@@ -680,6 +723,211 @@ class Broker:
             reason="lease issued",
             ttl_seconds=lease.ttl_seconds,
             metadata={"lease": metadata},
+        )
+
+    def lease_checkout(
+        self,
+        *,
+        agent_id: str,
+        service: str,
+        ttl_seconds: int,
+        alias: str | None = None,
+        purpose: str = "task",
+    ) -> BrokerDecision:
+        canonical = normalize(service)
+        try:
+            record = self.vault.resolve_credential(canonical, alias=alias)
+        except Exception as exc:
+            return self._deny(agent_id, canonical, "lease_checkout", str(exc), ttl_seconds=ttl_seconds)
+        lease = self.vault.find_active_lease(
+            agent_id=agent_id,
+            service=record.service,
+            alias=record.alias,
+        )
+        lease_issued = False
+        if lease is None:
+            issued = self.issue_lease(
+                agent_id=agent_id,
+                service_or_id=record.service,
+                ttl_seconds=ttl_seconds,
+                alias=record.alias,
+                purpose=purpose,
+            )
+            if not issued.allowed:
+                return issued
+            lease = self.vault.get_lease(issued.metadata["lease"]["id"])
+            lease_issued = True
+        if lease is None:
+            return self._deny(agent_id, canonical, "lease_checkout", "lease could not be resolved", ttl_seconds=ttl_seconds)
+        env_decision = self.get_ephemeral_env(
+            service=record.service,
+            agent_id=agent_id,
+            ttl=ttl_seconds,
+            alias=record.alias,
+        )
+        env_decision.metadata["lease_checkout"] = {
+            "lease_id": lease.id,
+            "lease_issued": lease_issued,
+            "purpose": lease.purpose,
+        }
+        return env_decision
+
+    def request_access(
+        self,
+        *,
+        agent_id: str,
+        service: str,
+        action: str,
+        purpose: str,
+        alias: str = "default",
+        requested_ttl_seconds: int | None = None,
+    ) -> BrokerDecision:
+        canonical = normalize(service)
+        explanation = self.policy.explain(agent_id, canonical, action, requested_ttl_seconds)
+        request = self.vault.create_access_request(
+            agent_id=agent_id,
+            service=canonical,
+            alias=alias,
+            action=action,
+            purpose=purpose,
+            requested_ttl_seconds=requested_ttl_seconds,
+            metadata={"policy_explain": explanation},
+        )
+        self.audit.record(
+            AccessLogRecord(
+                agent_id=agent_id,
+                service=canonical,
+                action="request_access",
+                decision=Decision.allow,
+                reason="access request created",
+                ttl_seconds=requested_ttl_seconds,
+                metadata={"request_id": request.id, "requested_action": action, "alias": alias},
+            )
+        )
+        return BrokerDecision(
+            allowed=True,
+            service=canonical,
+            agent_id=agent_id,
+            reason="access request created; no credential material was returned",
+            ttl_seconds=requested_ttl_seconds,
+            metadata={"request": request.model_dump(mode="json")},
+        )
+
+    def list_access_requests(
+        self,
+        *,
+        agent_id: str | None = None,
+        service: str | None = None,
+        status: str | None = None,
+    ) -> BrokerDecision:
+        requests = self.vault.list_access_requests(agent_id=agent_id, service=service, status=status)
+        return BrokerDecision(
+            allowed=True,
+            service=normalize(service) if service else "*",
+            agent_id=agent_id or "operator",
+            reason=f"returned {len(requests)} access request(s)",
+            metadata={"requests": [request.model_dump(mode="json") for request in requests]},
+        )
+
+    def show_access_request(self, request_id: str) -> BrokerDecision:
+        request = self.vault.get_access_request(request_id)
+        if request is None:
+            return self._deny("operator", "*", "show_access_request", f"access request '{request_id}' not found")
+        return BrokerDecision(
+            allowed=True,
+            service=request.service,
+            agent_id=request.agent_id,
+            reason=f"returned access request {request.id}",
+            metadata={"request": request.model_dump(mode="json")},
+        )
+
+    def approve_access_request(
+        self,
+        request_id: str,
+        *,
+        decided_by: str = "operator",
+        reason: str | None = None,
+        issue_lease: bool = False,
+        ttl_seconds: int | None = None,
+    ) -> BrokerDecision:
+        request = self.vault.get_access_request(request_id)
+        if request is None:
+            return self._deny(decided_by, "*", "approve_access_request", f"access request '{request_id}' not found")
+        lease_id = None
+        if issue_lease:
+            lease_decision = self.issue_lease(
+                agent_id=request.agent_id,
+                service_or_id=request.service,
+                ttl_seconds=ttl_seconds or request.requested_ttl_seconds or 900,
+                alias=request.alias,
+                purpose=request.purpose,
+                reason=reason,
+            )
+            if not lease_decision.allowed:
+                return lease_decision
+            lease_id = lease_decision.metadata["lease"]["id"]
+        try:
+            updated = self.vault.decide_access_request(
+                request_id,
+                status=AccessRequestStatus.approved,
+                decided_by=decided_by,
+                reason=reason,
+                lease_id=lease_id,
+            )
+        except (KeyError, ValueError) as exc:
+            return self._deny(decided_by, request.service, "approve_access_request", str(exc))
+        self.audit.record(
+            AccessLogRecord(
+                agent_id=decided_by,
+                service=updated.service,
+                action="approve_access_request",
+                decision=Decision.allow,
+                reason=reason or "access request approved",
+                metadata={"request_id": updated.id, "lease_id": lease_id},
+            )
+        )
+        return BrokerDecision(
+            allowed=True,
+            service=updated.service,
+            agent_id=updated.agent_id,
+            reason="access request approved",
+            metadata={"request": updated.model_dump(mode="json")},
+        )
+
+    def deny_access_request(
+        self,
+        request_id: str,
+        *,
+        decided_by: str = "operator",
+        reason: str | None = None,
+    ) -> BrokerDecision:
+        request = self.vault.get_access_request(request_id)
+        service = request.service if request else "*"
+        try:
+            updated = self.vault.decide_access_request(
+                request_id,
+                status=AccessRequestStatus.denied,
+                decided_by=decided_by,
+                reason=reason,
+            )
+        except (KeyError, ValueError) as exc:
+            return self._deny(decided_by, service, "deny_access_request", str(exc))
+        self.audit.record(
+            AccessLogRecord(
+                agent_id=decided_by,
+                service=updated.service,
+                action="deny_access_request",
+                decision=Decision.deny,
+                reason=reason or "access request denied",
+                metadata={"request_id": updated.id},
+            )
+        )
+        return BrokerDecision(
+            allowed=True,
+            service=updated.service,
+            agent_id=updated.agent_id,
+            reason="access request denied",
+            metadata={"request": updated.model_dump(mode="json")},
         )
 
     def list_leases(

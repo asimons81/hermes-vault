@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,7 @@ from hermes_vault.vault import Vault
 
 
 def _run_async(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def _text(content: list[TextContent]) -> str:
@@ -94,6 +95,9 @@ def test_list_tools_returns_expected_tools():
         "oauth_device_login",
         "oauth_provider_status",
         "oauth_refresh",
+        "request_access",
+        "policy_explain",
+        "lease_checkout",
     }
     assert names == expected
 
@@ -101,7 +105,16 @@ def test_list_tools_returns_expected_tools():
 def test_list_resources_returns_expected_static_resources():
     resources = _run_async(list_resources())
     by_uri = {str(resource.uri): resource for resource in resources}
-    assert {"vault://status", "vault://services", "vault://health", "vault://policy"}.issubset(by_uri)
+    assert {
+        "vault://status",
+        "vault://services",
+        "vault://health",
+        "vault://policy",
+        "vault://agent-context",
+        "vault://policy-explain",
+        "vault://requests",
+        "vault://recovery",
+    }.issubset(by_uri)
     assert by_uri["vault://status"].mimeType == "application/json"
     assert by_uri["vault://services"].mimeType == "application/json"
     assert by_uri["vault://health"].mimeType == "application/json"
@@ -113,6 +126,8 @@ def test_list_resource_templates_returns_service_detail_template():
     by_template = {template.uriTemplate: template for template in templates}
     assert "vault://services/{name}" in by_template
     assert by_template["vault://services/{name}"].mimeType == "application/json"
+    assert "vault://policy-explain?service={service}&action={action}" in by_template
+    assert "vault://recovery?backup={path}" in by_template
 
 
 def test_resource_capability_is_advertised():
@@ -264,6 +279,75 @@ def test_read_status_resource_denies_agent_without_list_capability(vault_with_po
 
     assert data["version"] == "vault-resource-error-v1"
     assert "list_credentials" in data["error"]
+
+
+def test_read_agent_context_resource_returns_redacted_manifest(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(read_resource("vault://agent-context?agent_id=test-agent"))
+    data = _resource_json(result)
+
+    assert data["version"] == "agent-context-v1"
+    assert data["agent_id"] == "test-agent"
+    assert data["summary"]["service_count"] >= 2
+    serialized = json.dumps(data)
+    assert "test-openai-key" not in serialized
+    assert "encrypted_payload" not in serialized
+
+
+def test_read_policy_explain_resource_returns_policy_explain(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(read_resource("vault://policy-explain?agent_id=test-agent&service=openai&action=get_env&ttl_seconds=900"))
+    data = _resource_json(result)
+
+    assert data["version"] == "policy-explain-v1"
+    assert data["agent_id"] == "test-agent"
+    assert data["service"] == "openai"
+    assert data["action"] == "get_env"
+    assert data["allowed"] is True
+
+
+def test_read_policy_explain_resource_requires_service(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    result = _run_async(read_resource("vault://policy-explain?agent_id=test-agent"))
+    data = _resource_json(result)
+
+    assert data["version"] == "vault-resource-error-v1"
+    assert "service" in data["error"]
+
+
+def test_read_requests_resource_lists_access_requests_without_secret_material(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    vault_with_policy.request_access(
+        agent_id="test-agent",
+        service="openai",
+        alias="primary",
+        action="get_env",
+        purpose="deploy",
+        requested_ttl_seconds=60,
+    )
+
+    result = _run_async(read_resource("vault://requests?agent_id=test-agent"))
+    data = _resource_json(result)
+
+    assert data["version"] == "vault-requests-v1"
+    assert len(data["requests"]) == 1
+    assert data["requests"][0]["status"] == "pending"
+    assert "test-openai-key" not in json.dumps(data)
+
+
+def test_read_recovery_resource_returns_redacted_report(vault_with_policy, tmp_path):
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    backup_path = tmp_path / "backup.json"
+    backup_path.write_text(json.dumps(vault_with_policy.vault.export_backup()), encoding="utf-8")
+    encoded = urllib.parse.quote(str(backup_path), safe="")
+
+    result = _run_async(read_resource(f"vault://recovery?agent_id=test-agent&backup={encoded}"))
+    data = _resource_json(result)
+
+    assert data["version"] == "recovery-drill-v1"
+    assert data["backup_verify"]["decryptable"] is True
+    assert data["raw_secret_values_returned"] is False
+    assert "test-openai-key" not in json.dumps(data)
 
 
 def test_read_health_resource_is_policy_scoped(vault_with_policy, tmp_path):
@@ -1103,6 +1187,65 @@ def test_lease_revoke_tool_returns_revoked_lease(vault_with_policy, tmp_path):
     assert data["allowed"] is True
     assert data["metadata"]["lease"]["status"] == "revoked"
     assert data["metadata"]["lease"]["reason"] == "cleanup"
+
+
+def test_request_access_tool_creates_redacted_request(vault_with_policy, tmp_path):
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    mcp_mod._broker = vault_with_policy
+
+    result = _run_async(call_tool("request_access", {
+        "agent_id": "test-agent",
+        "service": "openai",
+        "alias": "primary",
+        "purpose": "deploy",
+        "ttl_seconds": 60,
+    }))
+    data = _json(result)
+
+    assert data["allowed"] is True
+    assert data["metadata"]["request"]["status"] == "pending"
+    assert data["env"] == {}
+    assert "test-openai-key" not in json.dumps(data)
+
+
+def test_policy_explain_tool_returns_policy_explain(vault_with_policy, tmp_path):
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    mcp_mod._broker = vault_with_policy
+
+    result = _run_async(call_tool("policy_explain", {
+        "agent_id": "test-agent",
+        "service": "openai",
+        "action": "get_env",
+        "ttl_seconds": 60,
+    }))
+    data = _json(result)
+
+    assert data["version"] == "policy-explain-v1"
+    assert data["allowed"] is True
+    assert data["service"] == "openai"
+
+
+def test_lease_checkout_tool_returns_env_through_broker(vault_with_policy, tmp_path):
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    mcp_mod._broker = vault_with_policy
+
+    result = _run_async(call_tool("lease_checkout", {
+        "agent_id": "test-agent",
+        "service": "openai",
+        "alias": "primary",
+        "purpose": "deploy",
+        "ttl_seconds": 60,
+    }))
+    data = _json(result)
+
+    assert data["env"]["OPENAI_API_KEY"] == "test-openai-key"
+    assert data["metadata"]["lease_checkout"]["lease_issued"] is True
 
 
 def test_lease_issue_denied_returns_decision_shape(vault_with_policy, tmp_path, monkeypatch):

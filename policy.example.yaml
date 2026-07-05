@@ -1,52 +1,50 @@
-# ──────────────────────────────────────────────────────────────
-#  Hermes Vault Policy — v1 (legacy), v2 (per-service actions),
-#  and agent-level capabilities
-# ──────────────────────────────────────────────────────────────
+# Hermes Vault policy example
 #
-#  v1 format (still supported):
-#    services is a flat list — agent gets all actions on every listed service.
-#    capabilities omitted → agent implicitly gets all capabilities.
+# v1 format is still supported:
+#   services is a flat list, so the agent gets all actions on every listed
+#   service. Omitted capabilities are implicitly granted for backward
+#   compatibility.
 #
-#  v2 format:
-#    services is a dict keyed by service name.  Each entry specifies:
-#      actions:       list of allowed actions
-#                     (get_credential, get_env, verify, metadata, rotate, delete)
-#      max_ttl_seconds: optional per-service TTL cap (cannot exceed agent-level max)
+# v2 format is preferred:
+#   services is a map keyed by service name. Each service can set explicit
+#   actions, a per-service TTL cap, and v0.19 lease requirements.
 #
-#  Capabilities (agent-level, not scoped to a service):
-#    list_credentials, scan_secrets, export_backup, import_credentials
-#    If omitted, all capabilities are implicitly granted (backward compat).
-#    When set, only listed capabilities are allowed.
+# Common actions:
+#   get_credential, get_env, verify, metadata, rotate, delete,
+#   issue_lease, list_leases, show_lease, renew_lease, revoke_lease
 #
-#  Both formats can coexist across different agents in the same file.
-# ──────────────────────────────────────────────────────────────
+# Agent-level capabilities:
+#   list_credentials, scan_secrets, export_backup, import_credentials
 
 agents:
-  # ── v1 legacy agent (flat list, all capabilities) ──────────
+  # Legacy-compatible agent. Keep this narrow in real deployments.
   hermes:
     services: [openai, anthropic, minimax, github]
     raw_secret_access: false
     ephemeral_env_only: true
     require_verification_before_reauth: true
     max_ttl_seconds: 1800
-    # capabilities omitted → implicit grant of all capabilities
 
-  # ── v2 agent with restricted actions ───────────────────────
+  # v0.19 control-plane pattern: explainable access, lease checkout, and
+  # metadata-only review before env materialization.
   dwight:
     services:
       openai:
-        actions: [get_credential, get_env, verify, metadata]
+        actions: [get_env, verify, metadata, issue_lease, list_leases, show_lease]
         max_ttl_seconds: 900
+        require_lease_for_env: true
+        require_lease_purpose: true
       github:
         actions: [get_env, verify, metadata]
-        # no max_ttl_seconds — inherits agent-level default
+        max_ttl_seconds: 600
     raw_secret_access: false
     ephemeral_env_only: true
     require_verification_before_reauth: true
+    require_lease_for_env: true
+    require_lease_purpose: true
     max_ttl_seconds: 900
-    # capabilities omitted → implicit grant of all capabilities
 
-  # ── v2 agent with restricted capabilities ──────────────────
+  # Restricted capability agent.
   pam:
     services:
       google:
@@ -56,7 +54,6 @@ agents:
     ephemeral_env_only: true
     require_verification_before_reauth: true
     max_ttl_seconds: 900
-    # Explicit capabilities — only these are allowed.
     capabilities: [list_credentials, scan_secrets]
 
 managed_paths:

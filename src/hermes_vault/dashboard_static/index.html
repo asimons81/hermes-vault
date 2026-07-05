@@ -53,6 +53,7 @@
           <button class="nav-item" data-view="onboarding">Onboarding</button>
           <button class="nav-item" data-view="credentials">Credentials</button>
           <button class="nav-item" data-view="policy">Policy</button>
+          <button class="nav-item" data-view="command">Command Center</button>
           <button class="nav-item" data-view="leases">Leases</button>
           <button class="nav-item" data-view="audit">Audit</button>
           <button class="nav-item" data-view="operations">Operations</button>
@@ -163,6 +164,109 @@
               <div id="agent-list" class="stack"></div>
             </section>
           </div>
+        </section>
+
+        <section id="command" class="view">
+          <div class="command-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Agent Context</h2>
+                <button class="ghost-button" type="button" data-action="agent-context">Load</button>
+              </div>
+              <div class="form-grid compact-form">
+                <label>
+                  <span>Agent</span>
+                  <input id="agent-context-agent" value="hermes" />
+                </label>
+              </div>
+              <div id="agent-context-summary" class="summary-grid compact"></div>
+              <div id="agent-context-services" class="stack command-stack"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Policy Explain</h2>
+                <button class="ghost-button" type="button" data-action="policy-explain">Run</button>
+              </div>
+              <div class="form-grid command-form">
+                <label>
+                  <span>Agent</span>
+                  <input id="policy-explain-agent" value="hermes" />
+                </label>
+                <label>
+                  <span>Service</span>
+                  <input id="policy-explain-service" placeholder="openai" />
+                </label>
+                <label>
+                  <span>Action</span>
+                  <select id="policy-explain-action">
+                    <option value="get_env">Get Env</option>
+                    <option value="metadata">Metadata</option>
+                    <option value="verify">Verify</option>
+                    <option value="issue_lease">Issue Lease</option>
+                    <option value="list_leases">List Leases</option>
+                    <option value="show_lease">Show Lease</option>
+                  </select>
+                </label>
+                <label>
+                  <span>TTL</span>
+                  <input id="policy-explain-ttl" inputmode="numeric" placeholder="900" />
+                </label>
+              </div>
+              <div id="policy-explain-summary" class="summary-grid compact"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Access Request</h2>
+                <button class="primary-button" type="button" data-action="request-access">Request</button>
+              </div>
+              <div class="form-grid command-form">
+                <label>
+                  <span>Agent</span>
+                  <input id="request-agent" value="hermes" />
+                </label>
+                <label>
+                  <span>Service</span>
+                  <input id="request-service" placeholder="openai" />
+                </label>
+                <label>
+                  <span>Alias</span>
+                  <input id="request-alias" value="default" />
+                </label>
+                <label>
+                  <span>TTL</span>
+                  <input id="request-ttl" inputmode="numeric" placeholder="900" />
+                </label>
+                <label class="wide">
+                  <span>Purpose</span>
+                  <input id="request-purpose" placeholder="deployment check, test run, incident response" />
+                </label>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Approval Inbox</h2>
+                <button class="ghost-button" type="button" data-action="requests-refresh">Refresh</button>
+              </div>
+              <div id="request-inbox" class="table request-table"></div>
+            </section>
+            <section class="panel command-wide">
+              <div class="panel-head">
+                <h2>Recovery Drill</h2>
+                <button class="primary-button" type="button" data-action="recovery-drill" data-secret-action="true">Run Drill</button>
+              </div>
+              <div class="form-grid compact-form">
+                <label>
+                  <span>Backup Path</span>
+                  <input id="recovery-drill-path" placeholder="/path/to/vault-backup.json" />
+                </label>
+              </div>
+              <div id="recovery-drill-summary" class="summary-grid compact"></div>
+            </section>
+          </div>
+          <section class="panel output-panel">
+            <div class="panel-head"><h2>Command Output</h2></div>
+            <pre id="command-output">No command has run yet.</pre>
+          </section>
         </section>
 
         <section id="leases" class="view">
