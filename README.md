@@ -4,18 +4,17 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.19.0 is the Agent Control Plane release. Hermes Vault can now explain policy decisions before access, require leases for env handoffs, route requests through an auditable approval queue, generate redacted agent-context manifests, and prove recovery posture through drills and incident bundles.
+v0.20.0 is the Hermes Secret Source Plugin release. Hermes Vault can now materialize mapped startup credentials from explicit `hv://` refs while keeping startup secrets, policy, and MCP access separated.
 
-## What's New in 0.19.0
+## What's New in 0.20.0
 
-v0.19.0 makes Hermes Vault harder to misuse without widening the secret-exposure boundary.
+v0.20.0 adds a standalone Hermes Secret Source plugin without widening the secret-exposure boundary.
 
-- `policy explain` and `policy simulate` show allow/deny reasons, action gates, TTL ceilings, raw-secret boundaries, lease requirements, and next steps before an agent asks for material.
-- Lease-enforced handoffs add `require_lease_for_env`, `require_lease_purpose`, and `lease checkout` so env materialization can be bound to a short-lived purpose.
-- Access requests now have a durable lifecycle: request, list, inspect, approve, deny, optional lease issuance, audit entries, dashboard inbox, and MCP request creation.
-- Agent-context manifests summarize policy, credentials, leases, and pending requests for one agent without decrypting or exposing secret payloads.
-- Recovery drills and incident bundles produce redacted evidence for backup health, restore dry-run posture, policy hash, audit slices, requests, leases, and runtime metadata.
-- The dashboard Command Center and MCP resources (`vault://agent-context`, `vault://policy-explain`, `vault://requests`, `vault://recovery`) expose the same metadata-first control plane.
+- Hermes Vault now ships the mapped-only `hermes_vault` Secret Source plugin for startup-time env materialization.
+- The plugin resolves explicit `ENV_VAR=hv://service` and `ENV_VAR=hv://service?alias=name` refs through a non-interactive `hermes-vault secret-source fetch` endpoint.
+- Startup fetches use Hermes `run_secret_cli()`, protect `HERMES_VAULT_PASSPHRASE`, omit empty values, and keep partial success as warnings instead of hard failure.
+- MCP remains the in-loop agent control plane, while Secret Source is only for bootstrap credentials before Hermes starts using tools.
+- Recovery drills, policy explainability, lease checks, and redacted operator surfaces remain in place for the control plane release work.
 
 ## What It Does
 
@@ -48,10 +47,10 @@ Hermes Vault runs natively on Windows -- no WSL required.
 
 ```powershell
 # Install with uv (recommended)
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.19.0
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.20.0
 
 # Or with pipx
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.19.0
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.20.0
 
 # Or with pip (editable dev install)
 python -m venv .venv
@@ -198,7 +197,7 @@ When `--redact-source` is used, only successfully imported env lines are comment
 
 ## Hermes Vault Console
 
-Hermes Vault Console, introduced in v0.8.0 and expanded through v0.19.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
+Hermes Vault Console, introduced in v0.8.0 and expanded through v0.20.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
 
 Launch it from the same machine that owns the vault:
 
@@ -228,7 +227,7 @@ Screenshot set captured with a temporary demo vault and fake/demo credentials on
 - [Recovery Posture view](docs/assets/v0.8.0-dashboard/dashboard-recovery-posture.png)
 - [Operations Panel view](docs/assets/v0.8.0-dashboard/dashboard-operations.png)
 
-The screenshots and launch notes above are the legacy v0.8.0 baseline. They still document the local-only, token-guarded safety boundary, but the dashboard has grown since then and the v0.19.0 Command Center needs a fresh screenshot set before publishing updated launch visuals.
+The screenshots and launch notes above are the legacy v0.8.0 baseline. They still document the local-only, token-guarded safety boundary, but the dashboard has grown since then and the v0.20.0 launch visuals need a fresh screenshot set before publishing updated images.
 
 ## MCP Server
 
@@ -282,6 +281,36 @@ The same `policy.yaml` that gates CLI access also gates MCP access. The bound-ag
 | `oauth_refresh` | Refresh an OAuth access token using stored refresh token | `action:rotate` |
 
 MCP access is brokered through policy-gated tools. Prefer `get_ephemeral_env` for TTL-bounded environment materialization instead of direct raw-secret handling.
+
+## Hermes Secret Source Plugin
+
+Hermes Vault also ships a standalone Hermes Secret Source plugin under
+`plugins/hermes-vault-secret-source/`. Use it when Hermes should materialize
+explicit provider env vars at process startup. MCP remains the in-loop control
+plane for agent actions, while Secret Source is only for bootstrap credentials:
+
+```yaml
+secrets:
+  sources: [hermes_vault]
+  hermes_vault:
+    enabled: true
+    binary: hermes-vault
+    agent: hermes
+    ttl_seconds: 900
+    timeout_seconds: 30
+    home: ~/.hermes/hermes-vault-data
+    policy: ~/.hermes/hermes-vault-data/policy.yaml
+    env:
+      OPENAI_API_KEY: hv://openai
+      GITHUB_TOKEN: hv://github?alias=work
+```
+
+Keep `HERMES_VAULT_PASSPHRASE` available to the Hermes process as a bootstrap
+secret. The plugin is v1 mapped-only: no bulk export, no refresh, no write-back,
+and no mid-session secret API. The first Hermes process that installs or
+surfaces the plugin may not use it until the next Hermes process starts because
+plugin discovery happens after startup env loading. See
+[docs/hermes-secret-source-plugin.md](docs/hermes-secret-source-plugin.md).
 
 ### OAuth via MCP
 

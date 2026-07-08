@@ -42,7 +42,7 @@
     <!-- Hero Section -->
     <section class="hero section-pad reveal hero-reveal-1">
       <div class="hero-copy">
-        <p class="eyebrow">v0.19.0 &bull; Agent Control Plane &bull; explainable access</p>
+        <p class="eyebrow">v0.20.0 &bull; Hermes Secret Source Plugin &bull; startup credentials</p>
         <h1>From <span>.env</span> to safe agent access.</h1>
         <p class="lede">
           Bootstrap a messy plaintext env file into an encrypted local vault, explain every access decision, route approvals through an audit trail, bind env handoffs to leases, and prove recovery before the incident. Less key sprawl, fewer auth lies, fewer agent mistakes.
@@ -63,8 +63,8 @@
         <div class="hero-metrics" aria-label="Release and platform notes">
           <div class="metric-card">
             <span>Current Release</span>
-            <strong>0.19.0</strong>
-            <small>Agent Control Plane: policy explain, request approvals, lease checkout, agent context, recovery drills, and MCP control-plane metadata.</small>
+            <strong>0.20.0</strong>
+            <small>Mapped startup secrets through `hermes_vault`, with protected bootstrap passphrases, redacted errors, and MCP still handling in-loop access.</small>
           </div>
           <div class="metric-card">
             <span>Operator Loop</span>
@@ -284,8 +284,71 @@
           </figure>
         </div>
         <p class="gallery-note">
-          The published screenshot set below reflects the v0.18.0 console baseline and preserves the local-only, token-guarded boundary. The v0.19.0 Command Center needs a fresh capture set before those launch visuals replace this archive.
+          The published screenshot set below reflects the v0.18.0 console baseline and preserves the local-only, token-guarded boundary. The v0.20.0 release keeps this archive until a fresh capture set lands.
         </p>
+      </div>
+    </section>
+
+    <!-- Secret Source Plugin Section -->
+    <section class="section reveal" id="secret-source">
+      <div class="section-head">
+        <p class="eyebrow">Hermes Secret Source plugin</p>
+        <h2>Mapped startup credentials, not another in-loop agent API.</h2>
+        <p>
+          Hermes Vault now materializes explicit <code>hv://</code> refs at startup. MCP remains the in-loop agent control plane, while Secret Source is only for bootstrap credentials.
+        </p>
+      </div>
+
+      <div class="feature-grid">
+        <article class="feature-card">
+          <span class="feature-index">01</span>
+          <h3>Mapped only</h3>
+          <p>Use <code>ENV_VAR=hv://service</code> or <code>ENV_VAR=hv://service?alias=name</code>. No bulk export, no refresh, no write-back.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-index">02</span>
+          <h3>Non-interactive fetch</h3>
+          <p>The plugin shells out through Hermes <code>run_secret_cli()</code> to <code>hermes-vault secret-source fetch</code> with stdin closed.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-index">03</span>
+          <h3>Protected bootstrap</h3>
+          <p><code>HERMES_VAULT_PASSPHRASE</code> stays available to startup, empty secrets are omitted, and partial successes stay warnings.</p>
+        </article>
+      </div>
+
+      <div class="terminal-card" style="margin-top: 1.25rem;">
+        <div class="terminal-top">
+          <span>Sample config</span>
+        </div>
+        <pre><code>secrets:
+  sources: [hermes_vault]
+  hermes_vault:
+    enabled: true
+    binary: hermes-vault
+    agent: hermes
+    ttl_seconds: 900
+    timeout_seconds: 30
+    home: ~/.hermes/hermes-vault-data
+    policy: ~/.hermes/hermes-vault-data/policy.yaml
+    env:
+      OPENAI_API_KEY: hv://openai
+      GITHUB_TOKEN: hv://github?alias=work</code></pre>
+      </div>
+
+      <div class="install-notes" style="margin-top: 1.25rem;">
+        <article class="note-card">
+          <h3>Migration path</h3>
+          <p>Move mapped startup credentials out of <code>~/.hermes/.env</code> and into the plugin config. Leave only bootstrap vars like the passphrase in the startup environment.</p>
+        </article>
+        <article class="note-card">
+          <h3>Discovery timing</h3>
+          <p>The first Hermes process that installs or discovers the plugin may not use it until the next Hermes process starts because plugin discovery happens after startup env loading.</p>
+        </article>
+        <article class="note-card">
+          <h3>Security posture</h3>
+          <p>Non-interactive fetch, protected bootstrap passphrase, no empty overrides, no bulk export, and redacted errors on partial or denied startup attempts.</p>
+        </article>
       </div>
     </section>
 
@@ -313,7 +376,7 @@
                 <span>Production Install</span>
                 <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
               </div>
-              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.19.0
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.20.0
 hermes-vault bootstrap --from-env .env --agent hermes --dry-run
 hermes-vault bootstrap --from-env .env --agent hermes
 hermes-vault policy explain hermes openai --action get_env
@@ -369,8 +432,8 @@ uv run pytest tests/ -q</code></pre>
       <div class="release-timeline">
         <article class="release-featured">
           <div class="release-badge">Current Release</div>
-          <h3>v0.19.0</h3>
-          <p>Agent Control Plane: explainable policy, access requests, approval decisions, lease checkout, redacted agent context, recovery drills, incident bundles, dashboard Command Center, and MCP control-plane resources.</p>
+          <h3>v0.20.0</h3>
+          <p>Hermes Secret Source Plugin: mapped startup env materialization, protected bootstrap passphrases, non-interactive fetches, redacted errors, and MCP kept for in-loop access.</p>
         </article>
 
         <div class="release-list">

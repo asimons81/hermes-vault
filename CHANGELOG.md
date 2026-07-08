@@ -1,6 +1,26 @@
 # Changelog
 
-## 0.19.0 -- Agent Control Plane
+## 0.20.0 -- Hermes Secret Source Plugin
+
+### Added
+
+- Standalone Hermes Secret Source plugin under `plugins/hermes-vault-secret-source/`.
+- Non-interactive `hermes-vault secret-source fetch` endpoint for mapped, read-only startup env materialization.
+- Secret Source CLI, plugin, conformance, and fake-CLI contract tests.
+- Explicit startup mapping support for `ENV_VAR=hv://service` and `ENV_VAR=hv://service?alias=name` refs.
+
+### Changed
+
+- Version surfaces now report `0.20.0` in `pyproject.toml`, `src/hermes_vault/__init__.py`, and site release copy.
+- README, operator docs, threat model, plugin docs, and site copy now present Secret Source as startup-only while MCP remains the in-loop agent control plane.
+- The plugin keeps `HERMES_VAULT_PASSPHRASE` protected, omits empty values, and keeps partial success as warnings instead of hard failures.
+
+### Verification
+
+- Focused suites: `python -m pytest tests/test_secret_source_cli.py plugins/hermes-vault-secret-source/tests tests/test_cli.py tests/test_broker.py tests/test_config.py tests/test_redaction.py -q --tb=short`
+- Full release validation: `python -m pytest -q --tb=short`
+- Upstream Hermes conformance: `tests.secret_sources.conformance.SecretSourceConformance` against the installed Hermes Agent package
+- Manual smoke: isolated vault startup fetches for missing passphrase, valid mapped secret, alias ref, empty secret, denied policy, malformed ref, and closed-stdin no-prompt behavior
 
 ### Added
 

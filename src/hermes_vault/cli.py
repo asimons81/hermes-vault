@@ -68,6 +68,8 @@ _typer_app = typer.Typer(
 )
 broker_app = typer.Typer(help="Broker operations.")
 _typer_app.add_typer(broker_app, name="broker")
+secret_source_app = typer.Typer(help="Hermes Secret Source integration.")
+_typer_app.add_typer(secret_source_app, name="secret-source")
 policy_app = typer.Typer(help="Policy diagnostics and maintenance.")
 _typer_app.add_typer(policy_app, name="policy")
 policy_pack_app = typer.Typer(help="Built-in policy pack templates.")
@@ -241,6 +243,24 @@ def build_services(prompt: bool = False) -> tuple[Vault, PolicyEngine, Broker, V
     broker = Broker(vault=vault, policy=policy, verifier=verifier, audit=audit)
     mutations = VaultMutations(vault=vault, policy=policy, audit=audit)
     return vault, policy, broker, mutations
+
+
+def _secret_source_error_payload(kind: str, message: str) -> dict:
+    from hermes_vault.secret_source import SECRET_SOURCE_RESULT_VERSION
+    from hermes_vault.logging_redaction import redact_text
+
+    return {
+        "ok": False,
+        "version": SECRET_SOURCE_RESULT_VERSION,
+        "secrets": {},
+        "warnings": {},
+        "errors": {
+            "__runtime__": {
+                "kind": kind,
+                "message": redact_text(message),
+            }
+        },
+    }
 
 
 def _handle_mutation_error(result, success_msg: str | None = None) -> None:
@@ -1846,6 +1866,56 @@ def broker_env(
         console.print_json(data=decision.model_dump(mode="json"))
         raise typer.Exit(code=1)
     console.print_json(data=decision.model_dump(mode="json"))
+
+
+@secret_source_app.command("fetch", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def secret_source_fetch(
+    ctx: typer.Context,
+    agent: str = typer.Option("hermes", "--agent", help="Agent ID requesting mapped startup env."),
+    ttl: int = typer.Option(900, "--ttl", help="Requested TTL for policy evaluation."),
+    format: str = typer.Option("json", "--format", help="Output format. Only json is supported."),
+) -> None:
+    """Resolve mapped Hermes Secret Source bindings without prompting.
+
+    Bindings are positional values after ``--``:
+    ``ENV_VAR=hv://service`` or ``ENV_VAR=hv://service?alias=name``.
+    """
+    if format != "json":
+        click.echo(json.dumps(_secret_source_error_payload("REF_INVALID", "--format must be json"), sort_keys=True))
+        raise typer.Exit(code=2)
+    bindings = list(ctx.args or [])
+    if not bindings:
+        click.echo(json.dumps(_secret_source_error_payload("REF_INVALID", "provide at least one ENV_VAR=hv://service binding"), sort_keys=True))
+        raise typer.Exit(code=1)
+
+    try:
+        settings = get_settings()
+        policy = PolicyEngine.from_yaml(settings.effective_policy_path)
+        passphrase = resolve_passphrase(prompt=False, profile_name=settings.profile_name)
+        if not settings.db_path.exists() or not settings.salt_path.exists():
+            click.echo(json.dumps(_secret_source_error_payload("NOT_CONFIGURED", "Hermes Vault is not initialized."), sort_keys=True))
+            raise typer.Exit(code=1)
+        vault = Vault(settings.db_path, settings.salt_path, passphrase)
+        from hermes_vault.secret_source import fetch_secret_source_bindings
+
+        report = fetch_secret_source_bindings(
+            vault=vault,
+            policy=policy,
+            agent_id=agent,
+            ttl=ttl,
+            bindings=bindings,
+        )
+    except MissingPassphraseError as exc:
+        click.echo(json.dumps(_secret_source_error_payload("NOT_CONFIGURED", str(exc)), sort_keys=True))
+        raise typer.Exit(code=1) from exc
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        click.echo(json.dumps(_secret_source_error_payload("INTERNAL", str(exc)), sort_keys=True))
+        raise typer.Exit(code=1) from exc
+
+    click.echo(json.dumps(report.as_dict(), sort_keys=True))
+    raise typer.Exit(code=0 if report.ok else 1)
 
 
 @lease_app.command("issue")

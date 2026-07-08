@@ -113,6 +113,27 @@ history and credential health. Audit entries never contain secrets.
 - Do not treat `agent_id` as authentication by itself
 - Do not share `agent_id` values across untrusted hosts
 
+## Secret Source Plugin Threat Model
+
+The Hermes Secret Source plugin is a startup-time env materialization path, not
+a new credential authority. It shells out through Hermes `run_secret_cli()` to
+`hermes-vault secret-source fetch` with argv lists and stdin closed. It never
+uses `shell=True`, never mutates `os.environ`, and never returns empty strings
+as credentials.
+
+The subprocess environment is allowlisted to Vault bootstrap/session/config vars
+such as `HERMES_VAULT_PASSPHRASE`, `HERMES_VAULT_HOME`, `HERMES_VAULT_POLICY`,
+`HERMES_VAULT_PROFILE`, and `HERMES_VAULT_DPAPI`. `PATH` and platform basics
+are handled by Hermes' shared helper, not treated as auth env vars by the
+plugin. `HERMES_VAULT_PASSPHRASE` is protected, never fetched as a secret, and
+partial success remains a warning-only condition as long as at least one usable
+credential was returned.
+
+Residual risk: any Hermes process that can read the Vault bootstrap passphrase
+and has policy access for the configured `agent` can materialize the mapped
+env vars at startup. Mitigate this by using the narrowest agent policy and
+explicit mappings only.
+
 ## OAuth Threat Model
 
 ### Threats addressed

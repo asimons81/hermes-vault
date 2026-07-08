@@ -1,0 +1,2 @@
+name: hermes-vault-secret-source
+description: Resolve explicit Hermes env-var mappings from Hermes Vault.

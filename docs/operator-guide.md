@@ -8,6 +8,49 @@
 4. Edit `~/.hermes/hermes-vault-data/policy.yaml` for the real agent allowlists.
 5. Back up both `vault.db` and `master_key_salt.bin` together. Losing the salt makes the vault unreadable.
 
+## v0.20.0 secret-source startup runbook
+
+Hermes Vault now materializes mapped startup credentials through the standalone
+Hermes Secret Source plugin. Use this when Hermes needs explicit env vars at
+process startup, not when the agent is already in-loop.
+
+```bash
+hermes-vault --no-banner secret-source fetch --agent hermes --ttl 900 --format json -- \
+  OPENAI_API_KEY=hv://openai \
+  GITHUB_TOKEN=hv://github?alias=work
+```
+
+```yaml
+secrets:
+  sources: [hermes_vault]
+  hermes_vault:
+    enabled: true
+    binary: hermes-vault
+    agent: hermes
+    ttl_seconds: 900
+    timeout_seconds: 30
+    home: ~/.hermes/hermes-vault-data
+    policy: ~/.hermes/hermes-vault-data/policy.yaml
+    env:
+      OPENAI_API_KEY: hv://openai
+      GITHUB_TOKEN: hv://github?alias=work
+```
+
+- Keep `HERMES_VAULT_PASSPHRASE` available to the Hermes startup process. The
+  plugin protects it from being overwritten by any secret source.
+- Use only mapped `hv://service` and `hv://service?alias=name` refs. No bulk
+  export, no background refresh, and no write-back.
+- The fetch path is non-interactive, uses `run_secret_cli()`, and keeps partial
+  success as warnings instead of failing the whole startup when at least one
+  usable secret is returned.
+- Empty values are omitted. If zero usable secrets remain, the fetch result is
+  an error with a structured `error_kind`.
+- The first Hermes process that installs or discovers the plugin may not use it
+  until the next Hermes process starts because plugin discovery happens after
+  startup env loading.
+- MCP remains the in-loop control plane for agent actions. Secret Source is only
+  for bootstrap credentials.
+
 ## v0.19.0 agent-control-plane runbook
 
 This release makes agent access explainable, requestable, lease-bound, and recoverable without exposing raw secrets:
@@ -353,6 +396,35 @@ MCP is useful, but it isn't the default path for everything.
 
 Bottom line: use MCP when you want Hermes to operate as an in-loop client of the vault. Use the CLI when you want the boring, explicit path that is easier to audit and harder to screw up.
 
+## Hermes Secret Source Plugin
+
+Use the Secret Source plugin when Hermes needs provider env vars during process
+startup, before in-loop MCP tools are available. Copy
+`plugins/hermes-vault-secret-source/` to `~/.hermes/plugins/hermes-vault/` and
+configure explicit mappings:
+
+```yaml
+secrets:
+  sources: [hermes_vault]
+  hermes_vault:
+    enabled: true
+    binary: hermes-vault
+    agent: hermes
+    ttl_seconds: 900
+    home: ~/.hermes/hermes-vault-data
+    env:
+      OPENAI_API_KEY: hv://openai
+      GITHUB_TOKEN: hv://github?alias=work
+```
+
+The Hermes process still needs `HERMES_VAULT_PASSPHRASE` or the matching
+profile passphrase env var so the local vault can be opened. Keep provider
+secrets out of `.env`; leave only the Vault bootstrap/config vars there.
+
+V1 is intentionally narrow: mapped refs only, no bulk export, no refresh,
+no write-back, and no mid-session secret API. Empty values are skipped instead
+of returned, and partial success reports warnings for skipped refs.
+
 ## Maintenance
 
 `hermes-vault maintain` is the scheduled run for token refresh and vault hygiene. It combines proactive OAuth refresh, health checks, stale-verification checks, and backup-age warnings in one report.
@@ -372,7 +444,7 @@ hermes-vault maintain --print-schedule
 
 ## Dashboard
 
-`hermes-vault dashboard` starts the local Hermes Vault Console introduced in v0.8.0 and expanded through v0.19.0. Use it for daily operator visibility, policy explanation, request review, and bounded checks. Use the CLI for setup, imports, backups, policy edits, credential mutation, destructive recovery, release work, and any operation where you want an explicit command transcript.
+`hermes-vault dashboard` starts the local Hermes Vault Console introduced in v0.8.0 and expanded through v0.20.0. Use it for daily operator visibility, policy explanation, request review, and bounded checks. Use the CLI for setup, imports, backups, policy edits, credential mutation, destructive recovery, release work, and any operation where you want an explicit command transcript.
 
 ```bash
 hermes-vault dashboard

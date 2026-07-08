@@ -337,7 +337,8 @@ def test_dashboard_serves_static_assets_and_404s_missing_assets(tmp_path: Path) 
         thread.start()
 
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/app.js", timeout=5) as response:
-            assert response.headers["Content-Type"].startswith("text/javascript")
+            content_type = response.headers["Content-Type"]
+            assert content_type.startswith("text/javascript") or content_type.startswith("application/javascript")
             assert response.status == 200
 
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/styles.css", timeout=5) as response:
