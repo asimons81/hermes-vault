@@ -44,8 +44,22 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Run full test suite
-        run: python -m pytest tests plugins/hermes-vault-secret-source/tests -q --tb=short
+      - name: Run core test suite
+        run: python -m pytest tests -q --tb=short --junitxml=core-test-results.xml
+
+      - name: Run Secret Source plugin tests
+        if: always()
+        run: python -m pytest plugins/hermes-vault-secret-source/tests -q --tb=short --junitxml=plugin-test-results.xml
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: |
+            core-test-results.xml
+            plugin-test-results.xml
+          if-no-files-found: warn
 
   quality:
     name: Static analysis
@@ -67,11 +81,24 @@ jobs:
           python -m pip install -e ".[dev]" ruff mypy
 
       - name: Run Ruff
-        run: ruff check .
+        shell: bash
+        run: ruff check . --output-format=concise | tee ruff-report.txt
 
       - name: Run mypy baseline
+        if: always()
         continue-on-error: true
-        run: mypy src/hermes_vault
+        shell: bash
+        run: mypy src/hermes_vault | tee mypy-report.txt
+
+      - name: Upload static-analysis reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-analysis-reports
+          path: |
+            ruff-report.txt
+            mypy-report.txt
+          if-no-files-found: warn
 
   package:
     name: Build and install package
@@ -128,7 +155,15 @@ jobs:
           python -m pip install -e . pip-audit
 
       - name: Audit installed dependencies
-        run: pip-audit --local
+        run: pip-audit --local --format=json --output dependency-audit.json
+
+      - name: Upload dependency audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-audit-report
+          path: dependency-audit.json
+          if-no-files-found: warn
 
   secret-scan:
     name: Secret scan
