@@ -25,8 +25,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.0.0",
+  "build>=1.2.1",
   "mcp>=1.0.0",
+  "mypy>=1.10.0",
+  "pip-audit>=2.7.0",
+  "pytest>=8.0.0",
+  "pytest-cov>=5.0.0",
+  "ruff>=0.12.0",
 ]
 # DPAPI support. Required at runtime for Windows DPAPI; absent on
 # POSIX installs. The import is deferred (see hermes_vault/dpapi.py)
@@ -40,6 +45,21 @@ hermes-vault = "hermes_vault.cli:app"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["release-readiness", "site"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+exclude = ["plugins/hermes-vault-secret-source/"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
