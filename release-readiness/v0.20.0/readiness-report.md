@@ -3,7 +3,7 @@
 - Release: `0.20.0`
 - Codename: Hermes Secret Source Plugin
 - Release commit: `32ecf03b3a1c946a990bda1d0ae699a2c1bd287a`
-- Report status: Pending independent CI validation
+- Report status: All blocking CI checks pass — awaiting security manual checks
 
 ## Scope
 
@@ -36,7 +36,22 @@ The `chore/repo-hardening` branch adds independent GitHub checks for:
 
 ### Results
 
-#### Blocking Typer/Click compatibility fix
+#### Windows test fixes
+
+Two pre-existing Windows-only failures were fixed in this PR:
+
+1. **`test_import_from_env_redact_source_only_imported_lines`** — Rich's
+   Console wraps output at 80 columns on non-TTY output. The long Windows
+   `tmp_path` pushed the tail of the output line across a word-wrap
+   boundary, so the substring `"1 skipped line"` spanned a newline.
+   Changed assertion to `"1 skipped"` which is immune to line-wrapping.
+
+2. **`test_v2_policy_normalizes_service_names`** — Used hardcoded
+   `Path("/tmp/_test_v2_norm.yaml")` which resolves to a relative path on
+   Windows. Changed to use `tmp_path` (pytest fixture) for a platform-
+   appropriate temp directory.
+
+Reference: commit `70a9d44` of `chore/repo-hardening` branch.
 
 Typer 0.27.0+ vendored its own `Exit` exception class
 (`typer._click.exceptions.Exit` with attribute `.exit_code`) that is NOT a
@@ -56,19 +71,22 @@ click 8.x.
 Reference: commit `HEAD` of `chore/repo-hardening` branch.
 
 - [x] Linux tests pass on Python 3.11  
-  Local: 796 passed, 1 skipped (timed out DPAPI test)  
-  CI: 796 passed, 1 failed → fixed with ANSI strip in second push  
-  Final: 797 passed, 0 failed ✅
+  CI run: `29471789038`  
+  Core: 797 passed, 0 failed in 48.25s  
+  Secret Source plugin: 14 passed  
+  ✅
 - [x] Linux tests pass on Python 3.12  
-  CI: 797 passed, 0 failed ✅
-- [ ] Windows tests pass on Python 3.11  
-  794 passed, 2 failed — pre-existing Windows path issues (not typer-related):
-  1. `test_import_from_env_redact_source_only_imported_lines` — output rendering differs
-  2. `test_v2_policy_normalizes_service_names` — uses `/tmp/` path  
-  CI: 2 failed ❌
-- [ ] Windows tests pass on Python 3.12  
-  Same 2 pre-existing Windows path failures as 3.11  
-  CI: 2 failed ❌
+  Core: 797 passed, 0 failed in 50.83s  
+  Secret Source plugin: 14 passed  
+  ✅
+- [x] Windows tests pass on Python 3.11  
+  Core: 796 passed, 1 skipped (DPAPI symlink), 0 failed in 7m 58s  
+  Secret Source plugin: 14 passed  
+  ✅
+- [x] Windows tests pass on Python 3.12  
+  Core: 796 passed, 1 skipped (DPAPI symlink), 0 failed in 3m 42s  
+  Secret Source plugin: 14 passed  
+  ✅
 - [x] Ruff passes  
   `ruff check . --output-format=concise` → "All checks passed!"
 - [x] mypy findings reviewed and triaged  
@@ -83,8 +101,8 @@ Reference: commit `HEAD` of `chore/repo-hardening` branch.
   starlette, python-multipart, httplib2, msgpack, pynacl, pip, setuptools) --
   nothing in hermes-vault's declared runtime deps. Project deps:
   cryptography, mcp, pydantic, PyYAML, rich, typer, pathspec, requests.
-- [ ] Gitleaks passes or findings are documented as verified test fixtures  
-  CI-run only (full history scan); local scan requires Gitleaks installation
+- [x] Gitleaks passes or findings are documented as verified test fixtures  
+  CI: full-history scan passed on run `29471789038` (Secret scan job: success)
 
 ## Security-boundary review
 
