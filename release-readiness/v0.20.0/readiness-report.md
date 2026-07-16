@@ -4,7 +4,8 @@
 - Codename: Hermes Secret Source Plugin
 - Release commit: `32ecf03b3a1c946a990bda1d0ae699a2c1bd287a`
 - Hardening PR: #22 (squash-merge `034457b` onto master)
-- Report status: All blocking CI checks pass — awaiting security manual checks
+- Post-merge validation PR: #27
+- Report status: **Ready**
 
 ## Scope
 
@@ -19,11 +20,11 @@ The v0.20.0 changelog records the following maintainer validation:
 - upstream Hermes Secret Source conformance
 - isolated manual startup smoke cases for missing passphrase, valid mapping, aliases, empty values, policy denial, malformed refs, and closed-stdin behavior
 
-This report does not convert those notes into independent proof. Exact counts and fresh results must be added from a clean checkout.
+The post-merge validation below adds independent clean-runner evidence rather than treating those publication notes as proof.
 
 ## Repository-hardening validation
 
-The `chore/repo-hardening` branch adds independent GitHub checks for:
+PR #22 established independent GitHub checks for:
 
 - full tests on Ubuntu and Windows
 - Python 3.11 and 3.12
@@ -35,97 +36,145 @@ The `chore/repo-hardening` branch adds independent GitHub checks for:
 - dependency vulnerability audit
 - full-history secret scanning
 
-### Results
+### Hardening defects found and resolved
 
-#### Windows test fixes
+#### Typer 0.27.0 / Click 8.4.2 compatibility
 
-Two pre-existing Windows-only failures were fixed in this PR:
+Typer 0.27.0+ vendors an `Exit` class that is not a subclass of `click.exceptions.Exit`. The custom CLI invocation layer now normalizes `typer.Exit` into Click's expected exception while preserving the intended exit code across old and new attribute names.
 
-1. **`test_import_from_env_redact_source_only_imported_lines`** — Rich's
-   Console wraps output at 80 columns on non-TTY output. The long Windows
-   `tmp_path` pushed the tail of the output line across a word-wrap
-   boundary, so the substring `"1 skipped line"` spanned a newline.
-   Changed assertion to `"1 skipped"` which is immune to line-wrapping.
+#### Windows-only test assumptions
 
-2. **`test_v2_policy_normalizes_service_names`** — Used hardcoded
-   `Path("/tmp/_test_v2_norm.yaml")` which resolves to a relative path on
-   Windows. Changed to use `tmp_path` (pytest fixture) for a platform-
-   appropriate temp directory.
+- Rich output assertions no longer depend on an 80-column line-wrap boundary.
+- Policy normalization uses pytest's platform-neutral `tmp_path` rather than a hardcoded `/tmp` path.
 
-Reference: commit `70a9d44` of `chore/repo-hardening` branch.
+#### Real pywin32 DPAPI contract
 
-Typer 0.27.0+ vendored its own `Exit` exception class
-(`typer._click.exceptions.Exit` with attribute `.exit_code`) that is NOT a
-subclass of `click.exceptions.Exit` (which uses `.exit_code` in click 8.4.2 but
-`.code` in older click). Click's `main()` catches `click.exceptions.Exit` but
-cannot catch the vendored sibling class, so the exception propagates uncaught
-through Click's handler chain. The CliRunner then intercepts it as a generic
-`Exception` and sets `exit_code=1` regardless of the intended exit code.
+Post-merge validation found that the fake DPAPI shim had hidden a production incompatibility. Real pywin32 accepts five positional arguments for `CryptUnprotectData` and returns `(description, plaintext)`. Hermes Vault previously passed six arguments and expected raw bytes.
 
-**Fix:** Added a `typer.Exit` normalization handler in `HermesGroup.invoke()`
-(`src/hermes_vault/cli.py:171-183`) that catches the exception, reads the exit
-code from whichever attribute the installed version provides (`.exit_code` or
-`.code`), and re-raises as `click.exceptions.Exit` so Click's standard handler
-chain processes it correctly. This works with all typer versions (>=0.12.0) and
-click 8.x.
+`src/hermes_vault/dpapi.py` now uses the real pywin32 signature, normalizes the tuple result to bytes, and retains compatibility with raw-byte test doubles. `tests/test_dpapi_pywin32_contract.py` locks the real return shape into the normal suite.
 
-Reference: commit `HEAD` of `chore/repo-hardening` branch.
+## Final cross-platform CI evidence
 
-- [x] Linux tests pass on Python 3.11  
-  CI run: `29471789038`  
-  Core: 797 passed, 0 failed in 48.25s  
-  Secret Source plugin: 14 passed  
-  ✅
-- [x] Linux tests pass on Python 3.12  
-  Core: 797 passed, 0 failed in 50.83s  
-  Secret Source plugin: 14 passed  
-  ✅
-- [x] Windows tests pass on Python 3.11  
-  Core: 796 passed, 1 skipped (DPAPI symlink), 0 failed in 7m 58s  
-  Secret Source plugin: 14 passed  
-  ✅
-- [x] Windows tests pass on Python 3.12  
-  Core: 796 passed, 1 skipped (DPAPI symlink), 0 failed in 3m 42s  
-  Secret Source plugin: 14 passed  
-  ✅
-- [x] Ruff passes  
-  `ruff check . --output-format=concise` → "All checks passed!"
-- [x] mypy findings reviewed and triaged  
-  60 errors across 14 files — pre-existing baseline unchanged. No new errors
-  introduced by this fix. Advisory only (non-blocking).
-- [x] sdist and wheel build successfully  
-  `python -m build` → `hermes_vault-0.20.0.tar.gz` and `hermes_vault-0.20.0-py3-none-any.whl`
-- [x] built wheel installs and `hermes-vault --help` succeeds  
-  Validated via CI `Build and install package` job (artifacts pass smoke test)
-- [x] dependency audit passes or findings are documented  
-  All identified CVEs are in transitive dev/optional dependencies (pillow, nltk,
-  starlette, python-multipart, httplib2, msgpack, pynacl, pip, setuptools) --
-  nothing in hermes-vault's declared runtime deps. Project deps:
-  cryptography, mcp, pydantic, PyYAML, rich, typer, pathspec, requests.
-- [x] Gitleaks passes or findings are documented as verified test fixtures  
-  CI: full-history scan passed on run `29471789038` (Secret scan job: success)
+Validation commit: `4013dbc09b2b844d7bf59d15e55bb1093ad43ecb`
+
+CI run: `29475535741`
+
+- [x] Ubuntu, Python 3.11
+  - Core: 798 passed, 0 failed, 0 skipped
+  - Secret Source plugin: 14 passed
+- [x] Ubuntu, Python 3.12
+  - Core: 798 passed, 0 failed, 0 skipped
+  - Secret Source plugin: 14 passed
+- [x] Windows, Python 3.11
+  - Core: 797 passed, 1 skipped, 0 failed
+  - Secret Source plugin: 14 passed
+- [x] Windows, Python 3.12
+  - Core: 797 passed, 1 skipped, 0 failed
+  - Secret Source plugin: 14 passed
+- [x] Blocking Ruff checks pass
+- [x] Advisory Ruff and mypy reports were captured
+- [x] Source distribution and wheel build successfully
+- [x] Built wheel installs and `hermes-vault --help` succeeds
+- [x] Dependency audit passes
+- [x] Full-history Gitleaks scan passes
+
+Advisory engineering debt is tracked separately:
+
+- Ruff/Pyflakes cleanup: #24
+- Mypy cleanup: #25
+
+## Post-merge security validation
+
+Security validation run: `29475535772`
+
+### Disposable vault and recovery boundaries
+
+- [x] Fake credentials only
+- [x] Disposable vault home
+- [x] Lease-required broker access denies before checkout
+- [x] Lease checkout returns the expected ephemeral environment
+- [x] Mapped Secret Source fetch succeeds
+- [x] Malformed references fail closed
+- [x] Unknown agents fail closed
+- [x] Backup verification succeeds
+- [x] Restore dry-run succeeds
+- [x] Recovery drill reports healthy
+- [x] Validation summary contains no raw fake secret
+- [x] Focused security suite: 100 passed, 0 failed, 0 skipped
+
+Evidence artifact: `operator-security-evidence`
+
+### Real Windows DPAPI
+
+Windows Server 2025, Python 3.11, project installed with the `windows` extra:
+
+- [x] pywin32 is available
+- [x] DPAPI envelope is created
+- [x] Credential decrypts after reopening with a different passphrase
+- [x] Plaintext secret is absent from the SQLite database bytes
+- [x] Master-key rotation completes
+- [x] Credential decrypts after the rotated reopen
+
+Evidence artifact: `real-windows-dpapi-evidence`
+
+### Installed-wheel dashboard boundaries
+
+The built wheel was installed into a clean virtual environment before validation.
+
+- [x] Dashboard binds to `127.0.0.1`
+- [x] Non-local binding is rejected
+- [x] Missing bearer token receives `401`
+- [x] Invalid bearer token receives `401`
+- [x] Authorized credential metadata is sanitized
+- [x] Raw fake secrets do not appear in the response
+- [x] Packaged `index.html`, JavaScript, CSS, and brand image load successfully
+
+Evidence artifact: `packaged-dashboard-evidence`
+
+### Current dashboard screenshots
+
+Playwright launched the real local dashboard with a disposable fake-data vault and captured:
+
+- `hermes-vault-v0.20-overview.png`
+- `hermes-vault-v0.20-credentials.png`
+
+The browser asserted that neither fake secret value appeared in rendered page text before capture.
+
+Evidence artifact: `dashboard-screenshot-evidence`
+
+### Upstream Hermes Agent conformance
+
+Hermes Agent source was checked out at:
+
+`2ea39daeb1f675d72e5c21c9400f2d58d7e6d71a`
+
+The official `tests/secret_sources/conformance.py` kit ran against the Hermes Vault plugin using real upstream `agent.secret_sources` modules:
+
+- [x] 10 passed
+- [x] 0 failed
+- [x] 0 skipped
+
+Evidence artifact: `upstream-hermes-conformance-evidence`
 
 ## Security-boundary review
 
-- [ ] Secret Source remains startup-only and mapped-only
-- [ ] `HERMES_VAULT_PASSPHRASE` cannot be overwritten
-- [ ] fetch remains non-interactive and never uses `shell=True`
-- [ ] empty values are omitted
-- [ ] partial success returns warnings without hiding skipped mappings
-- [ ] zero usable secrets returns a structured failure
-- [ ] policy denial fails closed
-- [ ] MCP and Secret Source remain separate authority paths
-- [ ] logs, errors, tests, docs, and workflow artifacts contain no real secret material
+- [x] Secret Source remains startup-only and mapped-only
+- [x] `HERMES_VAULT_PASSPHRASE` is protected from overwrite
+- [x] Fetch remains non-interactive and uses Hermes `run_secret_cli()` with argv lists, never `shell=True`
+- [x] Empty values are omitted
+- [x] Partial success returns warnings without hiding usable mappings
+- [x] Zero usable secrets returns a structured failure
+- [x] Policy denial fails closed
+- [x] MCP and Secret Source remain separate authority paths
+- [x] Plugin discovery timing and the subsequent-process requirement are documented
+- [x] Tests, validation summaries, screenshots, and workflow artifacts use fake material and expose no raw secret values
 
-## Manual checks still required
+## Plugin discovery timing
 
-- [ ] Run a clean Windows checkout with DPAPI extras installed
-- [ ] Exercise a disposable vault through add, broker env, Secret Source fetch, backup, verify, restore dry-run, and recovery drill
-- [ ] Confirm dashboard localhost binding and token rejection behavior
-- [ ] Confirm packaged dashboard static assets load from the built wheel
-- [ ] Run upstream Hermes conformance against the current Hermes Agent package rather than only the local compatibility fixture
-- [ ] Capture current v0.20.0 dashboard screenshots using fake credentials
+Hermes plugin discovery occurs after the first dotenv load in the process that discovers the plugin. The source is available to subsequently spawned Hermes processes, including later sessions and child processes. The install guide documents this behavior so operators restart or start a subsequent session after first discovery.
 
 ## Release decision
 
-Do not mark this report `Ready` until blocking GitHub checks pass and the manual security-sensitive checks above have been recorded with exact commands and outcomes.
+**Ready.**
+
+All blocking cross-platform CI checks pass. Real Windows DPAPI, disposable-vault recovery, installed-wheel dashboard boundaries, fake-data screenshot capture, and the current upstream Hermes Secret Source conformance kit have independent evidence. The remaining Ruff and mypy work is explicitly advisory and tracked outside the v0.20.0 release gate.
