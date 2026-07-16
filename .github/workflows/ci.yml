@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+      - 'chore/**'
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run full test suite
+        run: python -m pytest tests plugins/hermes-vault-secret-source/tests -q --tb=short
+
+  quality:
+    name: Static analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install project and quality tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" ruff mypy
+
+      - name: Run Ruff
+        run: ruff check .
+
+      - name: Run mypy baseline
+        continue-on-error: true
+        run: mypy src/hermes_vault
+
+  package:
+    name: Build and install package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m build
+
+      - name: Smoke-test built wheel
+        shell: bash
+        run: |
+          python -m venv /tmp/hermes-vault-wheel-smoke
+          /tmp/hermes-vault-wheel-smoke/bin/python -m pip install --upgrade pip
+          /tmp/hermes-vault-wheel-smoke/bin/python -m pip install dist/*.whl
+          /tmp/hermes-vault-wheel-smoke/bin/hermes-vault --help
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-vault-distributions
+          path: dist/
+          if-no-files-found: error
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install project and audit tool
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pip-audit
+
+      - name: Audit installed dependencies
+        run: pip-audit --local
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
