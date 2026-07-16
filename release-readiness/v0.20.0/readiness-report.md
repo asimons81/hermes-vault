@@ -3,6 +3,7 @@
 - Release: `0.20.0`
 - Codename: Hermes Secret Source Plugin
 - Release commit: `32ecf03b3a1c946a990bda1d0ae699a2c1bd287a`
+- Hardening PR: #22 (squash-merge `034457b` onto master)
 - Report status: All blocking CI checks pass — awaiting security manual checks
 
 ## Scope
