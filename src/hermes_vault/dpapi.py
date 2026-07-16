@@ -60,20 +60,24 @@ def protect_master_key(plaintext_key: bytes) -> bytes:
     # Deferred import so pywin32 is a true optional dependency.
     import win32crypt  # noqa: PLC0415  -- intentional lazy import
 
-    # CryptProtectData accepts 6 positional args at runtime
-    # (data, entropy, reserved, prompt, prompt_flags, flags).
-    # Pyright's stub expects 5; the real pywin32 accepts 6.
-    return DPAPI_HEADER + win32crypt.CryptProtectData(  # type: ignore[call-arg]
+    # CryptProtectData accepts six positional args at runtime:
+    # data, description, optional entropy, reserved, prompt struct, flags.
+    return DPAPI_HEADER + win32crypt.CryptProtectData(
         plaintext_key, None, None, None, None, 0,
     )
 
 
 def unprotect_master_key(envelope: bytes) -> bytes:
-    """Unwrap a DPAPI envelope. Returns the original plaintext bytes.
+    """Unwrap a DPAPI envelope and return the original plaintext bytes.
+
+    Real pywin32 accepts five positional arguments for
+    ``CryptUnprotectData`` and returns ``(description, data)``. The small
+    compatibility branch also accepts a raw-bytes result from test doubles or
+    older wrappers so callers always receive bytes.
 
     Raises :class:`ValueError` if the envelope does not start with
     :data:`DPAPI_HEADER`. Raises :class:`RuntimeError` when DPAPI is
-    not usable here.
+    not usable here or the platform wrapper returns an unexpected shape.
     """
     if not is_available():
         raise RuntimeError(
@@ -85,9 +89,18 @@ def unprotect_master_key(envelope: bytes) -> bytes:
     # Deferred import so pywin32 is a true optional dependency.
     import win32crypt  # noqa: PLC0415  -- intentional lazy import
 
-    return win32crypt.CryptUnprotectData(
-        envelope[len(DPAPI_HEADER):], None, None, None, None, 0,
+    result = win32crypt.CryptUnprotectData(
+        envelope[len(DPAPI_HEADER):], None, None, None, 0,
     )
+    if isinstance(result, tuple):
+        if len(result) != 2:
+            raise RuntimeError("DPAPI returned an unexpected result shape.")
+        _description, plaintext = result
+    else:
+        plaintext = result
+    if not isinstance(plaintext, bytes):
+        raise RuntimeError("DPAPI returned non-byte plaintext.")
+    return plaintext
 
 
 def should_use_dpapi(salt_path: Path) -> bool:
