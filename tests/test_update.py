@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -129,7 +130,8 @@ def test_update_help_lists_check_flag() -> None:
     result = runner.invoke(_hermes_group, ["update", "--help"])
 
     assert result.exit_code == 0
-    assert "--check" in result.output
+    clean = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]").sub("", result.output)
+    assert "--check" in clean
 
 
 def test_update_runs_supported_install_method(monkeypatch) -> None:
