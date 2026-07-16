@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import os
 import tempfile
@@ -21,7 +22,13 @@ def main() -> None:
     previous = os.environ.get("HERMES_VAULT_DPAPI")
     os.environ["HERMES_VAULT_DPAPI"] = "1"
     try:
-        with tempfile.TemporaryDirectory(prefix="hermes-vault-dpapi-") as raw_home:
+        # sqlite3 connection context managers commit or roll back but do not
+        # guarantee immediate OS-handle release. Explicit collection below
+        # prevents Windows runner cleanup from racing delayed finalizers.
+        with tempfile.TemporaryDirectory(
+            prefix="hermes-vault-dpapi-",
+            ignore_cleanup_errors=True,
+        ) as raw_home:
             home = Path(raw_home)
             db_path = home / "vault.db"
             salt_path = home / "master_key_salt.bin"
@@ -55,6 +62,9 @@ def main() -> None:
             rendered = json.dumps(summary, sort_keys=True)
             assert FAKE_SECRET not in rendered
             print(json.dumps(summary, indent=2, sort_keys=True))
+
+            del rotated_secret, rotated, resolved, reopened, vault
+            gc.collect()
     finally:
         if previous is None:
             os.environ.pop("HERMES_VAULT_DPAPI", None)
