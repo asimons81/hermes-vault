@@ -104,6 +104,37 @@ jobs:
             dist/
           if-no-files-found: error
 
+  dashboard-screenshots:
+    name: Fake-data dashboard screenshots
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install project and browser tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Capture fake-data screenshots
+        run: python validation/capture_dashboard_screenshots.py
+
+      - name: Upload screenshot evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-screenshot-evidence
+          path: dashboard-screenshots/
+          if-no-files-found: error
+
   real-windows-dpapi:
     name: Real Windows DPAPI round trip
     runs-on: windows-latest
@@ -126,8 +157,10 @@ jobs:
       - name: Run real DPAPI validation
         shell: pwsh
         run: |
-          python validation/real_dpapi_validation.py |
-            Tee-Object -FilePath real-dpapi-validation.json
+          $output = python validation/real_dpapi_validation.py 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath real-dpapi-validation.json
+          if ($exitCode -ne 0) { exit $exitCode }
 
       - name: Upload DPAPI evidence
         if: always()
