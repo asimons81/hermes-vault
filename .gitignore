@@ -13,12 +13,36 @@ dist/
 .coverage
 htmlcov/
 .mypy_cache/
+.ruff_cache/
 .dmypy.json
 dmypy.json
 .caliber/
 typescript
 launch-video/*.mp4
 .DS_Store
+
+# Local environment and agent state
+.env
+.env.*
+!.env.example
+!.env.template
+.hermes/
+**/.hermes/
+
+# Vault state and key material
+vault.db
+vault.db-wal
+vault.db-shm
+*.sqlite
+*.sqlite3
+master_key_salt.bin
+salt.bin
+
+# Local recovery and incident output
+backups/
+incident-bundles/
+*.hvbackup
+*.hvbackup.*
 
 # Kanban release scaffolding (worktree-local, not part of the release)
 /dpapi-brief.md
