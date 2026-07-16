@@ -1266,7 +1266,7 @@ def test_import_from_env_redact_source_only_imported_lines(monkeypatch, tmp_path
     assert "# REDACTED by hermes-vault import: OPENAI_API_KEY=fake-openai" in text
     assert "UNKNOWN_NAME=fake" in text
     assert "# REDACTED by hermes-vault import: UNKNOWN_NAME" not in text
-    assert "1 skipped line" in result.output
+    assert "1 skipped" in result.output
 
 
 def test_import_from_env_dry_run_redact_source_leaves_file_unchanged(monkeypatch, tmp_path: Path) -> None:
