@@ -415,7 +415,7 @@ def test_suggest_v2_migration_returns_none_for_unknown_agent() -> None:
 # ── normalization ─────────────────────────────────────────
 
 
-def test_v2_policy_normalizes_service_names() -> None:
+def test_v2_policy_normalizes_service_names(tmp_path: Path) -> None:
     """v2 entries with non-canonical service names should normalise."""
     policy_yaml = {
         "agents": {
@@ -429,7 +429,7 @@ def test_v2_policy_normalizes_service_names() -> None:
             }
         }
     }
-    path = Path("/tmp/_test_v2_norm.yaml")
+    path = tmp_path / "_test_v2_norm.yaml"
     path.write_text(yaml.safe_dump(policy_yaml))
 
     policy = PolicyEngine.from_yaml(path)

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -40,6 +40,23 @@ hermes-vault = "hermes_vault.cli:app"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["release-readiness", "site"]
+
+[tool.ruff.lint]
+# Start with fatal correctness classes as the blocking baseline. The full
+# Pyflakes report is preserved as an advisory CI artifact for cleanup.
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+exclude = ["plugins/hermes-vault-secret-source/"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
