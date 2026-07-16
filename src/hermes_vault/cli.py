@@ -168,6 +168,20 @@ class HermesGroup(click.Group, typer.Typer):
             ):
                 _show_banner()
             super().invoke(ctx)
+        except typer.Exit as e:
+            # typer >=0.27.0 vendors its own Exit class
+            # (typer._click.exceptions.Exit) that uses .exit_code and is NOT a
+            # subclass of click.exceptions.Exit. Click's main() catches
+            # click.exceptions.Exit but misses the vendored sibling, so the
+            # exception propagates uncaught and CliRunner defaults to
+            # exit_code=1.
+            #
+            # Normalize to click.exceptions.Exit so Click's
+            # catch-and-convert-to-SystemExit path works regardless of typer
+            # version.
+            # Note: click 8.4.2 uses .exit_code; older click uses .code.
+            code = getattr(e, "exit_code", getattr(e, "code", 0))
+            raise click.exceptions.Exit(code=code) from e
         finally:
             reset_active_profile(profile_token)
 
