@@ -57,13 +57,18 @@ Reference: commit `HEAD` of `chore/repo-hardening` branch.
 
 - [x] Linux tests pass on Python 3.11  
   Local: 796 passed, 1 skipped (timed out DPAPI test)  
-  CI: pending push
+  CI: 796 passed, 1 failed → fixed with ANSI strip in second push  
+  Final: 797 passed, 0 failed ✅
 - [x] Linux tests pass on Python 3.12  
-  CI: pending push  
-- [x] Windows tests pass on Python 3.11  
-  CI: pending push  
-- [x] Windows tests pass on Python 3.12  
-  CI: pending push  
+  CI: 797 passed, 0 failed ✅
+- [ ] Windows tests pass on Python 3.11  
+  794 passed, 2 failed — pre-existing Windows path issues (not typer-related):
+  1. `test_import_from_env_redact_source_only_imported_lines` — output rendering differs
+  2. `test_v2_policy_normalizes_service_names` — uses `/tmp/` path  
+  CI: 2 failed ❌
+- [ ] Windows tests pass on Python 3.12  
+  Same 2 pre-existing Windows path failures as 3.11  
+  CI: 2 failed ❌
 - [x] Ruff passes  
   `ruff check . --output-format=concise` → "All checks passed!"
 - [x] mypy findings reviewed and triaged  
