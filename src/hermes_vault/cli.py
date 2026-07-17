@@ -1205,7 +1205,7 @@ def clear_expiry(
         raise typer.Exit(code=1)
 
     try:
-        cleared = vault.clear_expiry(target, alias=alias)
+        vault.clear_expiry(target, alias=alias)
     except AmbiguousTargetError as exc:
         console.print(f"[red]Ambiguous: {exc}[/red]")
         console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")

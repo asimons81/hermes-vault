@@ -165,7 +165,7 @@ def test_backup_preserves_encrypted_payloads(tmp_path: Path) -> None:
 
     backup = vault_a.export_backup()
     cred = backup["credentials"][0]
-    original_payload = cred["encrypted_payload"]
+    cred["encrypted_payload"]
 
     # Import into a fresh vault with same passphrase + same salt file
     # (encrypted payloads are keyed to salt+passphrase, so cross-vault requires same salt)
