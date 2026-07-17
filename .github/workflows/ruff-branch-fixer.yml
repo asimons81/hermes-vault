@@ -1,16 +1,24 @@
-name: Temporary Ruff branch fixer
+name: Temporary Ruff PR fixer
 
 on:
-  push:
+  pull_request_target:
+    types:
+      - synchronize
+      - reopened
     branches:
-      - chore/ruff-cleanup
+      - master
 
 permissions:
   contents: write
 
 jobs:
   fix:
-    if: github.repository == 'asimons81/hermes-vault' && github.actor == 'asimons81'
+    if: >-
+      github.repository == 'asimons81/hermes-vault' &&
+      github.event.pull_request.number == 28 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'chore/ruff-cleanup' &&
+      github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Check out cleanup branch
@@ -90,6 +98,7 @@ jobs:
         shell: bash
         run: |
           ruff check . --output-format=concise
+          rm -f .github/ruff-cleanup-trigger.txt
           rm -f .github/workflows/ruff-finalize.yml
           rm -f .github/workflows/ruff-branch-fixer.yml
           git diff --check
