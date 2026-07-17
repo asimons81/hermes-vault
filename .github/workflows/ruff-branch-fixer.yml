@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   fix:
-    if: github.repository == 'asimons81/hermes-vault' && github.actor == 'asimons81'
+    if: github.repository == 'asimons81/hermes-vault'
     runs-on: ubuntu-latest
     steps:
       - name: Check out cleanup branch
