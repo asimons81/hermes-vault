@@ -38,7 +38,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin master
-          git merge --no-edit origin/master
+          git merge -X theirs --no-edit origin/master
 
       - name: Apply reviewed Ruff fixes
         shell: bash
