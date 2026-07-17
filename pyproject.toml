@@ -47,9 +47,9 @@ line-length = 120
 extend-exclude = ["release-readiness", "site"]
 
 [tool.ruff.lint]
-# Start with fatal correctness classes as the blocking baseline. The full
-# Pyflakes report is preserved as an advisory CI artifact for cleanup.
-select = ["E9", "F63", "F7", "F82"]
+# Block syntax failures and the full Pyflakes correctness family.
+# Style-only rules remain out of scope until adopted intentionally.
+select = ["E9", "F"]
 
 [tool.mypy]
 python_version = "3.11"
