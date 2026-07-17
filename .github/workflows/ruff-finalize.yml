@@ -1,0 +1,102 @@
+name: One-shot Ruff cleanup finalizer
+
+on:
+  push:
+    branches:
+      - chore/ruff-cleanup
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out cleanup branch
+        uses: actions/checkout@v4
+        with:
+          ref: chore/ruff-cleanup
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install quality tools
+        run: python -m pip install ruff==0.15.22
+
+      - name: Apply reviewed manual fixes and enable full Pyflakes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"expected text not found in {path}: {old!r}")
+              file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace(
+              "src/hermes_vault/broker.py",
+              "        visible = []\n        denied_any = False\n        for lease in leases:\n",
+              "        visible = []\n        for lease in leases:\n",
+          )
+          replace(
+              "src/hermes_vault/broker.py",
+              "            if not allowed:\n                denied_any = True\n                continue\n",
+              "            if not allowed:\n                continue\n",
+          )
+          replace(
+              "src/hermes_vault/cli.py",
+              "        cleared = vault.clear_expiry(target, alias=alias)\n",
+              "        vault.clear_expiry(target, alias=alias)\n",
+          )
+          replace(
+              "tests/test_release_regression.py",
+              "    cred = backup[\"credentials\"][0]\n    original_payload = cred[\"encrypted_payload\"]\n\n",
+              "    cred = backup[\"credentials\"][0]\n\n",
+          )
+          replace(
+              "tests/test_status.py",
+              "    rec = vault.add_credential(\"github\", \"ghp-test\", \"personal_access_token\")\n    from datetime import datetime, timezone, timedelta\n",
+              "    vault.add_credential(\"github\", \"ghp-test\", \"personal_access_token\")\n    from datetime import datetime, timezone, timedelta\n",
+          )
+          replace(
+              "tests/test_status.py",
+              "    vault = Vault(db_path, salt_path, \"test\")\n    from datetime import datetime, timezone, timedelta\n    expiry = datetime.now(timezone.utc) + timedelta(days=30)\n    with pytest.raises(KeyError):\n        vault.clear_expiry(\"nonexistent\")\n",
+              "    vault = Vault(db_path, salt_path, \"test\")\n    with pytest.raises(KeyError):\n        vault.clear_expiry(\"nonexistent\")\n",
+          )
+          replace(
+              "pyproject.toml",
+              "# Start with fatal correctness classes as the blocking baseline. The full\n# Pyflakes report is preserved as an advisory CI artifact for cleanup.\nselect = [\"E9\", \"F63\", \"F7\", \"F82\"]",
+              "# Block syntax failures and the full Pyflakes correctness family.\n# Style-only rules remain out of scope until adopted intentionally.\nselect = [\"E9\", \"F\"]",
+          )
+          replace(
+              ".github/workflows/ci.yml",
+              "      - name: Run blocking Ruff checks\n        shell: bash\n        run: ruff check . --output-format=concise | tee ruff-blocking-report.txt\n\n      - name: Run full Ruff baseline\n        if: always()\n        continue-on-error: true\n        shell: bash\n        run: ruff check . --select F --output-format=concise | tee ruff-advisory-report.txt\n",
+              "      - name: Run Ruff checks\n        shell: bash\n        run: ruff check . --output-format=concise | tee ruff-report.txt\n",
+          )
+          replace(
+              ".github/workflows/ci.yml",
+              "            ruff-blocking-report.txt\n            ruff-advisory-report.txt\n            mypy-report.txt",
+              "            ruff-report.txt\n            mypy-report.txt",
+          )
+          PY
+
+      - name: Verify full Ruff gate
+        run: ruff check . --output-format=concise
+
+      - name: Remove one-shot workflow and commit
+        shell: bash
+        run: |
+          rm .github/workflows/ruff-finalize.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: make full Pyflakes checks blocking"
+          git push origin HEAD:chore/ruff-cleanup
