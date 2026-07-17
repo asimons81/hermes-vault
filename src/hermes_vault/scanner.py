@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fnmatch
-import os
 from pathlib import Path
 
 from hermes_vault.config import AppSettings

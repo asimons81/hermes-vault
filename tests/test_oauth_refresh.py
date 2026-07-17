@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,7 +12,6 @@ import pytest
 
 from hermes_vault.models import (
     CredentialRecord,
-    CredentialSecret,
     CredentialStatus,
     utc_now,
 )
@@ -22,10 +20,9 @@ from hermes_vault.oauth.oauth_refresh import (
     RefreshAttempt,
     RefreshEngine,
     RefreshTokenExpiredError,
-    RefreshTokenMissingError,
     refresh_alias_for,
 )
-from hermes_vault.oauth.providers import OAuthProvider, OAuthProviderRegistry
+from hermes_vault.oauth.providers import OAuthProviderRegistry
 from hermes_vault.vault import Vault
 
 

@@ -19,7 +19,6 @@ from hermes_vault.crypto import (
     derive_key,
     encrypt_secret,
     load_or_create_master_key,
-    load_or_create_salt,
 )
 from hermes_vault.models import (
     AccessRequestRecord,

@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
-import pytest
 
-from hermes_vault.oauth.callback import CallbackServer, CallbackResult
+from hermes_vault.oauth.callback import CallbackServer
 from hermes_vault.oauth.errors import (
     OAuthDeniedError,
     OAuthFlowError,
@@ -18,10 +15,8 @@ from hermes_vault.oauth.errors import (
     OAuthProviderError,
     OAuthStateMismatchError,
     OAuthTimeoutError,
-    OAuthUnknownProviderError,
 )
-from hermes_vault.oauth.exchange import TokenExchanger, TokenResponse, _parse_url_encoded_body
-from hermes_vault.oauth.flow import LoginFlow
+from hermes_vault.oauth.exchange import TokenResponse, _parse_url_encoded_body
 from hermes_vault.oauth.pkce import PKCEGenerator
 from hermes_vault.oauth.providers import OAuthProvider, OAuthProviderRegistry
 from hermes_vault.oauth.state import StateManager

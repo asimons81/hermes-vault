@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from hermes_vault.backup import restore_dry_run, verify_backup_file
 from hermes_vault.vault import Vault

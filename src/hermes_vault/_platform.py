@@ -15,7 +15,6 @@ import tempfile
 import webbrowser
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
 
 
 class PlatformKind(StrEnum):

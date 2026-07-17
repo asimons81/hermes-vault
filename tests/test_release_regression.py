@@ -11,12 +11,8 @@ import yaml
 import hermes_vault
 from hermes_vault.audit import AuditLogger
 from hermes_vault.models import (
-    AgentCapability,
     AgentPolicy,
-    CredentialRecord,
     PolicyConfig,
-    ServiceAction,
-    ServicePolicyEntry,
 )
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.vault import Vault
