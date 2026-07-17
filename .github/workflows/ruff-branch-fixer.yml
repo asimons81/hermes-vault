@@ -91,6 +91,7 @@ jobs:
         shell: bash
         run: |
           ruff check . --output-format=concise
+          rm -f .github/ruff-cleanup-trigger.txt
           rm -f .github/workflows/ruff-finalize.yml
           rm -f .github/workflows/ruff-branch-fixer.yml
           git diff --check
