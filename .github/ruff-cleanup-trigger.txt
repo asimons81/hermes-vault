@@ -1,1 +1,0 @@
-Run the reviewed Ruff cleanup workflow now that the scoped PR runner is active.
