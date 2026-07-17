@@ -1,3 +1,4 @@
+# Active one-shot runner for PR #28.
 name: Temporary Ruff branch fixer
 
 on:
