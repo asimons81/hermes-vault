@@ -13,12 +13,8 @@ def mode_is_insecure(path: Path) -> bool:
 
 
 def permission_finding(path: Path) -> FindingRecord | None:
-    if _is_windows := __import__("hermes_vault._platform", fromlist=["platform"]).current_platform() == "windows":
-        from hermes_vault._platform import permission_finding as _plat_finding
-        result = _plat_finding(path)
-        if result is not None and hasattr(result, "model_dump"):
-            return FindingRecord.model_validate(result.model_dump())
-        return result
+    if _platform.current_platform() == "windows":
+        return _platform.permission_finding(path)
     try:
         if not path.exists():
             return None

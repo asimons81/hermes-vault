@@ -15,6 +15,10 @@ import tempfile
 import webbrowser
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from hermes_vault.models import FindingRecord
 
 
 class PlatformKind(StrEnum):
@@ -115,7 +119,7 @@ def mode_is_insecure(path: Path) -> bool:
         return False
 
 
-def permission_finding(path: Path) -> dict | None:
+def permission_finding(path: Path) -> "FindingRecord | None":
     """Return a finding dict for an insecure file, or None."""
     from hermes_vault.models import FindingRecord, FindingSeverity
 

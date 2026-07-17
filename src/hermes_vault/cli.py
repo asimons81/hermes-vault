@@ -7,6 +7,7 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import cast
 
 import click
 import typer
@@ -19,7 +20,7 @@ from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings, reset_active_profile, set_active_profile
 from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase
-from hermes_vault.detectors import EnvImportDecision, classify_env_name, detect_matches, parse_env_map
+from hermes_vault.detectors import classify_env_name, detect_matches, parse_env_map
 from hermes_vault.diff import diff_backups
 from hermes_vault.health import run_health
 from hermes_vault.models import AccessLogRecord, CredentialStatus, Decision
@@ -143,7 +144,7 @@ def _print_update_plan(plan: UpdatePlan) -> None:
 # â”€â”€ HermesGroup â€” Click Group with add_typer + banner invoke â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # HermesGroup IS the app. Click Group gives add_typer.
 # Typer gives beautiful @decorator commands. Click Group gives invoke() pre-dispatch.
-class HermesGroup(click.Group, typer.Typer):
+class HermesGroup(click.Group, typer.Typer):  # type: ignore[misc]
     def __init__(self, *args, **kwargs):
         # params is a Click concept â€” pass only to Click Group, not Typer
         _params = kwargs.pop("params", None)
@@ -195,37 +196,40 @@ class HermesGroup(click.Group, typer.Typer):
             for info in list(self.registered_groups):
                 typer_instance = info.typer_instance
                 group_name = info.name or ""
+                if typer_instance is None:
+                    continue
                 try:
-                    typer_group = typer_main.get_command(typer_instance)
+                    typer_group = cast(click.Command, typer_main.get_command(typer_instance))
                     self.commands[group_name] = typer_group
                 except Exception:
                     pass  # Sub-Typer with no commands â€” skip
         self._typer_groups_resolved = True
 
     # â”€â”€ get_command â€” bridge Click and Typer command namespaces â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # Cache the TyperGroup built from _typer_app so we don't rebuild each call.
-    _typer_group_cache: click.Command | None = None
+    # Typer vendors a Click-compatible command hierarchy. The cast is confined
+    # to this tested bridge so the rest of the CLI remains precisely typed.
+    _typer_group_cache: click.Group | None = None
+
+    @classmethod
+    def _resolved_typer_group(cls) -> click.Group:
+        if cls._typer_group_cache is None:
+            cls._typer_group_cache = cast(click.Group, typer_main.get_command(_typer_app))
+        return cls._typer_group_cache
 
     def list_commands(self, ctx: click.Context) -> list[str]:
         """Include Typer-registered commands when Click renders root help."""
         commands = list(click.Group.list_commands(self, ctx))
-        if HermesGroup._typer_group_cache is None:
-            HermesGroup._typer_group_cache = typer_main.get_command(_typer_app)
-        for name in HermesGroup._typer_group_cache.list_commands(ctx):
+        for name in self._resolved_typer_group().list_commands(ctx):
             if name not in commands:
                 commands.append(name)
         return commands
 
     def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
         """First check Click-registered commands, then delegate to the TyperGroup."""
-        # 1. Click-native commands (added via add_command)
         cmd = click.Group.get_command(self, ctx, cmd_name)
         if cmd is not None:
             return cmd
-        # 2. Typer commands â€” lazily build and cache the TyperGroup
-        if HermesGroup._typer_group_cache is None:
-            HermesGroup._typer_group_cache = typer_main.get_command(_typer_app)
-        return HermesGroup._typer_group_cache.get_command(ctx, cmd_name)
+        return self._resolved_typer_group().get_command(ctx, cmd_name)
 
 
 _hermes_group = HermesGroup(
@@ -460,7 +464,7 @@ def import_credentials(
     imported_lines: set[int] = set()
 
     if from_env:
-        env_entries: list[tuple[int, str, str, EnvImportDecision]] = []
+        env_entries: list[tuple[int, str, str, str, str, str]] = []
         skipped_entries: list[tuple[int, str, str]] = []
         for i, line in enumerate(lines):
             stripped = line.lstrip()
@@ -470,15 +474,18 @@ def import_credentials(
             env_name = name.strip()
             decision = classify_env_name(env_name, overrides)
             if decision.action == "import" and decision.service and decision.credential_type:
-                env_entries.append((i, env_name, value.strip().strip("'\""), decision))
+                env_entries.append((
+                    i, env_name, value.strip().strip("'\""),
+                    decision.service, decision.credential_type, decision.source,
+                ))
             else:
                 skipped_entries.append((i, env_name, decision.reason))
 
         if dry_run:
-            for line_no, env_name, _value, decision in env_entries:
+            for line_no, env_name, _value, service, credential_type, source_name in env_entries:
                 console.print(
                     f"[cyan]Would import[/cyan] line {line_no + 1}: {env_name} -> "
-                    f"{decision.service}:{decision.credential_type} ({decision.source})"
+                    f"{service}:{credential_type} ({source_name})"
                 )
             console.print(
                 f"[green]Dry run: {len(env_entries)} credential(s) would be imported; "
@@ -488,11 +495,11 @@ def import_credentials(
             vault, _, _, mutations = build_services(prompt=True)
             redacted_lines: set[int] = set()
             updated_entries: list[str] = []
-            for i, name, secret, decision in env_entries:
+            for i, name, secret, service, credential_type, source_name in env_entries:
                 alias = name.lower()
                 existing_secret = None
                 try:
-                    existing_record = vault.resolve_credential(decision.service, alias=alias)
+                    existing_record = vault.resolve_credential(service, alias=alias)
                     current_secret = vault.get_secret(existing_record.id)
                     if current_secret is not None:
                         existing_secret = current_secret.secret
@@ -504,16 +511,16 @@ def import_credentials(
                 if existing_record is not None and existing_secret == secret:
                     console.print(
                         f"[cyan]Already imported[/cyan] line {i + 1}: {name} -> "
-                        f"{decision.service}:{decision.credential_type} (unchanged)"
+                        f"{service}:{credential_type} (unchanged)"
                     )
                     redacted_lines.add(i)
                     continue
 
                 result = mutations.add_credential(
                     agent_id=OPERATOR_AGENT_ID,
-                    service=decision.service,
+                    service=service,
                     secret=secret,
-                    credential_type=decision.credential_type,
+                    credential_type=credential_type,
                     alias=alias,
                     imported_from=str(source),
                     tags=parsed_tags,
@@ -528,12 +535,12 @@ def import_credentials(
                     updated_entries.append(name)
                     console.print(
                         f"[green]Updated[/green] line {i + 1}: {name} -> "
-                        f"{decision.service}:{decision.credential_type} ({decision.source})"
+                        f"{service}:{credential_type} ({source_name})"
                     )
                 else:
                     console.print(
                         f"[green]Imported[/green] line {i + 1}: {name} -> "
-                        f"{decision.service}:{decision.credential_type} ({decision.source})"
+                        f"{service}:{credential_type} ({source_name})"
                     )
                 redacted_lines.add(i)
             console.print(
@@ -921,14 +928,14 @@ def audit(
     table.add_column("VERIFICATION")
     for row in results:
         table.add_row(
-            row.get("timestamp", "-"),
-            row.get("agent_id", "-"),
-            row.get("service", "-"),
-            row.get("action", "-"),
-            row.get("decision", "-"),
-            row.get("reason", "-"),
+            str(row.get("timestamp") or "-"),
+            str(row.get("agent_id") or "-"),
+            str(row.get("service") or "-"),
+            str(row.get("action") or "-"),
+            str(row.get("decision") or "-"),
+            str(row.get("reason") or "-"),
             str(row.get("ttl_seconds", "-")),
-            row.get("verification_result", "-"),
+            str(row.get("verification_result") or "-"),
         )
     console.print(table)
 
@@ -1124,7 +1131,7 @@ def set_expiry(
     if days is not None:
         expiry = datetime.now(timezone.utc) + timedelta(days=days)
     else:
-        # date is not None here
+        assert date is not None
         try:
             parsed = datetime.strptime(date, "%Y-%m-%d")
             if parsed.strftime("%Y-%m-%d") != date:
@@ -1169,6 +1176,8 @@ def set_expiry(
         reason=f"expiry set to {expiry.isoformat()}",
     ))
 
+    if result.expiry is None:
+        raise RuntimeError("Credential expiry update returned no expiry value.")
     console.print(f"Expiry set for {normalized_service}/{result.alias} -> {result.expiry.isoformat()}")
 
 
@@ -1287,6 +1296,7 @@ def verify(
         raise typer.Exit(code=1)
 
     vault, _, broker, _ = build_services(prompt=True)
+    targets: list[tuple[str, str | None]]
     if all:
         targets = [(record.service, record.alias) for record in vault.list_credentials()]
     elif target:
@@ -2665,7 +2675,7 @@ def oauth_login(
                     f"Provider '{provider_config.service_id}' does not support headless device-code login. "
                     f"Supported providers: {supported}. Use --no-browser for browser callback fallback."
                 )
-            flow = DeviceLoginFlow(
+            device_flow = DeviceLoginFlow(
                 provider_id=provider,
                 alias=alias,
                 timeout=timeout,
@@ -2673,11 +2683,11 @@ def oauth_login(
                 console=console,
                 registry=registry,
             )
-            flow.run()
+            device_flow.run()
             return
 
         from hermes_vault.oauth.flow import LoginFlow
-        flow = LoginFlow(
+        browser_flow = LoginFlow(
             provider_id=provider,
             alias=alias,
             port=port,
@@ -2686,7 +2696,7 @@ def oauth_login(
             scopes=list(scopes or []),
             console=console,
         )
-        flow.run()
+        browser_flow.run()
     except Exception as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc

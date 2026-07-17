@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import importlib.util
 from pathlib import Path
 
 from hermes_vault.config import AppSettings
@@ -9,10 +10,7 @@ from hermes_vault.models import FindingRecord, FindingSeverity
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.permissions import permission_finding
 
-try:
-    import pathspec
-except ModuleNotFoundError:  # pragma: no cover - exercised via fallback tests
-    pathspec = None
+_HAS_PATHSPEC = importlib.util.find_spec("pathspec") is not None
 
 
 TEXT_SUFFIXES = {
@@ -168,7 +166,9 @@ class Scanner:
         text = path.as_posix()
         if any(text == pattern for pattern in patterns):
             return True
-        if pathspec is not None:
+        if _HAS_PATHSPEC:
+            import pathspec
+
             spec = pathspec.PathSpec.from_lines("gitignore", patterns)
             return spec.match_file(text)
         return any(fnmatch.fnmatch(text, pattern) for pattern in patterns)

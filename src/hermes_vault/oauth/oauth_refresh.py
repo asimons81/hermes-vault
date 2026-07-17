@@ -14,6 +14,7 @@ from typing import Any
 
 import requests
 
+from hermes_vault.audit import AuditLogger
 from hermes_vault.models import (
     AccessLogRecord,
     CredentialRecord,
@@ -91,16 +92,15 @@ class RefreshEngine:
         self.proactive_margin_seconds = proactive_margin_seconds
         self.max_retries = max_retries
         self.base_backoff_seconds = base_backoff_seconds
-        self._audit = None  # injected by caller if audit is available
+        self._audit: AuditLogger | None = None  # injected by caller if audit is available
 
     @property
-    def audit(self):
+    def audit(self) -> AuditLogger:
         if self._audit is None:
-            from hermes_vault.audit import AuditLogger
             self._audit = AuditLogger(self.vault.db_path)
         return self._audit
 
-    def set_audit(self, audit) -> None:
+    def set_audit(self, audit: AuditLogger) -> None:
         self._audit = audit
 
     # ── Detection ─────────────────────────────────────────────────────────
@@ -170,7 +170,7 @@ class RefreshEngine:
         raw_refresh = refresh_secret.secret
         attempt = RefreshAttempt(service=service, alias=alias, success=False, reason="")
 
-        for attempt.retry_count in range(1, self.max_retries + 1):  # type: ignore
+        for attempt.retry_count in range(1, self.max_retries + 1):
             try:
                 response = self._do_refresh_post(
                     provider,

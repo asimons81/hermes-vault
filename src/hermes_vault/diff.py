@@ -21,8 +21,8 @@ class DiffEntry:
     agent_id: str | None = None
     changes: list[dict[str, str]] = field(default_factory=list)
 
-    def as_dict(self) -> dict:
-        d = {
+    def as_dict(self) -> dict[str, object]:
+        d: dict[str, object] = {
             "kind": self.kind,
             "service": self.service,
             "alias": self.alias,

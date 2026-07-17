@@ -87,15 +87,19 @@ class CallbackServer:
 
     def wait(self) -> CallbackResult:
         """Block until callback result or timeout."""
-        if not self._event.wait(timeout=self.timeout):
-            self._result.error = "timeout"
-            self._result.error_description = f"Timed out after {self.timeout}s. No callback received."
+        event = self._event
+        result = self._result
+        if event is None or result is None:
+            raise RuntimeError("Callback server must be started before wait().")
+        if not event.wait(timeout=self.timeout):
+            result.error = "timeout"
+            result.error_description = f"Timed out after {self.timeout}s. No callback received."
             self.shutdown()
-            return self._result
+            return result
         self.shutdown()
         if CallbackHandler.result is not None:
             return CallbackHandler.result
-        return self._result
+        return result
 
     def shutdown(self) -> None:
         """Signal the server to shut down and clean up resources."""
