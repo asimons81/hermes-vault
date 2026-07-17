@@ -164,8 +164,7 @@ def test_backup_preserves_encrypted_payloads(tmp_path: Path) -> None:
     vault_a.add_credential("openai", "sk-key", "api_key")
 
     backup = vault_a.export_backup()
-    cred = backup["credentials"][0]
-    cred["encrypted_payload"]
+    assert "encrypted_payload" in backup["credentials"][0]
 
     # Import into a fresh vault with same passphrase + same salt file
     # (encrypted payloads are keyed to salt+passphrase, so cross-vault requires same salt)
@@ -316,6 +315,3 @@ def test_add_replace_existing_replaces_secret(tmp_path: Path) -> None:
     # Only one record
     records = vault.list_credentials()
     assert len(records) == 1
-
-
-
