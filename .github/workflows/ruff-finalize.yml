@@ -1,3 +1,4 @@
+# Triggered after temporary runner validation.
 name: One-shot Ruff cleanup finalizer
 
 on:
