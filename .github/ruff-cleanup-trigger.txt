@@ -1,1 +1,1 @@
-This marker triggers the reviewed one-shot Ruff cleanup workflow and is removed by that workflow.
+Run the reviewed Ruff cleanup workflow.
