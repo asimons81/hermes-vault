@@ -503,11 +503,12 @@ class DashboardAPI:
         ttl = payload.get("ttl_seconds")
         if not agent_id or not service:
             raise ValueError("agent_id and service are required")
+        requested_ttl = int(str(ttl)) if ttl not in (None, "") else None
         return ctx.policy.explain(
             agent_id,
             service,
             action,
-            requested_ttl=int(ttl) if ttl not in (None, "") else None,
+            requested_ttl=requested_ttl,
         )
 
     def _action_request_access(self, payload: dict[str, Any], ctx: DashboardContext) -> dict[str, Any]:
@@ -558,6 +559,7 @@ class DashboardAPI:
         return report.as_dict(exclude_none=False)
 
     def _action_verify(self, payload: dict[str, Any], ctx: DashboardContext) -> dict[str, Any]:
+        targets: list[tuple[str, str | None]]
         if payload.get("all"):
             targets = [(record.service, record.alias) for record in ctx.vault.list_credentials()]
         else:
@@ -631,8 +633,9 @@ class DashboardAPI:
         summary: dict[str, int] = {"added": 0, "changed": 0, "removed": 0}
         resource_summary: dict[str, int] = {"credential": 0, "lease": 0}
         for entry in entries:
-            summary[entry["kind"]] = summary.get(entry["kind"], 0) + 1
-            resource_type = entry.get("resource_type", "credential")
+            kind = str(entry["kind"])
+            summary[kind] = summary.get(kind, 0) + 1
+            resource_type = str(entry.get("resource_type", "credential"))
             resource_summary[resource_type] = resource_summary.get(resource_type, 0) + 1
         return 200, {
             "version": DASHBOARD_VERSION,
@@ -856,8 +859,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return
             self._write_json(self.server.api.agent_context(agent_id))
         elif path == "/api/requests":
-            agent_id = query.get("agent_id", [None])[0]
-            self._write_json(self.server.api.requests(agent_id=agent_id))
+            agent_values = query.get("agent_id")
+            request_agent_id = agent_values[0] if agent_values else None
+            self._write_json(self.server.api.requests(agent_id=request_agent_id))
         elif path == "/api/leases":
             self._write_json(self.server.api.leases())
         elif path == "/api/audit":
@@ -997,7 +1001,8 @@ def run_dashboard(
         ttl_seconds=ttl_seconds,
         dev_origin=dev_origin,
     )
-    actual_host, actual_port = server.server_address
+    actual_host = server.server_name
+    actual_port = server.server_port
     api_base = f"http://{actual_host}:{actual_port}"
     base_url = dev_assets.rstrip("/") if dev_assets else api_base
     query = {"token": server.token}

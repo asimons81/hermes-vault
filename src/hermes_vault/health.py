@@ -9,11 +9,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol
 
 from hermes_vault.audit import AuditLogger
-from hermes_vault.models import CredentialStatus, LeaseStatus, VerificationCategory, utc_now
+from hermes_vault.models import CredentialStatus, LeaseStatus, VerificationCategory, VerificationResult, utc_now
 from hermes_vault.vault import Vault
+
+
+class CredentialVerifier(Protocol):
+    def verify(self, service: str, secret: str) -> VerificationResult:
+        ...
 
 
 REPORT_VERSION = "health-v1"
@@ -159,7 +164,7 @@ def run_health(
     expiring_days: int = 7,
     backup_days: int = 30,
     services: set[str] | None = None,
-    verifier: Any | None = None,
+    verifier: CredentialVerifier | None = None,
 ) -> HealthReport:
     """Produce a read-only health report for the vault.
 
@@ -195,10 +200,11 @@ def run_health(
         verified_live=verify_live,
     )
 
-    if verify_live and verifier is None:
+    live_verifier = verifier
+    if verify_live and live_verifier is None:
         from hermes_vault.verifier import Verifier
 
-        verifier = Verifier()
+        live_verifier = Verifier()
 
     # ── credentials ─────────────────────────────────────────────────
     records = vault.list_credentials()
@@ -289,7 +295,8 @@ def run_health(
                 secret = vault.get_secret(rec.id)
                 if secret is None:
                     raise KeyError("secret not found")
-                live_result = verifier.verify(rec.service, secret.secret)
+                assert live_verifier is not None
+                live_result = live_verifier.verify(rec.service, secret.secret)
             except Exception as exc:
                 live_result = None
                 live_failed = True

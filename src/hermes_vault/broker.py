@@ -149,9 +149,11 @@ class Broker:
             oauth_meta = freshness_result.get("oauth_refresh")
             if oauth_meta is not None:
                 deny_meta["oauth_refresh"] = oauth_meta
+            raw_reason = freshness_result.get("reason")
+            deny_reason = raw_reason if isinstance(raw_reason, str) else "OAuth refresh failed"
             return self._deny(
                 agent_id, canonical, "get_ephemeral_env",
-                freshness_result.get("reason", "OAuth refresh failed"),
+                deny_reason,
                 ttl_seconds=effective_ttl,
                 metadata=deny_meta,
             )

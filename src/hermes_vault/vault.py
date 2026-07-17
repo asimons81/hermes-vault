@@ -762,8 +762,11 @@ class Vault:
                 ),
             )
             conn.commit()
-        # Return the updated record
-        return self.get_credential(record.id)
+        # Return the updated record. The row was just updated, so absence is corruption.
+        updated = self.get_credential(record.id)
+        if updated is None:
+            raise KeyError(f"Credential disappeared after expiry update: {record.id}")
+        return updated
 
     def clear_expiry(
         self,
@@ -1354,7 +1357,7 @@ class Vault:
             scopes = lease_data.get("scopes") or []
             if not isinstance(scopes, list):
                 scopes = [str(scopes)]
-            existing = self.get_lease(lease_id)
+            existing_lease = self.get_lease(lease_id)
             lease = LeaseRecord(
                 id=lease_id,
                 service=normalize(lease_data.get("service", "")),
@@ -1375,7 +1378,7 @@ class Vault:
                 scopes=[str(item) for item in scopes],
                 metadata=metadata,
             )
-            if existing:
+            if existing_lease:
                 with sqlite3.connect(self.db_path) as conn:
                     conn.execute(
                         """

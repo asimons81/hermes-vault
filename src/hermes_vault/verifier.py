@@ -140,7 +140,7 @@ class _FileHttpVerifierModel(BaseModel):
 
 class _HttpVerifierPlugin:
     def __init__(self, service: str, config: _FileHttpVerifierModel) -> None:
-        self.service_ids = (service,)
+        self.service_ids: tuple[str, ...] = (service,)
         self.allow_override = config.allow_override
         self._config = config
 
@@ -184,13 +184,25 @@ class Verifier:
         self.allow_plugin_overrides = allow_plugin_overrides
         self._registry: dict[str, RegisteredVerifier] = {}
         self._diagnostics: list[VerifierDiagnostic] = []
+        def http_verify(config: ProviderVerifierConfig) -> VerificationResult:
+            return self._http_verify(config)
+
+        def classify_http_error(
+            service: str,
+            status_code: int,
+            body: str,
+            headers: dict[str, str] | None = None,
+        ) -> VerificationResult:
+            return self._classify_http_error(service, status_code, body, headers)
+
+        def classify_transport_error(service: str, exc: BaseException) -> VerificationResult:
+            return self._classify_transport_error(service, exc)
+
         self._context = VerifierContext(
             timeout_seconds=self.timeout_seconds,
-            http_verify=lambda config: self._http_verify(config),
-            classify_http_error=lambda service, status_code, body, headers=None: self._classify_http_error(
-                service, status_code, body, headers
-            ),
-            classify_transport_error=lambda service, exc: self._classify_transport_error(service, exc),
+            http_verify=http_verify,
+            classify_http_error=classify_http_error,
+            classify_transport_error=classify_transport_error,
         )
         self._register_builtins()
         if load_file_plugins:

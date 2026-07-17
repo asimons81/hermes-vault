@@ -84,9 +84,7 @@ jobs:
         shell: bash
         run: ruff check . --output-format=concise | tee ruff-report.txt
 
-      - name: Run mypy baseline
-        if: always()
-        continue-on-error: true
+      - name: Run mypy checks
         shell: bash
         run: mypy src/hermes_vault | tee mypy-report.txt
 
