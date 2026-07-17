@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from hermes_vault.audit import AuditLogger
@@ -938,11 +938,9 @@ class Broker:
     ) -> BrokerDecision:
         leases = self.vault.list_leases(service=service, status=status)
         visible = []
-        denied_any = False
         for lease in leases:
             allowed, policy_reason = self.policy.can(agent_id, lease.service, ServiceAction.list_leases)
             if not allowed:
-                denied_any = True
                 continue
             visible.append(lease.model_dump(mode="json"))
         if service is not None and not visible:

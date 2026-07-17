@@ -27,7 +27,7 @@ from hermes_vault.mutations import VaultMutations, OPERATOR_AGENT_ID
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.policy_packs import get_policy_pack, list_policy_packs, render_policy_pack_yaml, write_policy_pack
 from hermes_vault.scanner import Scanner
-from hermes_vault.service_ids import is_canonical, normalize
+from hermes_vault.service_ids import normalize
 from hermes_vault.skillgen import SkillGenerator
 from hermes_vault.update import UpdateError, UpdatePlan, perform_update, resolve_update_plan
 from hermes_vault.verifier import Verifier
@@ -569,7 +569,7 @@ def import_credentials(
                     f"[yellow]No imported env lines to redact; {len(skipped_entries)} skipped line(s) left unchanged.[/yellow]"
                 )
         elif redact_source:
-            console.print(f"[yellow]--redact-source only applies to --from-env files.[/yellow]")
+            console.print("[yellow]--redact-source only applies to --from-env files.[/yellow]")
         elif not dry_run:
             console.print("Review plaintext source removal separately.")
         return
@@ -1205,7 +1205,7 @@ def clear_expiry(
         raise typer.Exit(code=1)
 
     try:
-        cleared = vault.clear_expiry(target, alias=alias)
+        vault.clear_expiry(target, alias=alias)
     except AmbiguousTargetError as exc:
         console.print(f"[red]Ambiguous: {exc}[/red]")
         console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
@@ -2181,7 +2181,7 @@ def rotate_master_key(
         backup_path_obj.write_text(backup_content, encoding="utf-8")
         backup_path_obj.chmod(0o600)
         console.print(f"[green]Pre-rotation backup:[/green] {backup_path_obj}")
-        console.print(f"[yellow]  Keep your salt file to restore this backup.[/yellow]")
+        console.print("[yellow]  Keep your salt file to restore this backup.[/yellow]")
     else:
         console.print("[yellow]WARNING: Skipping pre-rotation backup (--skip-backup-dangerous).[/yellow]")
         console.print("[yellow]  No rollback point will exist.[/yellow]")

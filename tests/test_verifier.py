@@ -361,7 +361,6 @@ def test_generic_verifier_normalization(monkeypatch) -> None:
 
 
 def test_generic_verifier_http_success(monkeypatch) -> None:
-    import io
     import urllib.request
 
     monkeypatch.setenv("HERMES_VAULT_VERIFY_URL_DEEPSEEK", "https://api.deepseek.com/v1/models")

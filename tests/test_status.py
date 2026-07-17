@@ -310,7 +310,7 @@ def test_vault_set_expiry_by_service(tmp_path: Path) -> None:
     os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
 
     vault = Vault(db_path, salt_path, "test")
-    rec = vault.add_credential("github", "ghp-test", "personal_access_token")
+    vault.add_credential("github", "ghp-test", "personal_access_token")
     from datetime import datetime, timezone, timedelta
     expiry = datetime.now(timezone.utc) + timedelta(days=60)
     result = vault.set_expiry("github", expiry)
@@ -360,7 +360,7 @@ def test_vault_clear_expiry_not_found(tmp_path: Path) -> None:
 
     vault = Vault(db_path, salt_path, "test")
     from datetime import datetime, timezone, timedelta
-    expiry = datetime.now(timezone.utc) + timedelta(days=30)
+    datetime.now(timezone.utc) + timedelta(days=30)
     with pytest.raises(KeyError):
         vault.clear_expiry("nonexistent")
 

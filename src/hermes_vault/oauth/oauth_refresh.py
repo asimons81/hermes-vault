@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from typing import Any
 
 import requests
@@ -20,7 +20,6 @@ from hermes_vault.models import (
     CredentialSecret,
     CredentialStatus,
     Decision,
-    MutationResult,
     utc_now,
 )
 from hermes_vault.oauth.errors import (

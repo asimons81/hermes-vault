@@ -10,8 +10,8 @@ import pytest
 from click.testing import CliRunner
 
 from hermes_vault.audit import AuditLogger
-from hermes_vault.cli import _hermes_group, build_services as real_build_services
-from hermes_vault.health import HealthReport, lease_summary, run_health
+from hermes_vault.cli import _hermes_group
+from hermes_vault.health import lease_summary, run_health
 from hermes_vault.models import LeaseStatus
 from hermes_vault.models import AccessLogRecord, CredentialStatus, Decision, VerificationCategory, VerificationResult
 from hermes_vault.vault import Vault

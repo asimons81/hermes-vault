@@ -4,7 +4,7 @@ Handles exactly one GET request on /callback, extracts query parameters, then
 signals the main thread and shuts down.
 
 """
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 import socketserver
 import threading
 from dataclasses import dataclass

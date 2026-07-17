@@ -21,7 +21,6 @@ from hermes_vault.models import (
     AccessLogRecord,
     AgentCapability,
     CredentialRecord,
-    CredentialStatus,
     Decision,
     MutationResult,
     ServiceAction,

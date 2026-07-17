@@ -10,8 +10,8 @@ import pytest
 from click.testing import CliRunner
 
 from hermes_vault.cli import _hermes_group
-from hermes_vault.diff import DiffEntry, diff_backups
-from hermes_vault.models import CredentialStatus, AccessLogRecord, Decision
+from hermes_vault.diff import diff_backups
+from hermes_vault.models import CredentialStatus
 from hermes_vault.vault import Vault
 
 

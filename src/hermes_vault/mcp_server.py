@@ -34,10 +34,10 @@ from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings
 from hermes_vault.crypto import resolve_passphrase
 from hermes_vault.health import run_health
-from hermes_vault.models import AccessLogRecord, AgentCapability, CredentialSecret, CredentialStatus, Decision, ServiceAction
+from hermes_vault.models import AccessLogRecord, AgentCapability, CredentialSecret, Decision, ServiceAction
 from hermes_vault.mutations import OPERATOR_AGENT_ID, VaultMutations
 from hermes_vault.oauth.callback import CallbackServer
-from hermes_vault.oauth.errors import OAuthProviderError, sanitize_oauth_error_detail
+from hermes_vault.oauth.errors import sanitize_oauth_error_detail
 from hermes_vault.oauth.exchange import TokenExchanger
 from hermes_vault.oauth.flow import _store_oauth_tokens
 from hermes_vault.oauth.oauth_refresh import RefreshEngine, refresh_alias_for
@@ -1440,7 +1440,7 @@ def _exchange_and_store(result: Any, pending_key: str) -> None:
             client_id=info["client_id"],
             client_secret=info["client_secret"],
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("Token exchange failed for %s", pending_key)
         return
 

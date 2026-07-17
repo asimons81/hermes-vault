@@ -1390,7 +1390,6 @@ class StubVerifyResult:
     """Fake VerificationResult for verify command tests."""
     def __init__(self, service="openai", alias="default", success=True,
                  category="valid", reason="ok", status_code=200):
-        from datetime import datetime, timezone
         from hermes_vault.models import VerificationCategory
         self.service = service
         self.alias = alias
@@ -1552,7 +1551,6 @@ def test_verify_report_creates_parent_dirs(monkeypatch, tmp_path) -> None:
 
 
 def test_verify_report_chmod_0600(monkeypatch, tmp_path) -> None:
-    import os
     import stat
     broker = StubVerifyBroker()
     monkeypatch.setattr("hermes_vault.cli.build_services", lambda prompt=False: (

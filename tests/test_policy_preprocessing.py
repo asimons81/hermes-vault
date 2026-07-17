@@ -9,7 +9,6 @@ import yaml
 from hermes_vault.models import (
     AgentCapability,
     AgentPolicy,
-    PolicyConfig,
     ServiceAction,
     ServicePolicyEntry,
 )

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import sys
-import typing
 
 # ── Terminal detection ──────────────────────────────────────────────────────
 _FORCE_COLOR = os.getenv("HERMES_VAULT_NO_COLOR", "0") != "1"

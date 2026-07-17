@@ -80,15 +80,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]" ruff mypy
 
-      - name: Run blocking Ruff checks
+      - name: Run Ruff checks
         shell: bash
-        run: ruff check . --output-format=concise | tee ruff-blocking-report.txt
-
-      - name: Run full Ruff baseline
-        if: always()
-        continue-on-error: true
-        shell: bash
-        run: ruff check . --select F --output-format=concise | tee ruff-advisory-report.txt
+        run: ruff check . --output-format=concise | tee ruff-report.txt
 
       - name: Run mypy baseline
         if: always()
@@ -102,8 +96,7 @@ jobs:
         with:
           name: static-analysis-reports
           path: |
-            ruff-blocking-report.txt
-            ruff-advisory-report.txt
+            ruff-report.txt
             mypy-report.txt
           if-no-files-found: warn
 

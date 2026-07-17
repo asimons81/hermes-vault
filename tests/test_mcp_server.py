@@ -6,8 +6,7 @@ import asyncio
 import json
 import os
 import urllib.parse
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -23,7 +22,7 @@ from hermes_vault.mcp_server import (
     read_resource,
     server,
 )
-from hermes_vault.models import CredentialStatus, utc_now
+from hermes_vault.models import utc_now
 from hermes_vault.vault import Vault
 
 
@@ -918,11 +917,8 @@ def vault_with_policy(tmp_path):
     """Create a vault with policy and a few credentials for MCP tests."""
     from hermes_vault.audit import AuditLogger
     from hermes_vault.broker import Broker
-    from hermes_vault.config import get_settings
-    from hermes_vault.crypto import derive_key
     from hermes_vault.policy import PolicyEngine
     from hermes_vault.verifier import Verifier
-    from hermes_vault.vault import Vault
 
     home = tmp_path
     db_path = home / "vault.db"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from test_plugin import ErrorKind, FetchResult, SecretSource, _install_agent_stubs, _load_plugin, _valid_env
+from test_plugin import FetchResult, _load_plugin, _valid_env
 
 
 class SecretSourceConformance:
