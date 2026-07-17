@@ -203,37 +203,20 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Apply reviewed remaining fixes
+      - name: Apply and verify reviewed fixes
         shell: bash
         run: |
           python -m pip install ruff==0.15.22
           ruff check . --select F --fix --unsafe-fixes
           ruff check . --output-format=concise
 
-      - name: Remove finalizer and restore permissions
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path('.github/workflows/ci.yml')
-          text = path.read_text(encoding='utf-8')
-          text = text.replace('permissions:\n  contents: write\n', 'permissions:\n  contents: read\n', 1)
-          start_marker = '  # BEGIN ONE-SHOT RUFF FINALIZER\n'
-          end_marker = '  # END ONE-SHOT RUFF FINALIZER\n'
-          start = text.index(start_marker)
-          end = text.index(end_marker, start) + len(end_marker)
-          text = text[:start] + text[end:]
-          path.write_text(text.rstrip() + '\n', encoding='utf-8')
-          PY
-
-      - name: Commit finalized cleanup
+      - name: Commit source-only cleanup
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
-          git add -A
-          git commit -m "chore: eliminate Ruff advisory baseline"
+          git add src/hermes_vault/broker.py src/hermes_vault/cli.py tests/test_release_regression.py tests/test_status.py
+          git commit -m "chore: remove remaining Ruff dead assignments"
           git push origin HEAD:chore/ruff-cleanup
   # END ONE-SHOT RUFF FINALIZER
