@@ -1,4 +1,5 @@
 # Triggered after temporary runner validation.
+# Retried after the runner reached master.
 name: One-shot Ruff cleanup finalizer
 
 on:
