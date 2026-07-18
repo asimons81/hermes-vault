@@ -537,7 +537,7 @@ def test_backup_verify_json_output(monkeypatch, tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert payload["version"] == "backup-verification-v1"
+    assert payload["version"] == "backup-verification-v2"
     assert payload["decryptable"] is True
 
 
