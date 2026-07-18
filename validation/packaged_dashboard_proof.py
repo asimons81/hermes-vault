@@ -6,7 +6,6 @@ Creates four disposable vault states and validates dashboard behavior.
 """
 
 import json
-import os
 import sys
 import tempfile
 import time
@@ -26,7 +25,6 @@ from hermes_vault.vault import Vault
 from hermes_vault.audit import AuditLogger
 from hermes_vault.audit_integrity.checkpoint import read_checkpoint
 from hermes_vault.audit_integrity.service import AuditIntegrityService
-from hermes_vault.backup import verify_backup_file
 from hermes_vault.models import AccessLogRecord, Decision
 
 
@@ -48,9 +46,8 @@ def _wait_for_server(url: str, timeout: float = 10.0, interval: float = 0.1) -> 
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=1) as resp:
-                resp.read()
-            return
+            with urllib.request.urlopen(url, timeout=1):
+                return
         except (urllib.error.URLError, OSError) as exc:
             last_error = exc
             time.sleep(interval)
@@ -60,7 +57,7 @@ def _wait_for_server(url: str, timeout: float = 10.0, interval: float = 0.1) -> 
 def verify_token_rejection(port: int) -> None:
     """Verify invalid and missing tokens are rejected."""
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/audit-integrity", timeout=5) as resp:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/audit-integrity", timeout=5):
             fail("Missing token should return 401")
     except urllib.error.HTTPError as e:
         assert e.code == 401, f"Expected 401, got {e.code}"
@@ -71,7 +68,7 @@ def verify_token_rejection(port: int) -> None:
         headers={"Authorization": "Bearer invalid-token"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5):
             fail("Invalid token should return 401")
     except urllib.error.HTTPError as e:
         assert e.code == 401, f"Expected 401, got {e.code}"
