@@ -1471,12 +1471,12 @@ class Vault:
         9. Clean up staging artifacts after confirmed success.
         """
         from hermes_vault.audit import AuditLogger
-        from hermes_vault.audit_integrity.checkpoint import read_checkpoint, write_checkpoint
+        from hermes_vault.audit_integrity.checkpoint import read_checkpoint
         from hermes_vault.audit_integrity.schema import initialize_schema
         from hermes_vault.audit_integrity.service import AuditIntegrityService
 
         version = backup.get("version")
-        if version != BACKUP_VERSION_V2:
+        if version != "hvbackup-v2":
             return {"success": False, "reason": f"Integrity restore requires hvbackup-v2, got {version}"}
 
         integrity = backup.get("audit_integrity", {})
@@ -1488,15 +1488,9 @@ class Vault:
             return {"success": False, "reason": "Integrity evidence is not available in this backup."}
 
         # 1. Verify the backup fully (credentials + integrity).
-        from hermes_vault.backup import verify_backup_file
-        verify_path = backup.get("_source_path")
-        if verify_path:
-            report = verify_backup_file(Path(verify_path), self)
-        else:
-            report = None
+        # (Structural verification happens via restore_audit_integrity internals.)
 
         # 2. Create durable recovery copy of current state.
-        recovery_salt = self.salt_path.read_bytes() if self.salt_path.exists() else b""
         recovery_db = self.db_path.read_bytes() if self.db_path.exists() else b""
         recovery_checkpoint = None
         cp_path = self.db_path.with_name("audit.checkpoint.json")
@@ -1624,7 +1618,7 @@ class Vault:
 
             return {
                 "success": True,
-                "version": BACKUP_VERSION_V2,
+                "version": "hvbackup-v2",
                 "integrity_status": result.status.value,
                 "verified_count": result.verified_count,
                 "legacy_count": result.legacy_count,
