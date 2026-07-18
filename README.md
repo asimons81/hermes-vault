@@ -4,17 +4,21 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.20.0 is the Hermes Secret Source Plugin release. Hermes Vault can now materialize mapped startup credentials from explicit `hv://` refs while keeping startup secrets, policy, and MCP access separated.
+v0.21.0 is the **Audit Assurance** release. Hermes Vault now provides signed, verifiable audit continuity with authenticated checkpoints, backup integrity, and read-only verification through CLI, dashboard, and MCP surfaces.
 
-## What's New in 0.20.0
+## What's New in 0.21.0
 
-v0.20.0 adds a standalone Hermes Secret Source plugin without widening the secret-exposure boundary.
+v0.21.0 adds cryptographic audit integrity assurance to Hermes Vault's existing protection surface.
 
-- Hermes Vault now ships the mapped-only `hermes_vault` Secret Source plugin for startup-time env materialization.
-- The plugin resolves explicit `ENV_VAR=hv://service` and `ENV_VAR=hv://service?alias=name` refs through a non-interactive `hermes-vault secret-source fetch` endpoint.
-- Startup fetches use Hermes `run_secret_cli()`, protect `HERMES_VAULT_PASSPHRASE`, omit empty values, and keep partial success as warnings instead of hard failure.
-- MCP remains the in-loop agent control plane, while Secret Source is only for bootstrap credentials before Hermes starts using tools.
-- Recovery drills, policy explainability, lease checks, and redacted operator surfaces remain in place for the control plane release work.
+- Every audit append generates a signed, chain-authenticated integrity record using HKDF-derived Ed25519 signatures.
+- An authenticated checkpoint outside the audit table protects the verification boundary.
+- Legacy v0.20 audit history is preserved and anchored without destructive migration.
+- `hvbackup-v2` backup format includes audit integrity evidence, segments, and verification summary.
+- Transactional restore stages database and checkpoint changes atomically.
+- `hermes-vault audit-verify`, `audit-checkpoint`, and `audit-export --with-integrity` provide operator visibility.
+- The dashboard exposes read-only integrity status via `GET /api/audit-integrity`.
+- MCP exposes metadata-only integrity status through `vault://audit-integrity` and a summary in `vault://status`.
+- Backward-compatible with v0.20 vaults, policies, and cloud provider configs.
 
 ## What It Does
 

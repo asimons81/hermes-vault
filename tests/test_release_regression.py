@@ -25,8 +25,8 @@ def test_release_version_surfaces_align() -> None:
     from hermes_vault.mcp_server import list_resources, list_tools, server
     import asyncio
 
-    assert pyproject["project"]["version"] == "0.20.0"
-    assert hermes_vault.__version__ == "0.20.0"
+    assert pyproject["project"]["version"] == "0.21.0"
+    assert hermes_vault.__version__ == "0.21.0"
     assert server.version == hermes_vault.__version__
     tool_names = {tool.name for tool in asyncio.run(list_tools())}
     assert {
@@ -52,12 +52,12 @@ def test_release_story_mentions_agent_control_plane() -> None:
     site = (repo_root / "site" / "index.html").read_text(encoding="utf-8")
     dashboard_html = (repo_root / "src" / "hermes_vault" / "dashboard_static" / "index.html").read_text(encoding="utf-8")
 
-    assert "Hermes Secret Source Plugin" in changelog
-    assert "What's New in 0.20.0" in readme
+    assert "Audit Assurance" in changelog
+    assert "What's New in 0.21.0" in readme
     assert "secret-source fetch" in operator_guide
-    assert "Hermes Secret Source plugin" in site
-    assert "v0.20.0" in site
-    assert "git@v0.20.0" in site
+    assert "Audit Assurance" in readme
+    assert "v0.21.0" in site
+    assert "git@v0.21.0" in site
     assert "Command Center" in dashboard_html
 
     assert "policy-explain" in dashboard_html
