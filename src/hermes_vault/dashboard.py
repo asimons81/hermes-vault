@@ -368,6 +368,37 @@ class DashboardAPI:
             "default_agent": ctx.settings.mcp_default_agent,
         }
 
+    def audit_integrity(self) -> dict[str, Any]:
+        """Return read-only audit integrity status for the dashboard."""
+        try:
+            ctx = self._context_factory()
+            from hermes_vault.audit_integrity.service import AuditIntegrityService
+            service = AuditIntegrityService(ctx.settings.db_path, ctx.vault.key)
+            service.ensure_initialized()
+            result = service.verify()
+            return {
+                "version": "audit-integrity-dashboard-v1",
+                "status": result.status.value,
+                "reason_code": result.reason_code,
+                "chain_version": result.chain_version,
+                "active_segment_id": result.active_segment_id,
+                "active_segment_number": result.active_segment_number,
+                "verified_count": result.verified_count,
+                "legacy_count": result.legacy_count,
+                "first_verified_sequence": result.first_verified_sequence,
+                "last_verified_sequence": result.last_verified_sequence,
+                "checkpoint_status": result.checkpoint_status.value,
+                "last_verification_time": result.verified_at.isoformat() if result.verified_at else None,
+                "sanitized_reason": result.sanitized_reason,
+                "recommended_next_step": result.recommended_next_step,
+            }
+        except Exception as exc:
+            return {
+                "version": "audit-integrity-dashboard-v1",
+                "status": "error",
+                "error": str(exc),
+            }
+
     def profiles(self) -> dict[str, Any]:
         ctx = self._context_factory()
         active = ctx.settings.profile_name
@@ -806,6 +837,11 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized(parsed):
             self._write_json({"error": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
             return
+        # Read-only audit integrity verification endpoint.
+        if parsed.path == "/api/audit-integrity/verify":
+            result = self.server.api.audit_integrity()
+            self._write_json(result)
+            return
         try:
             payload = self._read_json()
         except ValueError as exc:
@@ -873,6 +909,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._write_json(self.server.api.audit(limit=limit))
         elif path == "/api/mcp":
             self._write_json(self.server.api.mcp_status())
+        elif path == "/api/audit-integrity":
+            self._write_json(self.server.api.audit_integrity())
         elif path == "/api/profiles":
             self._write_json(self.server.api.profiles())
         elif path == "/api/session":
