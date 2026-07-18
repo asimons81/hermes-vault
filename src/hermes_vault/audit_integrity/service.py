@@ -225,7 +225,6 @@ class AuditIntegrityService:
                     return self._failure("active_key_mismatch", segment_id=active["segment_id"], legacy=legacy_count)
                 first = registry_rows(conn)[0]
                 if first["legacy_count"]:
-                    snapshot = self._legacy_snapshot(conn)
                     cutoff_count = int(first["legacy_count"])
                     # A migration snapshot covers the original prefix, not later protected entries.
                     rows = conn.execute("SELECT id, timestamp, agent_id, service, action, decision, reason, ttl_seconds, verification_result, metadata_json FROM access_logs ORDER BY timestamp ASC, id ASC LIMIT ?", (cutoff_count,)).fetchall()
