@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from hermes_vault import _platform
+from hermes_vault.audit_integrity.service import AuditIntegrityError, AuditIntegrityService
 from hermes_vault.crypto import (
     CRYPTO_VERSION,
     CorruptKeyMaterialError,
@@ -1484,6 +1485,12 @@ class Vault:
         else:
             pass  # empty vault — old passphrase can't be verified by data
 
+        audit_integrity = AuditIntegrityService(self.db_path, old_key)
+        audit_integrity.ensure_initialized()
+        audit_result = audit_integrity.verify()
+        if audit_result.status.value != "healthy":
+            raise AuditIntegrityError(audit_result.sanitized_reason)
+
         if backup_path is not None:
             self.export_backup()
             content = json.dumps(self.export_backup(), indent=2, sort_keys=True)
@@ -1528,6 +1535,11 @@ class Vault:
 
         journal["status"] = "db_committed"
         journal["committed_at"] = utc_now().isoformat()
+        journal["audit_transition_state"] = "pending"
+        journal["old_segment_id"] = audit_result.active_segment_id or ""
+        self._write_rotation_journal(journal)
+        audit_integrity.rotate_segment(new_key)
+        journal["audit_transition_state"] = "checkpoint_committed"
         self._write_rotation_journal(journal)
         # DPAPI-aware write: when HERMES_VAULT_DPAPI=1 is set, the
         # new master key is wrapped with DPAPI on write. Otherwise the

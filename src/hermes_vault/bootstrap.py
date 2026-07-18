@@ -208,7 +208,7 @@ def run_bootstrap(
 
             passphrase = resolve_passphrase(prompt=True, profile_name=settings.profile_name)
             vault = Vault(settings.db_path, settings.salt_path, passphrase)
-            mutations = VaultMutations(vault=vault, policy=policy, audit=AuditLogger(settings.db_path))
+            mutations = VaultMutations(vault=vault, policy=policy, audit=AuditLogger(settings.db_path, master_key=vault.key))
             redacted_lines: set[int] = set()
             for index, env_name, secret, decision in env_entries:
                 alias = env_name.lower()

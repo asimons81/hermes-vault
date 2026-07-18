@@ -221,6 +221,26 @@ def write_bytes_durable(path: Path, content: bytes) -> None:
     secure_file(path)
 
 
+def replace_bytes_durable(path: Path, content: bytes) -> None:
+    """Atomically replace *path* with durable, owner-only bytes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".pending", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            if not _is_windows():
+                os.fsync(handle.fileno())
+        secure_file(temporary)
+        os.replace(temporary, path)
+        secure_file(path)
+        fsync_directory(path.parent)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def write_text_durable(path: Path, content: str) -> None:
     """Write text durably."""
     write_bytes_durable(path, content.encode("utf-8"))

@@ -93,7 +93,7 @@ def build_dashboard_context(*, prompt: bool = True, profile: str | None = None) 
     policy.write_default(settings.effective_policy_path)
     passphrase_result = resolve_passphrase_with_source(prompt=prompt, profile_name=settings.profile_name)
     vault = Vault(settings.db_path, settings.salt_path, passphrase_result.passphrase)
-    audit = AuditLogger(settings.db_path)
+    audit = AuditLogger(settings.db_path, master_key=vault.key)
     broker = Broker(
         vault=vault,
         policy=policy,

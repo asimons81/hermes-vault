@@ -97,7 +97,7 @@ class RefreshEngine:
     @property
     def audit(self) -> AuditLogger:
         if self._audit is None:
-            self._audit = AuditLogger(self.vault.db_path)
+            self._audit = AuditLogger(self.vault.db_path, master_key=self.vault.key)
         return self._audit
 
     def set_audit(self, audit: AuditLogger) -> None:

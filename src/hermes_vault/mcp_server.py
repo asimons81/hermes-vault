@@ -241,7 +241,7 @@ def _build_broker(profile: str | None = None) -> Broker:
     policy.write_default(settings.effective_policy_path)
     passphrase = resolve_passphrase(prompt=False, profile_name=settings.profile_name)
     vault = Vault(settings.db_path, settings.salt_path, passphrase)
-    audit = AuditLogger(settings.db_path)
+    audit = AuditLogger(settings.db_path, master_key=vault.key)
     verifier = Verifier(plugin_dir=settings.verifier_plugin_dir)
     scanner = Scanner(settings, policy=policy)
     return Broker(vault=vault, policy=policy, verifier=verifier, audit=audit, scanner=scanner)
