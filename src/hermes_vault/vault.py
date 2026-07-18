@@ -1245,7 +1245,7 @@ class Vault:
             audit_service = AuditIntegrityService(self.db_path, self.key)
             audit_service.ensure_initialized()
             backup["version"] = "hvbackup-v2"
-            backup["audit_integrity"] = audit_service.export_evidence()
+            backup["audit_integrity"] = audit_service.export_evidence()  # type: ignore[assignment]
         return backup
 
     def import_backup(self, backup: dict, replace: bool = True) -> list[CredentialRecord]:

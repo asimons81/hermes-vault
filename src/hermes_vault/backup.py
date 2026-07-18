@@ -34,6 +34,7 @@ class BackupVerificationReport:
     integrity_status: str | None = None
     integrity_available: bool = False
     integrity_reason: str | None = None
+    audit_included: bool = False
     findings: list[str] = field(default_factory=list)
     would_restore_count: int = 0
 
