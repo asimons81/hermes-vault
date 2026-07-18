@@ -404,7 +404,7 @@ def _resource_key(uri: Any) -> str:
         return "vault://services/{name}"
     if parsed.netloc == "leases" and parsed.path not in ("", "/"):
         return "vault://leases/{id}"
-    if parsed.netloc in {"services", "health", "policy", "leases", "status", "agent-context", "policy-explain", "requests", "recovery"} and parsed.path in ("", "/"):
+    if parsed.netloc in {"services", "health", "policy", "leases", "status", "agent-context", "policy-explain", "requests", "recovery", "audit-integrity"} and parsed.path in ("", "/"):
         return f"vault://{parsed.netloc}"
     raise ValueError(f"Unknown resource URI: {uri}")
 
@@ -637,6 +637,25 @@ def _status_resource_payload(broker: Broker, binding: MCPBindingContext, setting
         next_steps.append("Create and verify a backup with hermes-vault backup and hermes-vault backup-verify.")
     elif int(days_since_backup) > backup_threshold:
         next_steps.append("Refresh backup coverage and run a restore dry-run.")
+
+    # Audit integrity summary (metadata only).
+    audit_integrity: dict[str, Any] = {"available": False}
+    try:
+        from hermes_vault.audit_integrity.service import AuditIntegrityService
+        ai_service = AuditIntegrityService(broker.vault.db_path, broker.vault.key)
+        ai_service.ensure_initialized()
+        ai_result = ai_service.verify()
+        audit_integrity = {
+            "available": True,
+            "status": ai_result.status.value,
+            "reason_code": ai_result.reason_code,
+            "verified_count": ai_result.verified_count,
+            "legacy_count": ai_result.legacy_count,
+            "checkpoint_status": ai_result.checkpoint_status.value,
+        }
+    except Exception:
+        audit_integrity = {"available": False}
+
     if not next_steps:
         next_steps.append("Vault status is clean for this policy scope; continue using brokered env or leases.")
 
@@ -671,6 +690,7 @@ def _status_resource_payload(broker: Broker, binding: MCPBindingContext, setting
             "expired": sum(1 for lease in leases if lease.get("status") == "expired"),
             "revoked": sum(1 for lease in leases if lease.get("status") == "revoked"),
         },
+        "audit_integrity": audit_integrity,
         "next_steps": next_steps,
         "raw_secret_values_returned": False,
     }
@@ -760,6 +780,35 @@ def _recovery_resource_payload(uri: Any, broker: Broker, binding: MCPBindingCont
     payload["binding_mode"] = binding.binding_mode
     payload["raw_secret_values_returned"] = False
     return payload
+
+
+def _audit_integrity_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    """Return metadata-only audit integrity status."""
+    from hermes_vault.audit_integrity.service import AuditIntegrityService
+
+    try:
+        service = AuditIntegrityService(broker.vault.db_path, broker.vault.key)
+        service.ensure_initialized()
+        result = service.verify()
+        return {
+            "version": "audit-integrity-mcp-v1",
+            "status": result.status.value,
+            "reason_code": result.reason_code,
+            "chain_version": result.chain_version,
+            "verified_count": result.verified_count,
+            "legacy_count": result.legacy_count,
+            "first_verified_sequence": result.first_verified_sequence,
+            "last_verified_sequence": result.last_verified_sequence,
+            "checkpoint_status": result.checkpoint_status.value,
+            "recommended_next_step": result.recommended_next_step,
+            "verified_at": result.verified_at.isoformat() if result.verified_at else None,
+        }
+    except Exception as exc:
+        return {
+            "version": "audit-integrity-mcp-v1",
+            "status": "error",
+            "error": str(exc),
+        }
 
 
 def _preflight_tool_arguments(name: str, arguments: dict[str, Any]) -> str | None:
@@ -985,6 +1034,13 @@ async def list_resources() -> list[Resource]:
             description="Redacted recovery drill resource. Requires query parameter: backup.",
             mimeType="application/json",
         ),
+        Resource(
+            name="vault-audit-integrity",
+            title="Hermes Vault audit integrity",
+            uri=AnyUrl("vault://audit-integrity"),
+            description="Metadata-only audit integrity status: status, chain version, checkpoint state, verified count.",
+            mimeType="application/json",
+        ),
     ]
     resources.extend(await _default_agent_service_resources())
     return resources
@@ -1059,6 +1115,8 @@ async def read_resource(uri: Any) -> Any:
             payload = _requests_resource_payload(broker, binding)
         elif key == "vault://recovery":
             payload = _recovery_resource_payload(uri, broker, binding)
+        elif key == "vault://audit-integrity":
+            payload = _audit_integrity_resource_payload(broker, binding)
         else:
             raise ValueError(f"Unknown resource URI: {uri}")
     except ValueError as exc:

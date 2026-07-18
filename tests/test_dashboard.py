@@ -29,6 +29,29 @@ from hermes_vault.policy import PolicyEngine
 from hermes_vault.verifier import Verifier
 from hermes_vault.vault import Vault
 
+
+def _wait_for_server(server_url: str, timeout: float = 10.0, interval: float = 0.1) -> None:
+    """Poll a server URL until it responds or the timeout expires.
+
+    Prevents race conditions from daemon-threaded server startup
+    in test environments (notably Windows Python 3.12 where thread
+    startup can be delayed).
+    """
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(server_url, timeout=1) as resp:
+                resp.read()
+            return
+        except (urllib.error.URLError, OSError) as exc:
+            last_error = exc
+            time.sleep(interval)
+    raise RuntimeError(
+        f"Server at {server_url} did not become ready within {timeout}s"
+    ) from last_error
+
+
 def _context(tmp_path: Path) -> DashboardContext:
     from hermes_vault.config import AppSettings
 
@@ -275,6 +298,7 @@ def test_dashboard_profile_select_http_endpoint(monkeypatch, tmp_path: Path) -> 
 
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        _wait_for_server(f"http://127.0.0.1:{port}/")
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/profile/select",
             data=json.dumps({"profile": "work"}).encode("utf-8"),
@@ -305,6 +329,7 @@ def test_dashboard_server_requires_token(tmp_path: Path) -> None:
 
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        _wait_for_server(f"http://127.0.0.1:{port}/")
 
         with pytest.raises(urllib.error.HTTPError) as exc:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/api/credentials", timeout=5)
@@ -335,6 +360,7 @@ def test_dashboard_serves_static_assets_and_404s_missing_assets(tmp_path: Path) 
 
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        _wait_for_server(f"http://127.0.0.1:{port}/")
 
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/app.js", timeout=5) as response:
             content_type = response.headers["Content-Type"]
@@ -364,14 +390,16 @@ def test_dashboard_static_asset_exists_in_package() -> None:
 def test_dashboard_server_expires_session_token(tmp_path: Path) -> None:
     ctx = _context(tmp_path)
     api = DashboardAPI(context_factory=lambda: ctx)
-    server = create_dashboard_server(token="secret-token", api=api, ttl_seconds=1)
+    server = create_dashboard_server(token="secret-token", api=api, ttl_seconds=2)
     try:
         port = server.server_address[1]
         import threading
 
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        time.sleep(1.1)
+        _wait_for_server(f"http://127.0.0.1:{port}/")
+        # Wait for the TTL to expire (2s) plus a small buffer.
+        time.sleep(2.5)
 
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/credentials",
@@ -756,6 +784,7 @@ def test_dashboard_bad_limit_returns_json_400(tmp_path: Path) -> None:
 
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        _wait_for_server(f"http://127.0.0.1:{port}/")
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/audit?limit=nope",
             headers={"Authorization": "Bearer secret-token"},
@@ -780,6 +809,7 @@ def test_dashboard_bad_json_returns_json_400(tmp_path: Path) -> None:
 
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        _wait_for_server(f"http://127.0.0.1:{port}/")
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/actions/health",
             data=b"{",

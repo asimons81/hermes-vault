@@ -940,6 +940,200 @@ def audit(
     console.print(table)
 
 
+@_typer_app.command("audit-verify")
+def audit_verify(
+    format: str = typer.Option("human", "--format", help="Output format: human or json."),
+    full: bool = typer.Option(False, "--full", help="Show full verification details."),
+    record_result: bool = typer.Option(True, "--record-result/--no-record-result", help="Record verification result."),
+) -> None:
+    """Verify audit integrity and continuity.
+
+    Checks the protected audit chain, signatures, checkpoint, and legacy anchor.
+
+    Exit codes: 0=healthy, 2=legacy/incomplete, 3=failed integrity, 1=error.
+
+    \b
+    Examples:
+      hermes-vault audit verify
+      hermes-vault audit verify --format json
+      hermes-vault audit verify --full
+    """
+    if format not in ("human", "json"):
+        console.print("[red]--format must be 'human' or 'json'[/red]")
+        raise typer.Exit(code=1)
+
+    settings = get_settings()
+    vault, _, _, _ = build_services(prompt=False)
+    from hermes_vault.audit_integrity.service import AuditIntegrityService
+    service = AuditIntegrityService(settings.db_path, vault.key)
+    service.ensure_initialized()
+    result = service.verify()
+
+    if format == "json":
+        payload = result.to_dict()
+        if not full:
+            payload.pop("sanitized_reason", None)
+            payload.pop("recommended_next_step", None)
+        console.print_json(data=payload)
+    else:
+        _print_verification_result(result, full=full)
+
+    if result.status.value == "healthy":
+        raise typer.Exit(code=0)
+    elif result.status.value in ("legacy", "incomplete"):
+        raise typer.Exit(code=2)
+    elif result.status.value == "failed":
+        raise typer.Exit(code=3)
+
+
+@_typer_app.command("audit-checkpoint")
+def audit_checkpoint(
+    ctx: typer.Context,
+    action: str = typer.Argument("show", help="Checkpoint action: show, establish, advance, recover."),
+    reason: str | None = typer.Option(None, "--reason", help="Required reason for establish/advance/recover."),
+    yes: bool = typer.Option(False, "--yes", help="Confirm checkpoint mutation without prompting."),
+) -> None:
+    """Inspect or manage the authenticated audit checkpoint.
+
+    'show' is read-only. Other actions are operator-only and require --yes.
+
+    \b
+    Examples:
+      hermes-vault audit checkpoint show
+      hermes-vault audit checkpoint advance --yes
+      hermes-vault audit checkpoint recover --reason "System migration" --yes
+    """
+    settings = get_settings()
+    vault, _, _, _ = build_services(prompt=False)
+    from hermes_vault.audit_integrity.service import AuditIntegrityService
+    service = AuditIntegrityService(settings.db_path, vault.key)
+
+    if action == "show":
+        result = service.verify()
+        _print_verification_result(result, full=True)
+        raise typer.Exit(code=0)
+
+    if action in ("establish", "advance", "recover"):
+        if not yes:
+            console.print(f"[red]Checkpoint '{action}' requires --yes to confirm.[/red]")
+            raise typer.Exit(code=1)
+
+        if action == "establish":
+            result = service.establish_checkpoint()
+        elif action == "advance":
+            result = service.advance_checkpoint()
+        elif action == "recover":
+            result = service.recover_checkpoint()
+
+        console.print(f"[green]Checkpoint {action} completed.[/green]")
+        _print_verification_result(result, full=True)
+        raise typer.Exit(code=0 if result.status.value == "healthy" else 2)
+
+    console.print(f"[red]Unknown checkpoint action: {action}. Use show, establish, advance, or recover.[/red]")
+    raise typer.Exit(code=1)
+
+
+@_typer_app.command("audit-export")
+def audit_export(
+    with_integrity: bool = typer.Option(False, "--with-integrity", help="Include audit integrity evidence in the export."),
+    format: str = typer.Option("json", "--format", help="Output format (json only)."),
+) -> None:
+    """Export sanitized audit activity with optional integrity evidence.
+
+    \b
+    Examples:
+      hermes-vault audit export
+      hermes-vault audit export --with-integrity
+    """
+    if format != "json":
+        console.print("[red]--format must be 'json' for audit export[/red]")
+        raise typer.Exit(code=1)
+
+    settings = get_settings()
+    vault, _, _, _ = build_services(prompt=False)
+    from hermes_vault.audit import AuditLogger
+    from hermes_vault.audit_integrity.service import AuditIntegrityService
+
+    audit = AuditLogger(settings.db_path)
+    entries = audit.list_recent(limit=5000)
+    payload: dict[str, object] = {
+        "version": "audit-export-v1",
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "entry_count": len(entries),
+        "entries": entries,
+    }
+
+    if with_integrity:
+        service = AuditIntegrityService(settings.db_path, vault.key)
+        service.ensure_initialized()
+        result = service.verify()
+        payload["integrity"] = {
+            "version": "audit-backup-evidence-v1",
+            "verification_summary": {
+                "status": result.status.value,
+                "chain_version": result.chain_version,
+                "verified_count": result.verified_count,
+                "legacy_count": result.legacy_count,
+                "checkpoint_status": result.checkpoint_status.value,
+                "verified_at": result.verified_at.isoformat(),
+            },
+        }
+
+    console.print_json(data=payload)
+
+
+def _print_verification_result(result: object, full: bool = False) -> None:
+    """Print a human-readable audit verification result."""
+    status = getattr(result, "status", None)
+    reason_code = getattr(result, "reason_code", None)
+    chain_version = getattr(result, "chain_version", None)
+    serialization_version = getattr(result, "serialization_version", None)
+    active_segment_id = getattr(result, "active_segment_id", None)
+    active_segment_number = getattr(result, "active_segment_number", None)
+    verified_count = getattr(result, "verified_count", 0)
+    legacy_count = getattr(result, "legacy_count", 0)
+    first_verified = getattr(result, "first_verified_sequence", None)
+    last_verified = getattr(result, "last_verified_sequence", None)
+    checkpoint_status = getattr(result, "checkpoint_status", None)
+    sanitized_reason = getattr(result, "sanitized_reason", None)
+    recommended = getattr(result, "recommended_next_step", None)
+    verified_at = getattr(result, "verified_at", None)
+
+    status_str = str(status) if status else "unknown"
+    if status_str == "healthy":
+        color = "green"
+    elif status_str in ("legacy", "incomplete"):
+        color = "yellow"
+    elif status_str == "failed":
+        color = "red"
+    else:
+        color = "white"
+
+    table = Table(title="Audit Integrity Verification")
+    table.add_column("Field")
+    table.add_column("Value")
+
+    table.add_row("Status", f"[{color}]{status_str}[/{color}]")
+    table.add_row("Reason code", str(reason_code) if reason_code else "-")
+    table.add_row("Chain version", str(chain_version) if chain_version else "-")
+    if full:
+        table.add_row("Serialization version", str(serialization_version) if serialization_version else "-")
+        table.add_row("Active segment ID", str(active_segment_id) if active_segment_id else "-")
+        table.add_row("Active segment number", str(active_segment_number) if active_segment_number else "-")
+    table.add_row("Verified records", str(verified_count))
+    table.add_row("Legacy records", str(legacy_count))
+    if full:
+        table.add_row("First verified sequence", str(first_verified) if first_verified is not None else "-")
+        table.add_row("Last verified sequence", str(last_verified) if last_verified is not None else "-")
+    table.add_row("Checkpoint status", str(checkpoint_status) if checkpoint_status else "-")
+    table.add_row("Verified at", str(verified_at) if verified_at else "-")
+    if full:
+        table.add_row("Details", sanitized_reason or "-")
+        table.add_row("Recommendation", recommended or "-")
+
+    console.print(table)
+
+
 @_typer_app.command("status")
 def status(
     ctx: typer.Context,
