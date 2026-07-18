@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.21.0 -- Audit Assurance (unreleased)
+## 0.21.0 -- Audit Assurance
 
 ### Added
 

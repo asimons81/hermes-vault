@@ -8,7 +8,7 @@
 4. Edit `~/.hermes/hermes-vault-data/policy.yaml` for the real agent allowlists.
 5. Back up both `vault.db` and `master_key_salt.bin` together. Losing the salt makes the vault unreadable.
 
-## v0.20.0 secret-source startup runbook
+## v0.21.0 Audit Assurance startup runbook
 
 Hermes Vault now materializes mapped startup credentials through the standalone
 Hermes Secret Source plugin. Use this when Hermes needs explicit env vars at
@@ -444,7 +444,7 @@ hermes-vault maintain --print-schedule
 
 ## Dashboard
 
-`hermes-vault dashboard` starts the local Hermes Vault Console introduced in v0.8.0 and expanded through v0.20.0. Use it for daily operator visibility, policy explanation, request review, and bounded checks. Use the CLI for setup, imports, backups, policy edits, credential mutation, destructive recovery, release work, and any operation where you want an explicit command transcript.
+The `hermes-vault dashboard` command starts the local Hermes Vault Console introduced in v0.8.0 and expanded through v0.21.0. Use it for daily operator visibility, policy explanation, request review, and bounded checks. Use the CLI for setup, imports, backups, policy edits, credential mutation, destructive recovery, release work, and any operation where you want an explicit command transcript.
 
 ```bash
 hermes-vault dashboard
