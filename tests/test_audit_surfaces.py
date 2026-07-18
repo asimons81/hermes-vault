@@ -10,11 +10,10 @@ import pytest
 from click.testing import CliRunner
 
 from hermes_vault.audit import AuditLogger
-from hermes_vault.audit_integrity.checkpoint import read_checkpoint, write_checkpoint
-from hermes_vault.audit_integrity.models import AuditCheckpointStatus, AuditIntegrityStatus
+from hermes_vault.audit_integrity.checkpoint import read_checkpoint
 from hermes_vault.audit_integrity.service import AuditIntegrityService
 from hermes_vault.cli import _hermes_group
-from hermes_vault.dashboard import DashboardAPI, DashboardState, create_dashboard_server
+from hermes_vault.dashboard import DashboardAPI, create_dashboard_server
 from hermes_vault.models import AccessLogRecord, Decision
 from hermes_vault.vault import Vault
 
@@ -107,7 +106,6 @@ def _mcp_audit_integrity_payload(vault: Vault) -> dict:
 
 def _api(tmp_path: Path, vault: Vault | None = None) -> DashboardAPI:
     from hermes_vault.config import AppSettings
-    from hermes_vault.policy import PolicyEngine
 
     vault = vault or _make_vault(tmp_path)
     settings = AppSettings(runtime_home=tmp_path, base_home=tmp_path)
@@ -233,7 +231,7 @@ class TestCliAuditVerify:
 
     def test_verify_is_read_only(self, monkeypatch, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
-        svc = _seed_and_init_integrity(vault)
+        _seed_and_init_integrity(vault)
         cp_before = read_checkpoint(tmp_path / "audit.checkpoint.json")
         self._invoke(monkeypatch, tmp_path, ["--format", "json"])
         cp_after = read_checkpoint(tmp_path / "audit.checkpoint.json")
