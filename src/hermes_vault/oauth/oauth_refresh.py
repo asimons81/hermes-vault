@@ -98,7 +98,7 @@ class RefreshEngine:
     def audit(self):
         if self._audit is None:
             from hermes_vault.audit import AuditLogger
-            self._audit = AuditLogger(self.vault.db_path)
+            self._audit = AuditLogger(self.vault.db_path, master_key=self.vault.key)
         return self._audit
 
     def set_audit(self, audit) -> None:
