@@ -1,0 +1,10 @@
+# Gitleaks configuration for Hermes Vault
+# Validation scripts contain fake/test credentials that are NOT real secrets.
+# These are used only for DPAPI and dashboard proof validation.
+
+[allowlist]
+  # Allow test credentials in validation scripts
+  path = [
+    '''validation/real_dpapi_validation.py''',
+    '''validation/packaged_dashboard_proof.py''',
+  ]
