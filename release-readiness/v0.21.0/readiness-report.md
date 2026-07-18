@@ -6,7 +6,7 @@
 
 - Target: `0.21.0`
 - Codename: Audit Assurance
-- Release branch SHA: `5f78c2f` (release/v0.21.0)
+- Release branch SHA: `5bb8406` (merged as v0.21.0 tag)
 
 ## PRs and Issues
 

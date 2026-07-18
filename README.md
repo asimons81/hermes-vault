@@ -51,10 +51,10 @@ Hermes Vault runs natively on Windows -- no WSL required.
 
 ```powershell
 # Install with uv (recommended)
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.20.0
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.21.0
 
 # Or with pipx
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.20.0
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.21.0
 
 # Or with pip (editable dev install)
 python -m venv .venv
@@ -201,7 +201,7 @@ When `--redact-source` is used, only successfully imported env lines are comment
 
 ## Hermes Vault Console
 
-Hermes Vault Console, introduced in v0.8.0 and expanded through v0.20.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
+Hermes Vault Console, introduced in v0.8.0 and expanded through v0.21.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
 
 Launch it from the same machine that owns the vault:
 
@@ -231,7 +231,7 @@ Screenshot set captured with a temporary demo vault and fake/demo credentials on
 - [Recovery Posture view](docs/assets/v0.8.0-dashboard/dashboard-recovery-posture.png)
 - [Operations Panel view](docs/assets/v0.8.0-dashboard/dashboard-operations.png)
 
-The screenshots and launch notes above are the legacy v0.8.0 baseline. They still document the local-only, token-guarded safety boundary, but the dashboard has grown since then and the v0.20.0 launch visuals need a fresh screenshot set before publishing updated images.
+The screenshots and launch notes above are the legacy v0.8.0 baseline. They still document the local-only, token-guarded safety boundary, but the dashboard has grown since then and the v0.21.0 launch visuals need a fresh screenshot set before publishing updated images.
 
 ## MCP Server
 
