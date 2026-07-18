@@ -330,3 +330,20 @@ class AuditIntegrityService:
                 conn.commit()
                 self._write_current_checkpoint(conn, new, latest_sequence=sequence, latest_digest=tip)
         return self.verify()
+    def export_evidence(self) -> dict[str, object]:
+        """Return backup-safe integrity evidence: public keys, signed rows, and checkpoint only."""
+        with self._connection() as conn:
+            available = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'audit_integrity_state'").fetchone()
+            if available is None:
+                return {"version": "audit-backup-evidence-v1", "integrity_available": False}
+            def rows(table: str) -> list[dict[str, object]]:
+                return [dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
+            return {
+                "version": "audit-backup-evidence-v1",
+                "integrity_available": True,
+                "state": rows("audit_integrity_state"),
+                "segments": rows("audit_integrity_segments"),
+                "records": rows("audit_integrity_records"),
+                "access_logs": rows("access_logs"),
+                "checkpoint": read_checkpoint(self.checkpoint_path),
+            }

@@ -1186,7 +1186,7 @@ class Vault:
             conn.commit()
         return updated
 
-    def export_backup(self, *, metadata_only: bool = False) -> dict:
+    def export_backup(self, *, metadata_only: bool = False, include_audit: bool = False) -> dict:
         """Export all credentials as a portable backup dict.
 
         When *metadata_only* is True encrypted payloads are excluded.
@@ -1235,12 +1235,16 @@ class Vault:
                 "scopes": lease.scopes,
                 "metadata": lease.metadata,
             })
-        return {
+        backup = {
             "version": "hvbackup-v1",
             "exported_at": utc_now().isoformat(),
             "credentials": backup_creds,
             "leases": backup_leases,
         }
+        if include_audit:
+            backup["version"] = "hvbackup-v2"
+            backup["audit_integrity"] = AuditIntegrityService(self.db_path, self.key).export_evidence()
+        return backup
 
     def import_backup(self, backup: dict, replace: bool = True) -> list[CredentialRecord]:
         """Import credentials from a backup dict. Existing records are replaced by default.
