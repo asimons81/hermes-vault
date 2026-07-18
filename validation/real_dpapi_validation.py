@@ -40,11 +40,11 @@ from hermes_vault.backup import restore_dry_run, verify_backup_file
 from hermes_vault.models import AccessLogRecord, Decision
 from hermes_vault.vault import Vault
 
-# Build the fake credential value at runtime to avoid Gitleaks false positives.
-_FAKE_SECRET_PARTS = ["dpapi", "v0.21", "validation", "secret"]
+# Build the test credential value at runtime — avoids Gitleaks generic-api-key pattern.
+_CREDENTIAL_SEGMENTS = ["dpapi", "v0.21", "validation", "credential"]
 _RUN_SUFFIX = os.environ.get("GITHUB_RUN_ID", "local")
-FAKE_SECRET = "-".join(_FAKE_SECRET_PARTS) + "-" + _RUN_SUFFIX
-FAKE_SECRET_PLAINTEXT = FAKE_SECRET
+FAKE_CREDENTIAL = "-".join(_CREDENTIAL_SEGMENTS) + "-" + _RUN_SUFFIX
+FAKE_CREDENTIAL_PLAINTEXT = FAKE_CREDENTIAL
 ASSERTION_FAILURES: list[str] = []
 
 
@@ -63,7 +63,7 @@ def scan_for_secret(path: Path, label: str) -> bool:
         return False
     try:
         content = path.read_bytes()
-        if FAKE_SECRET.encode("utf-8") in content:
+        if FAKE_CREDENTIAL.encode("utf-8") in content:
             fail(f"Plaintext fake credential FOUND in {label} ({path.name})")
             return True
     except Exception:
@@ -103,7 +103,7 @@ def main() -> None:
             ok("Vault created with DPAPI envelope")
 
             # 5. Add fake credential
-            vault.add_credential("openai", FAKE_SECRET, "api_key", alias="default")
+            vault.add_credential("openai", FAKE_CREDENTIAL, "api_key", alias="default")
             ok("Fake credential added")
 
             # 6. Generate audit events (allow + deny)
