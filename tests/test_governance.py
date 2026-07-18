@@ -4,7 +4,6 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
 
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker

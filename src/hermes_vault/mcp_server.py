@@ -34,10 +34,10 @@ from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings
 from hermes_vault.crypto import resolve_passphrase
 from hermes_vault.health import run_health
-from hermes_vault.models import AccessLogRecord, AgentCapability, CredentialSecret, CredentialStatus, Decision, ServiceAction
+from hermes_vault.models import AccessLogRecord, AgentCapability, CredentialSecret, Decision, ServiceAction
 from hermes_vault.mutations import OPERATOR_AGENT_ID, VaultMutations
 from hermes_vault.oauth.callback import CallbackServer
-from hermes_vault.oauth.errors import OAuthProviderError, sanitize_oauth_error_detail
+from hermes_vault.oauth.errors import sanitize_oauth_error_detail
 from hermes_vault.oauth.exchange import TokenExchanger
 from hermes_vault.oauth.flow import _store_oauth_tokens
 from hermes_vault.oauth.oauth_refresh import RefreshEngine, refresh_alias_for
@@ -511,11 +511,11 @@ def _service_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBindi
 
     credentials: list[dict[str, Any]] = []
     if alias is not None:
-        result = broker.get_metadata(agent_id, service, alias)
-        if not result.allowed:
-            raise ValueError(result.reason)
-        if result.record is not None:
-            credentials.append(_service_metadata_payload(result.record))
+        metadata_result = broker.get_metadata(agent_id, service, alias)
+        if not metadata_result.allowed:
+            raise ValueError(metadata_result.reason)
+        if metadata_result.record is not None:
+            credentials.append(_service_metadata_payload(metadata_result.record))
     else:
         records = [record for record in broker.vault.list_credentials() if record.service == service]
         for record in records:
@@ -546,10 +546,10 @@ def _lease_metadata_payload(record: Any) -> dict[str, Any]:
 
 def _leases_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
-    result = broker.list_leases(agent_id)
-    if not result.allowed:
-        raise ValueError(result.reason)
-    leases = [dict(lease) for lease in result.metadata.get("leases", [])]
+    lease_list_result = broker.list_leases(agent_id)
+    if not lease_list_result.allowed:
+        raise ValueError(lease_list_result.reason)
+    leases = [dict(lease) for lease in lease_list_result.metadata.get("leases", [])]
     return {
         "version": "vault-leases-v1",
         "generated_at": _generated_at(),
@@ -565,10 +565,10 @@ def _lease_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBinding
     lease_id = _resource_lease_id(uri)
     if lease_id is None:
         raise ValueError(f"Missing lease id in resource URI: {uri}")
-    result = broker.show_lease(agent_id, lease_id)
-    if not result.allowed:
-        raise ValueError(result.reason)
-    lease = result.metadata.get("lease") or {}
+    lease_show_result = broker.show_lease(agent_id, lease_id)
+    if not lease_show_result.allowed:
+        raise ValueError(lease_show_result.reason)
+    lease = lease_show_result.metadata.get("lease") or {}
     return {
         "version": "vault-lease-v1",
         "generated_at": _generated_at(),
@@ -1095,13 +1095,13 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             agent_id = binding.effective_agent_id or ""
             service = arguments["service"]
             alias = arguments.get("alias")
-            result = broker.get_metadata(agent_id, service, alias)
-            if not result.allowed:
-                return [TextContent(type="text", text=f"Denied: {result.reason}")]
+            metadata_result = broker.get_metadata(agent_id, service, alias)
+            if not metadata_result.allowed:
+                return [TextContent(type="text", text=f"Denied: {metadata_result.reason}")]
             payload = (
-                result.record.model_dump(mode="json", exclude={"encrypted_payload"})
-                if result.record
-                else result.metadata
+                metadata_result.record.model_dump(mode="json", exclude={"encrypted_payload"})
+                if metadata_result.record
+                else metadata_result.metadata
             )
             return [TextContent(type="text", text=_json_text(payload))]
 
@@ -1110,17 +1110,17 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             service = arguments["service"]
             alias = arguments.get("alias")
             ttl = arguments.get("ttl_seconds")
-            result = broker.get_ephemeral_env(service, agent_id, ttl or 900, alias=alias)
-            if not result.allowed:
-                return [TextContent(type="text", text=f"Denied: {result.reason}")]
+            env_result = broker.get_ephemeral_env(service, agent_id, ttl or 900, alias=alias)
+            if not env_result.allowed:
+                return [TextContent(type="text", text=f"Denied: {env_result.reason}")]
             expires_at = None
-            if result.ttl_seconds is not None:
-                expires_at = (datetime.now(timezone.utc) + timedelta(seconds=result.ttl_seconds)).isoformat()
+            if env_result.ttl_seconds is not None:
+                expires_at = (datetime.now(timezone.utc) + timedelta(seconds=env_result.ttl_seconds)).isoformat()
             return [TextContent(type="text", text=_json_text({
-                "env": result.env,
-                "ttl_seconds": result.ttl_seconds,
+                "env": env_result.env,
+                "ttl_seconds": env_result.ttl_seconds,
                 "expires_at": expires_at,
-                "metadata": result.metadata,
+                "metadata": env_result.metadata,
             }))]
 
         if name == "lease_issue":
@@ -1130,35 +1130,35 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             ttl = arguments["ttl_seconds"]
             purpose = arguments.get("purpose") or "task"
             reason = arguments.get("reason")
-            result = broker.issue_lease(agent_id, service, ttl, alias=alias, purpose=purpose, reason=reason)
-            return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
+            lease_issue_result = broker.issue_lease(agent_id, service, ttl, alias=alias, purpose=purpose, reason=reason)
+            return [TextContent(type="text", text=_json_text(lease_issue_result.model_dump(mode="json")))]
 
         if name == "lease_list":
             agent_id = binding.effective_agent_id or ""
             service = arguments.get("service")
             status = arguments.get("status")
-            result = broker.list_leases(agent_id, service=service, status=status)
-            return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
+            lease_list_result = broker.list_leases(agent_id, service=service, status=status)
+            return [TextContent(type="text", text=_json_text(lease_list_result.model_dump(mode="json")))]
 
         if name == "lease_show":
             agent_id = binding.effective_agent_id or ""
             lease_id = arguments["lease_id"]
-            result = broker.show_lease(agent_id, lease_id)
-            return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
+            lease_show_result = broker.show_lease(agent_id, lease_id)
+            return [TextContent(type="text", text=_json_text(lease_show_result.model_dump(mode="json")))]
 
         if name == "lease_renew":
             agent_id = binding.effective_agent_id or ""
             lease_id = arguments["lease_id"]
             ttl = arguments["ttl_seconds"]
-            result = broker.renew_lease(agent_id, lease_id, ttl)
-            return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
+            lease_renew_result = broker.renew_lease(agent_id, lease_id, ttl)
+            return [TextContent(type="text", text=_json_text(lease_renew_result.model_dump(mode="json")))]
 
         if name == "lease_revoke":
             agent_id = binding.effective_agent_id or ""
             lease_id = arguments["lease_id"]
             reason = arguments.get("reason")
-            result = broker.revoke_lease(agent_id, lease_id, reason=reason)
-            return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
+            lease_revoke_result = broker.revoke_lease(agent_id, lease_id, reason=reason)
+            return [TextContent(type="text", text=_json_text(lease_revoke_result.model_dump(mode="json")))]
 
         if name == "verify_credential":
             agent_id = binding.effective_agent_id or ""
@@ -1167,11 +1167,11 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             allowed, reason = broker.policy.can(agent_id, service, ServiceAction.verify)
             if not allowed:
                 return [TextContent(type="text", text=f"Denied: {reason}")]
-            result = broker.verify_credential(service, alias=alias)
+            verification_result = broker.verify_credential(service, alias=alias)
             return [TextContent(type="text", text=_json_text({
-                "allowed": result.allowed,
-                "reason": result.reason,
-                "metadata": result.metadata,
+                "allowed": verification_result.allowed,
+                "reason": verification_result.reason,
+                "metadata": verification_result.metadata,
             }))]
 
         if name == "rotate_credential":
@@ -1192,12 +1192,12 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             agent_id = binding.effective_agent_id or ""
             path = arguments.get("path")
             paths = [path] if path else None
-            result = broker.scan_secrets(agent_id, paths)
-            if not result.allowed:
-                return [TextContent(type="text", text=f"Denied: {result.reason}")]
+            scan_result = broker.scan_secrets(agent_id, paths)
+            if not scan_result.allowed:
+                return [TextContent(type="text", text=f"Denied: {scan_result.reason}")]
             return [TextContent(type="text", text=_json_text({
-                "finding_count": result.metadata.get("finding_count"),
-                "findings": result.metadata.get("findings"),
+                "finding_count": scan_result.metadata.get("finding_count"),
+                "findings": scan_result.metadata.get("findings"),
             }))]
 
         # ── OAuth: initiate PKCE login ───────────────────────────────────────
@@ -1218,7 +1218,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 
         if name == "request_access":
             agent_id = binding.effective_agent_id or ""
-            result = broker.request_access(
+            access_result = broker.request_access(
                 agent_id=agent_id,
                 service=arguments["service"],
                 alias=arguments.get("alias") or "default",
@@ -1226,7 +1226,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 purpose=arguments["purpose"],
                 requested_ttl_seconds=arguments.get("ttl_seconds"),
             )
-            return [TextContent(type="text", text=_json_text(result.model_dump(mode="json")))]
+            return [TextContent(type="text", text=_json_text(access_result.model_dump(mode="json")))]
 
         if name == "policy_explain":
             agent_id = binding.effective_agent_id or ""
@@ -1240,23 +1240,23 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 
         if name == "lease_checkout":
             agent_id = binding.effective_agent_id or ""
-            result = broker.lease_checkout(
+            checkout_result = broker.lease_checkout(
                 agent_id=agent_id,
                 service=arguments["service"],
                 alias=arguments.get("alias"),
                 ttl_seconds=arguments.get("ttl_seconds") or 900,
                 purpose=arguments.get("purpose") or "task",
             )
-            if not result.allowed:
-                return [TextContent(type="text", text=f"Denied: {result.reason}")]
+            if not checkout_result.allowed:
+                return [TextContent(type="text", text=f"Denied: {checkout_result.reason}")]
             expires_at = None
-            if result.ttl_seconds is not None:
-                expires_at = (datetime.now(timezone.utc) + timedelta(seconds=result.ttl_seconds)).isoformat()
+            if checkout_result.ttl_seconds is not None:
+                expires_at = (datetime.now(timezone.utc) + timedelta(seconds=checkout_result.ttl_seconds)).isoformat()
             return [TextContent(type="text", text=_json_text({
-                "env": result.env,
-                "ttl_seconds": result.ttl_seconds,
+                "env": checkout_result.env,
+                "ttl_seconds": checkout_result.ttl_seconds,
                 "expires_at": expires_at,
-                "metadata": result.metadata,
+                "metadata": checkout_result.metadata,
             }))]
 
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
@@ -1440,7 +1440,7 @@ def _exchange_and_store(result: Any, pending_key: str) -> None:
             client_id=info["client_id"],
             client_secret=info["client_secret"],
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("Token exchange failed for %s", pending_key)
         return
 

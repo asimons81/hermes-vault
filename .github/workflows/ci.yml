@@ -31,10 +31,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -53,7 +53,7 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-reports-${{ matrix.os }}-py${{ matrix.python-version }}
           path: |
@@ -67,10 +67,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: pip
@@ -80,30 +80,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]" ruff mypy
 
-      - name: Run blocking Ruff checks
+      - name: Run Ruff checks
         shell: bash
-        run: ruff check . --output-format=concise | tee ruff-blocking-report.txt
+        run: ruff check . --output-format=concise | tee ruff-report.txt
 
-      - name: Run full Ruff baseline
-        if: always()
-        continue-on-error: true
-        shell: bash
-        run: ruff check . --select F --output-format=concise | tee ruff-advisory-report.txt
-
-      - name: Run mypy baseline
-        if: always()
-        continue-on-error: true
+      - name: Run mypy checks
         shell: bash
         run: mypy src/hermes_vault | tee mypy-report.txt
 
       - name: Upload static-analysis reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: static-analysis-reports
           path: |
-            ruff-blocking-report.txt
-            ruff-advisory-report.txt
+            ruff-report.txt
             mypy-report.txt
           if-no-files-found: warn
 
@@ -113,10 +104,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: pip
@@ -136,7 +127,7 @@ jobs:
           /tmp/hermes-vault-wheel-smoke/bin/hermes-vault --help
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hermes-vault-distributions
           path: dist/
@@ -148,10 +139,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: pip
@@ -166,7 +157,7 @@ jobs:
 
       - name: Upload dependency audit
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dependency-audit-report
           path: dependency-audit.json
@@ -178,11 +169,11 @@ jobs:
 
     steps:
       - name: Check out full history
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

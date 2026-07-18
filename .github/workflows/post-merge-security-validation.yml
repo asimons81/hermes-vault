@@ -1,0 +1,222 @@
+name: Post-merge security validation
+
+on:
+  push:
+    branches:
+      - chore/post-merge-validation
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-merge-security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HERMES_AGENT_CONFORMANCE_SHA: 2ea39daeb1f675d72e5c21c9400f2d58d7e6d71a
+
+jobs:
+  operator-security:
+    name: Disposable vault and recovery boundaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run disposable operator validation
+        shell: bash
+        run: python validation/operator_security_validation.py | tee operator-security-validation.json
+
+      - name: Run focused security-boundary tests
+        shell: bash
+        run: |
+          python -m pytest tests -q --tb=short \
+            -k "secret_source or dashboard or recovery or backup or dpapi" \
+            --junitxml=focused-security-tests.xml
+
+      - name: Upload operator evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: operator-security-evidence
+          path: |
+            operator-security-validation.json
+            focused-security-tests.xml
+          if-no-files-found: error
+
+  packaged-dashboard:
+    name: Installed wheel dashboard boundaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m build
+
+      - name: Install wheel in a clean environment
+        shell: bash
+        run: |
+          python -m venv /tmp/hermes-vault-packaged-validation
+          /tmp/hermes-vault-packaged-validation/bin/python -m pip install --upgrade pip
+          /tmp/hermes-vault-packaged-validation/bin/python -m pip install dist/*.whl
+
+      - name: Validate packaged dashboard
+        shell: bash
+        run: |
+          /tmp/hermes-vault-packaged-validation/bin/python \
+            validation/packaged_dashboard_validation.py \
+            | tee packaged-dashboard-validation.json
+
+      - name: Upload packaged runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: packaged-dashboard-evidence
+          path: |
+            packaged-dashboard-validation.json
+            dist/
+          if-no-files-found: error
+
+  dashboard-screenshots:
+    name: Fake-data dashboard screenshots
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install project and browser tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Capture fake-data screenshots
+        run: python validation/capture_dashboard_screenshots.py
+
+      - name: Upload screenshot evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dashboard-screenshot-evidence
+          path: dashboard-screenshots/
+          if-no-files-found: error
+
+  real-windows-dpapi:
+    name: Real Windows DPAPI round trip
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install project with Windows support
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,windows]"
+
+      - name: Run real DPAPI validation
+        shell: pwsh
+        run: |
+          $output = python validation/real_dpapi_validation.py 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath real-dpapi-validation.json
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Upload DPAPI evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: real-windows-dpapi-evidence
+          path: real-dpapi-validation.json
+          if-no-files-found: error
+
+  upstream-hermes-conformance:
+    name: Upstream Hermes Secret Source conformance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out Hermes Vault
+        uses: actions/checkout@v7
+
+      - name: Check out pinned Hermes Agent
+        uses: actions/checkout@v7
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ env.HERMES_AGENT_CONFORMANCE_SHA }}
+          path: upstream-hermes
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install minimal conformance dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+      - name: Run upstream conformance kit
+        env:
+          HERMES_AGENT_ROOT: ${{ github.workspace }}/upstream-hermes
+          PYTHONPATH: ${{ github.workspace }}/upstream-hermes
+        run: |
+          python -m pytest validation/test_upstream_hermes_conformance.py \
+            -q --tb=short --junitxml=upstream-hermes-conformance.xml
+
+      - name: Record pinned upstream commit
+        shell: bash
+        run: |
+          printf '{\n  "hermes_agent_commit": "%s"\n}\n' \
+            "${HERMES_AGENT_CONFORMANCE_SHA}" \
+            > upstream-hermes-version.json
+
+      - name: Upload conformance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: upstream-hermes-conformance-evidence
+          path: |
+            upstream-hermes-conformance.xml
+            upstream-hermes-version.json
+          if-no-files-found: error
