@@ -1,6 +1,42 @@
 # Changelog
 
-## 0.20.0 -- Hermes Secret Source Plugin
+## 0.21.0 -- Audit Assurance (unreleased)
+
+### Added
+
+- Signed audit-integrity chains with deterministic canonical serialization, HKDF-derived Ed25519 evidence signatures, and versioned integrity records.
+- Durable authenticated checkpoints with signature verification, write-lock coordination, and explicit operator-only lifecycle (establish, advance, recover).
+- Legacy migration anchoring with non-destructive, idempotent v0.20→v0.21 transition.
+- Read-only verification result model with explicit healthy, legacy, incomplete, and failed states.
+- **`hvbackup-v2`** backup format including audit integrity evidence, segments, checkpoint, and verification summary.
+- v2 backup verification with structural consistency checks and key compatibility validation.
+- Transactional restore with staged database and checkpoint replacement, rollback evidence, and audited operator restore event.
+- **CLI commands**: `audit-verify`, `audit-checkpoint` (show/establish/advance/recover), `audit-export --with-integrity`.
+- **Dashboard endpoints**: `GET /api/audit-integrity`, `POST /api/audit-integrity/verify`.
+- **MCP resources**: `vault://audit-integrity` metadata-only resource, integrity summary in `vault://status`.
+- Sanitized integrity summaries in incident bundles and recovery reports.
+- Master-key rotation segments with predecessor chain continuity.
+- Full Linux and Windows test matrix with 800+ passing tests.
+
+### Security boundaries
+
+- Private signing material is derived only in memory and is neither stored nor exported.
+- Integrity-key material is never logged, serialized, or environment-placed.
+- Checkpoint reset, advancement, and recovery remain explicit and operator-only (require `--yes`).
+- Verification is read-only across CLI, dashboard, and MCP surfaces.
+- Secret Source and MCP credential authority are unchanged.
+- Pre-v0.21 audit history is preserved and readable but was not retrospectively protected.
+- Local integrity verification is not third-party attestation.
+
+### Compatibility
+
+- v0.20 vaults open without destructive migration; legacy audit rows become anchored.
+- Interrupted migration is safe to retry.
+- `hvbackup-v1` backups remain fully restorable (classified as legacy).
+- Metadata-only backups are non-restorable.
+- Windows and POSIX behavior uses the existing platform abstraction.
+- DPAPI-backed and passphrase-backed vaults provide the same audit-integrity behavior.
+- No automatic downgrade is guaranteed after protected audit entries are written.
 
 ### Added
 

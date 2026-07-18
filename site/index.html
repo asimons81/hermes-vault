@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hermes Vault, Agent Control Plane</title>
-  <meta name="description" content="Hermes Vault turns plaintext .env files into explainable, lease-aware, policy-scoped agent access with local encryption, approvals, recovery drills, and MCP control-plane tools.">
+  <title>Hermes Vault, Audit Assurance</title>
+  <meta name="description" content="Hermes Vault provides signed audit continuity, authenticated checkpoints, backup integrity, and read-only verification through CLI, dashboard, and MCP surfaces.">
   <meta name="theme-color" content="#030407">
   <meta property="og:title" content="Hermes Vault">
   <meta property="og:description" content="Credential lifecycle and recovery for Hermes operators.">
@@ -42,7 +42,7 @@
     <!-- Hero Section -->
     <section class="hero section-pad reveal hero-reveal-1">
       <div class="hero-copy">
-        <p class="eyebrow">v0.20.0 &bull; Hermes Secret Source Plugin &bull; startup credentials</p>
+        <p class="eyebrow">v0.21.0 &bull; Audit Assurance &bull; signed audit continuity</p>
         <h1>From <span>.env</span> to safe agent access.</h1>
         <p class="lede">
           Bootstrap a messy plaintext env file into an encrypted local vault, explain every access decision, route approvals through an audit trail, bind env handoffs to leases, and prove recovery before the incident. Less key sprawl, fewer auth lies, fewer agent mistakes.
@@ -63,7 +63,7 @@
         <div class="hero-metrics" aria-label="Release and platform notes">
           <div class="metric-card">
             <span>Current Release</span>
-            <strong>0.20.0</strong>
+            <strong>0.21.0</strong>
             <small>Mapped startup secrets through `hermes_vault`, with protected bootstrap passphrases, redacted errors, and MCP still handling in-loop access.</small>
           </div>
           <div class="metric-card">
@@ -376,12 +376,12 @@
                 <span>Production Install</span>
                 <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
               </div>
-              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.20.0
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.21.0
 hermes-vault bootstrap --from-env .env --agent hermes --dry-run
-hermes-vault bootstrap --from-env .env --agent hermes
+hermes-vault audit-verify
+hermes-vault audit-checkpoint show
+hermes-vault audit export --with-integrity
 hermes-vault policy explain hermes openai --action get_env
-hermes-vault request access openai --agent hermes --purpose "release check" --ttl 600
-hermes-vault lease checkout openai --agent hermes --purpose "release check" --ttl 600</code></pre>
             </div>
             <div class="install-notes">
               <article class="note-card">
@@ -432,11 +432,15 @@ uv run pytest tests/ -q</code></pre>
       <div class="release-timeline">
         <article class="release-featured">
           <div class="release-badge">Current Release</div>
-          <h3>v0.20.0</h3>
-          <p>Hermes Secret Source Plugin: mapped startup env materialization, protected bootstrap passphrases, non-interactive fetches, redacted errors, and MCP kept for in-loop access.</p>
+          <h3>v0.21.0</h3>
+          <p>Audit Assurance: signed audit continuity with authenticated checkpoints, HKDF-derived Ed25519 chains, legacy anchoring, hvbackup-v2 with integrity evidence, transactional restore, and read-only CLI, dashboard, and MCP verification surfaces.</p>
         </article>
 
         <div class="release-list">
+          <article class="release-row">
+            <span class="release-version">v0.20.0</span>
+            <p>Hermes Secret Source Plugin: mapped startup env materialization, protected bootstrap passphrases, non-interactive fetches, redacted errors, and MCP kept for in-loop access.</p>
+          </article>
           <article class="release-row">
             <span class="release-version">v0.18.0</span>
             <p>Operator Workflow Convergence with dry-run dashboard onboarding preview, recovery diff drills, searchable credential/lease/audit views, MCP <code>vault://status</code>, and fixes for lease metrics, key validation, and OAuth login state isolation.</p>
