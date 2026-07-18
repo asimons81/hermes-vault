@@ -1242,17 +1242,22 @@ class Vault:
             "leases": backup_leases,
         }
         if include_audit:
+            audit_service = AuditIntegrityService(self.db_path, self.key)
+            audit_service.ensure_initialized()
             backup["version"] = "hvbackup-v2"
-            backup["audit_integrity"] = AuditIntegrityService(self.db_path, self.key).export_evidence()
+            backup["audit_integrity"] = audit_service.export_evidence()
         return backup
 
     def import_backup(self, backup: dict, replace: bool = True) -> list[CredentialRecord]:
         """Import credentials from a backup dict. Existing records are replaced by default.
 
+        Supports hvbackup-v1 and hvbackup-v2 (credential portion only).
         Rejects metadata-only backups (entries missing encrypted_payload).
+        Audit integrity state is restored separately via restore_audit_integrity.
         """
-        if backup.get("version") != "hvbackup-v1":
-            raise ValueError(f"Unsupported backup version: {backup.get('version')}")
+        version = backup.get("version")
+        if version not in ("hvbackup-v1", "hvbackup-v2"):
+            raise ValueError(f"Unsupported backup version: {version}")
         imported = []
         for cred_data in backup.get("credentials", []):
             if cred_data.get("encrypted_payload") is None:
@@ -1448,6 +1453,203 @@ class Vault:
                     )
                     conn.commit()
         return imported
+
+    def restore_audit_integrity(
+        self, backup: dict, *, rollback_on_failure: bool = True
+    ) -> dict[str, Any]:
+        """Restore audit integrity evidence from an hvbackup-v2 backup.
+
+        Staged transactional restore:
+        1. Verify the backup fully.
+        2. Create a durable recovery copy of current state.
+        3. Stage database changes.
+        4. Stage checkpoint changes.
+        5. Commit database state transactionally.
+        6. Replace the checkpoint atomically.
+        7. Record an audited operator restore event.
+        8. Retain rollback evidence until success is confirmed.
+        9. Clean up staging artifacts after confirmed success.
+        """
+        from hermes_vault.audit import AuditLogger
+        from hermes_vault.audit_integrity.checkpoint import read_checkpoint, write_checkpoint
+        from hermes_vault.audit_integrity.schema import initialize_schema
+        from hermes_vault.audit_integrity.service import AuditIntegrityService
+
+        version = backup.get("version")
+        if version != BACKUP_VERSION_V2:
+            return {"success": False, "reason": f"Integrity restore requires hvbackup-v2, got {version}"}
+
+        integrity = backup.get("audit_integrity", {})
+        if not integrity:
+            return {"success": False, "reason": "Backup contains no audit integrity evidence."}
+
+        available = integrity.get("integrity_available", False)
+        if not available:
+            return {"success": False, "reason": "Integrity evidence is not available in this backup."}
+
+        # 1. Verify the backup fully (credentials + integrity).
+        from hermes_vault.backup import verify_backup_file
+        verify_path = backup.get("_source_path")
+        if verify_path:
+            report = verify_backup_file(Path(verify_path), self)
+        else:
+            report = None
+
+        # 2. Create durable recovery copy of current state.
+        recovery_salt = self.salt_path.read_bytes() if self.salt_path.exists() else b""
+        recovery_db = self.db_path.read_bytes() if self.db_path.exists() else b""
+        recovery_checkpoint = None
+        cp_path = self.db_path.with_name("audit.checkpoint.json")
+        if cp_path.exists():
+            recovery_checkpoint = read_checkpoint(cp_path)
+
+        stage_path = self.db_path.with_suffix(".db.restore-stage")
+        stage_cp_path = cp_path.with_suffix(".json.restore-stage")
+
+        try:
+            # 3. Stage database changes (integrity tables only).
+            stage = backup.get("audit_integrity", {})
+            state_rows = stage.get("state", [])
+            segments = stage.get("segments", [])
+            records = stage.get("records", [])
+            checkpoint = stage.get("checkpoint")
+
+            if not state_rows or not segments:
+                return {"success": False, "reason": "Backup integrity evidence is incomplete."}
+
+            with sqlite3.connect(str(stage_path)) as stage_conn:
+                initialize_schema(stage_conn)
+                for s in state_rows:
+                    cols = ", ".join(s.keys())
+                    placeholders = ", ".join("?" for _ in s)
+                    stage_conn.execute(
+                        f"INSERT OR REPLACE INTO audit_integrity_state ({cols}) VALUES ({placeholders})",
+                        list(s.values()),
+                    )
+                for seg in segments:
+                    cols = ", ".join(seg.keys())
+                    placeholders = ", ".join("?" for _ in seg)
+                    stage_conn.execute(
+                        f"INSERT OR REPLACE INTO audit_integrity_segments ({cols}) VALUES ({placeholders})",
+                        list(seg.values()),
+                    )
+                for rec in records:
+                    cols = ", ".join(rec.keys())
+                    placeholders = ", ".join("?" for _ in rec)
+                    stage_conn.execute(
+                        f"INSERT OR REPLACE INTO audit_integrity_records ({cols}) VALUES ({placeholders})",
+                        list(rec.values()),
+                    )
+                stage_conn.commit()
+
+            # 4. Stage checkpoint changes.
+            if checkpoint:
+                stage_cp_path.write_text(
+                    json.dumps(checkpoint, sort_keys=True), encoding="utf-8"
+                )
+
+            # 5. Commit database state transactionally.
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    conn.executescript(f"ATTACH DATABASE '{stage_path}' AS stage")
+                    tables = [
+                        "audit_integrity_state",
+                        "audit_integrity_segments",
+                        "audit_integrity_records",
+                    ]
+                    for table in tables:
+                        conn.execute(
+                            f"DELETE FROM {table}"
+                        )
+                        conn.execute(
+                            f"INSERT INTO {table} SELECT * FROM stage.{table}"
+                        )
+                    conn.execute("DETACH DATABASE stage")
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+
+            # 6. Replace the checkpoint atomically.
+            if checkpoint:
+                import tempfile
+                import shutil
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=cp_path.parent, suffix=".checkpoint-tmp"
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(checkpoint, f, sort_keys=True)
+                        f.write("\n")
+                    shutil.move(tmp_path, str(cp_path))
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+
+            # 7. Record an audited operator restore event.
+            audit = AuditLogger(self.db_path, master_key=self.key)
+            from hermes_vault.models import AccessLogRecord, Decision
+            audit.record(
+                AccessLogRecord(
+                    agent_id="operator",
+                    service="*",
+                    action="integrity_restore",
+                    decision=Decision.allow,
+                    reason="Operator-initiated transactional audit integrity restore",
+                    metadata={"version": "hvbackup-v2"},
+                )
+            )
+
+            # 8. Retain rollback evidence — keep recovery copy in temp.
+            recovery_path = self.db_path.with_suffix(".db.pre-restore-recovery")
+            if recovery_db:
+                Path(recovery_path).write_bytes(recovery_db)
+            if recovery_checkpoint:
+                recovery_cp_path = cp_path.with_suffix(".checkpoint.pre-restore-recovery.json")
+                recovery_cp_path.write_text(
+                    json.dumps(recovery_checkpoint, sort_keys=True), encoding="utf-8"
+                )
+
+            # 9. Clean up staging artifacts.
+            stage_path.unlink(missing_ok=True)
+            stage_cp_path.unlink(missing_ok=True)
+
+            # Verify restored integrity.
+            service = AuditIntegrityService(self.db_path, self.key)
+            result = service.verify()
+
+            return {
+                "success": True,
+                "version": BACKUP_VERSION_V2,
+                "integrity_status": result.status.value,
+                "verified_count": result.verified_count,
+                "legacy_count": result.legacy_count,
+                "reason": result.sanitized_reason,
+            }
+
+        except Exception as exc:
+            # Clean up staging on failure.
+            stage_path.unlink(missing_ok=True)
+            stage_cp_path.unlink(missing_ok=True)
+
+            if rollback_on_failure:
+                # Rollback: restore recovery copies.
+                if recovery_db:
+                    self.db_path.write_bytes(recovery_db)
+                if recovery_checkpoint:
+                    Path(str(cp_path) + ".rollback").write_text(
+                        json.dumps(recovery_checkpoint, sort_keys=True), encoding="utf-8"
+                    )
+
+            return {
+                "success": False,
+                "reason": f"Integrity restore failed: {exc}",
+                "rollback_available": rollback_on_failure,
+            }
 
     def rotate_master_key(
         self,
