@@ -17,6 +17,7 @@ policy/audit semantics should always use this layer.
 from __future__ import annotations
 
 from hermes_vault.audit import AuditLogger
+from hermes_vault.audit_integrity.service import AuditIntegrityError
 from hermes_vault.models import (
     AccessLogRecord,
     AgentCapability,
@@ -106,14 +107,29 @@ class VaultMutations:
                 agent_id, service, "add_credential", False, str(exc)
             )
 
-        return self._record_mutation(
-            agent_id,
-            service,
-            "add_credential",
-            True,
-            f"credential {record.id} added for service '{service}' alias '{alias}'",
-            record=record,
-        )
+        try:
+            return self._record_mutation(
+                agent_id,
+                service,
+                "add_credential",
+                True,
+                f"credential {record.id} added for service '{service}' alias '{alias}'",
+                record=record,
+            )
+        except AuditIntegrityError as exc:
+            # The credential was committed but the integrity chain refused to seal
+            # the audit row. `_record_mutation` has already rolled back the
+            # credential via `vault.delete()`. Surface a clean denial result
+            # so the caller gets the same shape as every other rejection path.
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="add_credential",
+                reason=f"audit integrity: {exc}. Run `hermes-vault audit-verify` to inspect the chain; the credential was not persisted.",
+                record=None,
+                metadata={},
+            )
 
     def rotate_credential(
         self,
@@ -152,14 +168,25 @@ class VaultMutations:
                 agent_id, service, "rotate_credential", False, str(exc)
             )
 
-        return self._record_mutation(
-            agent_id,
-            service,
-            "rotate_credential",
-            True,
-            f"rotated credential for service '{service}' alias '{updated.alias}'",
-            record=updated,
-        )
+        try:
+            return self._record_mutation(
+                agent_id,
+                service,
+                "rotate_credential",
+                True,
+                f"rotated credential for service '{service}' alias '{updated.alias}'",
+                record=updated,
+            )
+        except AuditIntegrityError as exc:
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="rotate_credential",
+                reason=f"audit integrity: {exc}. Run `hermes-vault audit-verify` to inspect the chain; the rotated secret is unchanged.",
+                record=None,
+                metadata={},
+            )
 
     def delete_credential(
         self,
@@ -276,16 +303,39 @@ class VaultMutations:
         record: CredentialRecord | None = None,
         metadata: dict | None = None,
     ) -> MutationResult:
-        """Write the audit entry and build the result."""
-        self.audit.record(
-            AccessLogRecord(
-                agent_id=agent_id,
-                service=service,
-                action=action,
-                decision=Decision.allow if allowed else Decision.deny,
-                reason=reason,
+        """Write the audit entry and build the result.
+
+        Atomicity contract: when `record` is provided (a state-changing
+        mutation succeeded at the vault layer), the audit append is part
+        of the same logical operation. If the integrity chain refuses to
+        seal the audit row, the credential write is rolled back so the
+        vault never ends up in a desynced state (credential exists, audit
+        row missing). The integrity exception is re-raised as an
+        :class:`AuditIntegrityError` with an operator-actionable message.
+        """
+        try:
+            self.audit.record(
+                AccessLogRecord(
+                    agent_id=agent_id,
+                    service=service,
+                    action=action,
+                    decision=Decision.allow if allowed else Decision.deny,
+                    reason=reason,
+                )
             )
-        )
+        except AuditIntegrityError as exc:
+            # If a credential was just written, roll it back so the vault
+            # doesn't desync from its audit chain. This is best-effort: the
+            # vault connection has already committed, so we issue a delete.
+            if record is not None and action in ("add_credential", "rotate_credential"):
+                try:
+                    self.vault.delete(record.id)
+                except Exception as rollback_exc:
+                    # Surface both errors so the operator knows the rollback failed
+                    raise AuditIntegrityError(
+                        f"{exc}. Rollback of credential '{record.id}' also failed: {rollback_exc}"
+                    ) from exc
+            raise
         return MutationResult(
             allowed=allowed,
             service=service,
