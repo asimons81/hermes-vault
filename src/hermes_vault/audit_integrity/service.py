@@ -111,22 +111,40 @@ class AuditIntegrityService:
         return conn.execute("SELECT * FROM audit_integrity_segments WHERE segment_id = ?", (segment_id,)).fetchone()
 
     def ensure_initialized(self) -> None:
+        # The audit-write lock serializes this against concurrent
+        # AuditIntegrityService instances in the same process and gives
+        # us a single-writer view of the database.
         with audit_write_lock(self.lock_path):
             with self._connection() as conn:
-                initialize_schema(conn)
-                state = conn.execute("SELECT * FROM audit_integrity_state WHERE id = 1").fetchone()
-                if state is not None:
-                    return
-                legacy = self._legacy_snapshot(conn)
-                reason = "legacy_migration" if legacy[0] else "fresh_vault"
-                segment = self._create_segment(conn, master_key=self.master_key, transition_reason=reason, sequence_start=1, legacy=legacy)
-                now = self._now()
-                conn.execute(
-                    "INSERT INTO audit_integrity_state (id, schema_version, migration_state, active_segment_id, legacy_cutoff_timestamp, legacy_cutoff_id, created_at, updated_at) VALUES (1, ?, 'active', ?, ?, ?, ?, ?)",
-                    (SCHEMA_VERSION, segment["segment_id"], legacy[4], legacy[2], now, now),
-                )
-                conn.commit()
-                self._write_current_checkpoint(conn, segment, latest_sequence=0, latest_digest="")
+                # BEGIN IMMEDIATE so no other writer can interleave between
+                # the legacy snapshot capture and the segment INSERT. Without
+                # this, a concurrent `access_logs` insert between snapshot and
+                # segment creation leaves the new row outside both the legacy
+                # prefix and the protected chain — producing a permanent
+                # `missing_integrity_record` failure on the next verify.
+                # See: https://github.com/asimons81/hermes-vault/issues/audit-toctou
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    initialize_schema(conn)
+                    state = conn.execute("SELECT * FROM audit_integrity_state WHERE id = 1").fetchone()
+                    if state is not None:
+                        conn.commit()  # release the writer lock; nothing to do
+                        return
+                    # Capture the snapshot AFTER BEGIN IMMEDIATE — any writer
+                    # that wanted to interleave is now blocked on our lock.
+                    legacy = self._legacy_snapshot(conn)
+                    reason = "legacy_migration" if legacy[0] else "fresh_vault"
+                    segment = self._create_segment(conn, master_key=self.master_key, transition_reason=reason, sequence_start=1, legacy=legacy)
+                    now = self._now()
+                    conn.execute(
+                        "INSERT INTO audit_integrity_state (id, schema_version, migration_state, active_segment_id, legacy_cutoff_timestamp, legacy_cutoff_id, created_at, updated_at) VALUES (1, ?, 'active', ?, ?, ?, ?, ?)",
+                        (SCHEMA_VERSION, segment["segment_id"], legacy[4], legacy[2], now, now),
+                    )
+                    conn.commit()
+                    self._write_current_checkpoint(conn, segment, latest_sequence=0, latest_digest="")
+                except Exception:
+                    conn.rollback()
+                    raise
 
     def _active(self, conn: sqlite3.Connection) -> sqlite3.Row:
         state = conn.execute("SELECT * FROM audit_integrity_state WHERE id = 1").fetchone()
