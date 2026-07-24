@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import re
 import sqlite3
@@ -1691,6 +1692,87 @@ def tag_cmd(
     elif remove_tags:
         new_tags = remove_tags_from_credential(vault, record.id, remove_tags)
     console.print(f"[green]Tags for {record.service} ({record.alias}): {', '.join(new_tags) or '(none)'}[/green]")
+
+
+@_typer_app.command("schedule-verify")
+def schedule_verify(
+    ctx: typer.Context,
+    every: str = typer.Option("24h", "--every", help="Verification interval: 1h, 6h, 24h, 7d."),
+    services: list[str] | None = typer.Option(None, "--service", help="Limit to specific services (repeatable)."),
+    print_unit: bool = typer.Option(False, "--print-unit", help="Print systemd timer+service units."),
+    print_cron: bool = typer.Option(False, "--print-cron", help="Print cron job line."),
+) -> None:
+    """Generate scheduled verification templates.
+
+    Outputs systemd timer units or cron job entries for automated
+    credential verification.
+
+    \\b
+    Examples:
+      hermes-vault schedule-verify --every 24h --print-cron
+      hermes-vault schedule-verify --every 6h --print-unit --service openai,anthropic
+    """
+    svc_args = ""
+    if services:
+        for s in services:
+            svc_args += f" --service {s}"
+    if print_unit:
+        console.print(_schedule_verify_systemd(every, svc_args))
+    if print_cron:
+        console.print(_schedule_verify_cron(every, svc_args))
+    if not print_unit and not print_cron:
+        console.print("Use --print-unit or --print-cron to see template.")
+        console.print(f"Example: hermes-vault schedule-verify --every 24h --print-cron")
+
+
+def _schedule_verify_cron(interval: str, service_args: str) -> str:
+    """Generate a cron line for scheduled verification."""
+    cron_map = {"1h": "0 * * * *", "6h": "0 */6 * * *", "12h": "0 */12 * * *",
+                 "24h": "0 0 * * *", "7d": "0 0 * * 0"}
+    schedule = cron_map.get(interval, "0 0 * * *")
+    return f"{schedule} hermes-vault verify --all{service_args} --format json --report ~/vault-last-verify.json"
+
+
+def _schedule_verify_systemd(interval: str, service_args: str) -> str:
+    on_calendar = {"1h": "hourly", "6h": "*-*-* *:00:00", "12h": "*-*-* 00,12:00:00",
+                    "24h": "daily", "7d": "weekly"}
+    onc = on_calendar.get(interval, "daily")
+    return f"""# hermes-vault-verify.timer
+[Unit]
+Description=Hermes Vault credential verification
+
+[Timer]
+OnCalendar={onc}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
+# hermes-vault-verify.service
+[Unit]
+Description=Hermes Vault credential verification
+
+[Service]
+Type=oneshot
+ExecStart={shutil.which('hermes-vault') or 'hermes-vault'} verify --all{service_args}
+"""
+
+
+def _compute_health_score(report) -> str:
+    """A-F health score based on coverage, staleness, and findings."""
+    findings = len(report.findings)
+    coverage = getattr(report, "verification_coverage", 0.0)
+    total = max(report.total_credentials, 1)
+    stale_pct = report.stale_count / total
+    if findings == 0 and coverage > 0.8:
+        return "A"
+    if findings <= 2 and coverage > 0.5:
+        return "B"
+    if findings <= 5:
+        return "C"
+    if stale_pct > 0.5:
+        return "F"
+    return "D"
 
 
 @_typer_app.command()
