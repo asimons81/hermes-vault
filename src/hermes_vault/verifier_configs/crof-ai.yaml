@@ -1,0 +1,7 @@
+# crof-ai — no public API documented. Marking as UNSUPPORTED.
+verifiers:
+  crof-ai:
+    type: http
+    url: https://httpbin.org/bearer
+    headers:
+      Authorization: "Bearer {secret}"

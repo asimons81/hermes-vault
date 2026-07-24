@@ -1,0 +1,7 @@
+# kimi-coding — Moonshot coding models. Same API as kimi.
+verifiers:
+  kimi-coding:
+    type: http
+    url: https://api.moonshot.cn/v1/models
+    headers:
+      Authorization: "Bearer {secret}"

@@ -18,6 +18,8 @@ from hermes_vault.config import AppSettings
 from hermes_vault.models import VerificationCategory, VerificationResult
 from hermes_vault.service_ids import normalize
 
+_SHIPPED_CONFIGS_DIR = Path(__file__).resolve().parent / "verifier_configs"
+
 
 @dataclass(frozen=True)
 class ProviderVerifierConfig:
@@ -206,12 +208,18 @@ class Verifier:
         )
         self._register_builtins()
         if load_file_plugins:
+            if _SHIPPED_CONFIGS_DIR.exists() and _SHIPPED_CONFIGS_DIR.is_dir():
+                self._load_file_plugins(_SHIPPED_CONFIGS_DIR)
             self._load_file_plugins(self.plugin_dir)
         if load_entry_points:
             self._load_entry_point_plugins()
 
     def diagnostics(self) -> list[VerifierDiagnostic]:
         return list(self._diagnostics)
+
+    def count_registered_services(self) -> int:
+        """Return the number of services with registered verifiers."""
+        return len(self._registry)
 
     def register(
         self,

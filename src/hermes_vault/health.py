@@ -67,6 +67,9 @@ class HealthReport:
     expired_count: int = 0
     expiring_count: int = 0
     never_verified_count: int = 0
+    verification_coverage: float = 0.0  # 0.0 - 1.0
+    registered_verifiers: int = 0
+    health_score: str = "N/A"  # A-F
     findings: list[HealthFinding] = field(default_factory=list)
     days_since_last_backup: int | None = None
     stale_threshold_days: int = 30
@@ -92,6 +95,9 @@ class HealthReport:
             "expired_count": self.expired_count,
             "expiring_count": self.expiring_count,
             "never_verified_count": self.never_verified_count,
+            "verification_coverage": self.verification_coverage,
+            "registered_verifiers": self.registered_verifiers,
+            "health_score": self.health_score,
             "findings": [f.as_dict() for f in self.findings],
             "days_since_last_backup": self.days_since_last_backup,
             "stale_threshold_days": self.stale_threshold_days,
@@ -328,6 +334,19 @@ def run_health(
 
     report.healthy_count = healthy
 
+    # ── verification coverage ───────────────────────────────────────
+    if live_verifier is not None:
+        try:
+            from hermes_vault.verifier import Verifier
+            if isinstance(live_verifier, Verifier):
+                report.registered_verifiers = live_verifier.count_registered_services()
+        except Exception:
+            pass
+    unique_services = {rec.service for rec in records}
+    verified_services = {rec.service for rec in records if rec.last_verified_at is not None}
+    if unique_services:
+        report.verification_coverage = len(verified_services) / len(unique_services)
+
     # ── backup ──────────────────────────────────────────────────────
     if audit is not None:
         last_backup = _query_last_backup(audit)
@@ -354,5 +373,23 @@ def run_health(
 
     # ── verdict ─────────────────────────────────────────────────────
     report.healthy = len(report.findings) == 0
+
+    # ── health score ─────────────────────────────────────────────────
+    if report.total_credentials == 0:
+        report.health_score = "N/A"
+    else:
+        findings = len(report.findings)
+        coverage = report.verification_coverage
+        stale_pct = report.stale_count / max(report.total_credentials, 1)
+        if findings == 0 and coverage > 0.8:
+            report.health_score = "A"
+        elif findings <= 2 and coverage > 0.5:
+            report.health_score = "B"
+        elif findings <= 5:
+            report.health_score = "C"
+        elif stale_pct > 0.5:
+            report.health_score = "F"
+        else:
+            report.health_score = "D"
 
     return report

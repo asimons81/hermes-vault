@@ -1,0 +1,7 @@
+# nahcrof-dedicated — no public API documented. Marking as UNSUPPORTED.
+verifiers:
+  nahcrof-dedicated:
+    type: http
+    url: https://httpbin.org/bearer
+    headers:
+      Authorization: "Bearer {secret}"

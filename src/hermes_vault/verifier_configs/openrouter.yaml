@@ -1,0 +1,6 @@
+verifiers:
+  openrouter:
+    type: http
+    url: https://openrouter.ai/api/v1/models
+    headers:
+      Authorization: "Bearer {secret}"

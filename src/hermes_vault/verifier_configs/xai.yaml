@@ -1,0 +1,6 @@
+verifiers:
+  xai:
+    type: http
+    url: https://api.x.ai/v1/models
+    headers:
+      Authorization: "Bearer {secret}"

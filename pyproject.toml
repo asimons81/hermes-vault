@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-vault"
-version = "0.21.0"
+version = "0.22.0"
 description = "Hermes-native local-first credential broker, scanner, and encrypted vault."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -66,4 +66,4 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-hermes_vault = ["dashboard_static/*", "dashboard_static/assets/*"]
+hermes_vault = ["dashboard_static/*", "dashboard_static/assets/*", "verifier_configs/*.yaml"]

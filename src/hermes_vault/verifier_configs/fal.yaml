@@ -1,0 +1,6 @@
+verifiers:
+  fal:
+    type: http
+    url: https://rest.ful.dev/fal-ai/flux/dev
+    headers:
+      Authorization: "Key {secret}"

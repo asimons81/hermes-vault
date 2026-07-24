@@ -1,0 +1,6 @@
+verifiers:
+  replicate:
+    type: http
+    url: https://api.replicate.com/v1/account
+    headers:
+      Authorization: "Bearer {secret}"

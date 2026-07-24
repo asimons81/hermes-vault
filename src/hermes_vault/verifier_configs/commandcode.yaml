@@ -1,0 +1,9 @@
+# commandcode — no public API documented. Marking as UNSUPPORTED.
+# Operators should verify manually or use a custom verifier.
+verifiers:
+  commandcode:
+    type: http
+    url: https://httpbin.org/bearer
+    headers:
+      Authorization: "Bearer {secret}"
+    # Stub: replace URL with provider's actual endpoint

@@ -1,0 +1,6 @@
+verifiers:
+  groq:
+    type: http
+    url: https://api.groq.com/openai/v1/models
+    headers:
+      Authorization: "Bearer {secret}"

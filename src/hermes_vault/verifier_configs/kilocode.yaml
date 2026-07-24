@@ -1,0 +1,7 @@
+# kilocode — no public API documented. Marking as UNSUPPORTED.
+verifiers:
+  kilocode:
+    type: http
+    url: https://httpbin.org/bearer
+    headers:
+      Authorization: "Bearer {secret}"

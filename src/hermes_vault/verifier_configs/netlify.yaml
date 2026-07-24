@@ -1,0 +1,6 @@
+verifiers:
+  netlify:
+    type: http
+    url: https://api.netlify.com/api/v1/user
+    headers:
+      Authorization: "Bearer {secret}"

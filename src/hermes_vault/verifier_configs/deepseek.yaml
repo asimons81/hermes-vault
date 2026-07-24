@@ -1,0 +1,6 @@
+verifiers:
+  deepseek:
+    type: http
+    url: https://api.deepseek.com/v1/models
+    headers:
+      Authorization: "Bearer {secret}"

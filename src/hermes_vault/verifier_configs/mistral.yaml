@@ -1,0 +1,6 @@
+verifiers:
+  mistral:
+    type: http
+    url: https://api.mistral.ai/v1/models
+    headers:
+      Authorization: "Bearer {secret}"
