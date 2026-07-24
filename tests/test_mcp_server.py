@@ -536,7 +536,11 @@ def test_get_ephemeral_env_returns_env(vault_with_policy, tmp_path):
     data = _json(result)
     assert "env" in data
     assert "OPENAI_API_KEY" in data["env"]
-    assert data["env"]["OPENAI_API_KEY"] == "test-openai-key"
+    # MCP response now masks secrets — never returns raw keys
+    assert data["env"]["OPENAI_API_KEY"] != "test-openai-key"
+    assert "..." in data["env"]["OPENAI_API_KEY"]
+    assert "_secret_lengths" in data
+    assert data["_secret_lengths"]["OPENAI_API_KEY"] == 15
     assert "expires_at" in data
     assert data["expires_at"] is not None
 
