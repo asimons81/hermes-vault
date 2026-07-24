@@ -1725,6 +1725,61 @@ def schedule_verify(
         console.print(f"Example: hermes-vault schedule-verify --every 24h --print-cron")
 
 
+@_typer_app.command("catalog")
+def catalog_cmd(ctx: typer.Context) -> None:
+    """List all 45 canonical service IDs with metadata."""
+    from hermes_vault.service_ids import CANONICAL_IDS, get_env_var_map
+    from hermes_vault.verifier import Verifier
+    v = Verifier(load_entry_points=False)
+    registered = set()
+    if hasattr(v, '_registry'):
+        registered = {reg.service for reg in v._registry.values()}
+    table = Table(title="Hermes Vault Service Catalog")
+    table.add_column("Service")
+    table.add_column("Env Var")
+    table.add_column("Verified")
+    table.add_column("Description")
+
+    for svc in sorted(CANONICAL_IDS):
+        env_vars = get_env_var_map(svc)
+        primary_env = next(iter(env_vars.keys()), "-")
+        has_v = "\u2713" if svc in registered else "\u2717"
+        table.add_row(svc, primary_env, has_v, _svc_desc(svc))
+    console.print(table)
+    total = len(CANONICAL_IDS)
+    count = sum(1 for s in CANONICAL_IDS if s in registered)
+    console.print(f"\n[yellow]{total} canonical services. {count} verifiers loaded.[/yellow]")
+
+
+def _svc_desc(svc: str) -> str:
+    d: dict[str, str] = {
+        "anthropic": "Anthropic Claude API",
+        "bailian": "Alibaba Bailian / Tongyi AI",
+        "brave-search": "Brave Search API", "cloudflare": "Cloudflare API",
+        "commandcode": "CommandCode coding agent", "crof-ai": "Crof AI",
+        "deepseek": "DeepSeek AI API", "elevenlabs": "ElevenLabs TTS",
+        "evolink": "Evolink AI", "fal": "FAL.ai media generation",
+        "fireworks": "Fireworks AI inference", "gemini": "Google Gemini",
+        "generic": "Generic bearer token", "github": "GitHub API",
+        "google": "Google OAuth / APIs", "groq": "Groq LPU inference",
+        "huggingface": "Hugging Face Hub", "inception": "Inception AI",
+        "kilocode": "KiloCode coding agent", "kimi": "Moonshot Kimi",
+        "kimi-coding": "Moonshot Kimi Coding", "minimax": "MiniMax AI",
+        "mistral": "Mistral AI", "nahcrof-dedicated": "Nahcrof dedicated",
+        "netlify": "Netlify platform", "neuralwatt": "NeuralWatt",
+        "ninerouter": "9Router model gateway", "openai": "OpenAI API",
+        "openrouter": "OpenRouter gateway", "perplexity": "Perplexity AI",
+        "replicate": "Replicate model hosting", "resend": "Resend email",
+        "serpapi": "SerpAPI search", "serper": "Serper.dev search",
+        "supabase": "Supabase platform", "synthetic": "Synthetic agent",
+        "tavily": "Tavily search", "telegram": "Telegram Bot API",
+        "trinity": "Trinity agent", "venice": "Venice AI",
+        "vercel": "Vercel platform", "voyage": "Voyage embeddings",
+        "xai": "xAI / Grok", "xiaomi": "Xiaomi AI", "zai": "Zai AI",
+    }
+    return d.get(svc, "")
+
+
 def _schedule_verify_cron(interval: str, service_args: str) -> str:
     """Generate a cron line for scheduled verification."""
     cron_map = {"1h": "0 * * * *", "6h": "0 */6 * * *", "12h": "0 */12 * * *",
