@@ -94,6 +94,19 @@ _typer_app.add_typer(incident_app, name="incident")
 console = Console()
 
 
+@_typer_app.command("setup")
+def setup_wizard_cmd(ctx: typer.Context) -> None:
+    """Interactive first-time vault setup wizard.
+
+    Walks through vault creation, passphrase setup, import suggestions,
+    policy bootstrap, verification scheduling, and integration setup.
+    """
+    from hermes_vault.setup_wizard import run_setup_wizard
+    result = run_setup_wizard()
+    if result != 0:
+        raise typer.Exit(code=result)
+
+
 def _dashboard_runtime_warning() -> str | None:
     raw_home = os.environ.get("HERMES_VAULT_HOME")
     if not raw_home:

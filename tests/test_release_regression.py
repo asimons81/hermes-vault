@@ -25,8 +25,8 @@ def test_release_version_surfaces_align() -> None:
     from hermes_vault.mcp_server import list_resources, list_tools, server
     import asyncio
 
-    assert pyproject["project"]["version"] == "0.21.0"
-    assert hermes_vault.__version__ == "0.21.0"
+    assert pyproject["project"]["version"] == "0.22.0"
+    assert hermes_vault.__version__ == "0.22.0"
     assert server.version == hermes_vault.__version__
     tool_names = {tool.name for tool in asyncio.run(list_tools())}
     assert {

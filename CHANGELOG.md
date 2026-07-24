@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.22.0 -- Vault Intelligence
+
+### Added
+
+- **Universal verification coverage**: 39 shipped YAML verifier configs for all 45 canonical service IDs, loaded from `src/hermes_vault/verifier_configs/`. Adding a new verifier now takes 4 lines of YAML.
+- **`--unverified` and `--stale` filters** on `hermes-vault list` to find credentials needing attention.
+- **`--service` and `--tag` filters** on `hermes-vault list` for targeted credential views.
+- **Verification coverage %** in `hermes-vault health` alongside registered verifier count.
+- **Health score (A-F)** in health reports and dashboard, based on coverage, staleness, and findings count.
+- **CSV import** via `hermes-vault import --from-csv` with custom column mapping.
+- **Filtered credential export**: `hermes-vault export --format json|csv|env` with `--service`, `--tag`, and `--unverified` filters.
+- **Tag management CLI**: `hermes-vault tag <target> --add|--remove|--set`.
+- **`hermes-vault catalog`**: lists all 45 canonical services with env vars, verifier status, and descriptions.
+- **`hermes-vault schedule-verify`**: generates systemd timer or cron templates for automated credential verification.
+- **`hermes-vault setup`**: interactive first-time vault setup wizard.
+- **Verifier.count_registered_services()** for programmatic coverage queries.
+- Shipped verifier configs are loaded before user overrides — operator YAML files in `$HERMES_VAULT_HOME/verifiers/` take precedence.
+
+### Fixed
+
+- **PR #45 merged**: TOCTOU race in `ensure_initialized` that left audit rows outside the integrity chain, plus non-atomic credential+audit writes that now roll back credentials on chain failure. (Thanks @doronkatz)
+
+### Changed
+
+- Health report now includes `verification_coverage`, `registered_verifiers`, and `health_score` fields.
+- `hermes-vault verify --all` now has 45 registered verifiers (up from 6).
+
+### Security
+
+- No changes to encryption, key derivation, or vault storage schema.
+- Verifier configs ship with well-known public API endpoints only — no secrets embedded.
+- Stub configs for undocumented services use httpbin.org as placeholder.
+
 ## 0.21.0 -- Audit Assurance
 
 ### Added
