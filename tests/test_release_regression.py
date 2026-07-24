@@ -53,7 +53,7 @@ def test_release_story_mentions_agent_control_plane() -> None:
     dashboard_html = (repo_root / "src" / "hermes_vault" / "dashboard_static" / "index.html").read_text(encoding="utf-8")
 
     assert "Vault Intelligence" in changelog
-    assert "What's New in 0.21.0" in readme
+    assert "What's New in 0.22.0" in readme
     assert "secret-source fetch" in operator_guide
     assert "Vault Intelligence" in readme
     assert "v0.22.0" in site
