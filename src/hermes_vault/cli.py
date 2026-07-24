@@ -23,6 +23,11 @@ from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase
 from hermes_vault.detectors import classify_env_name, detect_matches, parse_env_map
 from hermes_vault.diff import diff_backups
 from hermes_vault.health import run_health
+from hermes_vault.import_export import (
+    export_credentials,
+    add_tags as add_tags_to_credential,
+    remove_tags as remove_tags_from_credential,
+)
 from hermes_vault.models import AccessLogRecord, CredentialStatus, Decision
 from hermes_vault.mutations import VaultMutations, OPERATOR_AGENT_ID
 from hermes_vault.policy import PolicyEngine
@@ -416,28 +421,33 @@ def import_credentials(
     ctx: typer.Context,
     from_env: Path | None = typer.Option(None, "--from-env", help="Import from a .env file (KEY=value format)."),
     from_file: Path | None = typer.Option(None, "--from-file", help="Import from a JSON file (auto-detects secrets)."),
+    from_csv: Path | None = typer.Option(None, "--from-csv", help="Import from a CSV file with header row."),
+    service_column: str = typer.Option("service", "--service-column", help="CSV column for service name."),
+    secret_column: str = typer.Option("secret", "--secret-column", help="CSV column for secret value."),
+    alias_column: str | None = typer.Option(None, "--alias-column", help="CSV column for credential alias."),
     redact_source: bool = typer.Option(False, "--redact-source", help="Comment out imported lines in the source file after successful import."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview imports and skips without mutating the vault or source file."),
     env_map: list[str] | None = typer.Option(None, "--map", help="Explicit mapping ENV_NAME=service:credential_type. Repeatable."),
     tags: list[str] | None = typer.Option(None, "--tags", help="Plaintext metadata tags for imported credentials. Repeat or comma-separate."),
     notes: str | None = typer.Option(None, "--notes", help="Plaintext metadata notes for imported credentials."),
 ) -> None:
-    """Import credentials from env files or JSON.
+    """Import credentials from env files, JSON, or CSV.
 
     Service names are normalized to canonical IDs automatically.
 
-    \b
+    \\b
     Examples:
       hermes-vault import --from-env ~/.hermes/.env --dry-run
       hermes-vault import --from-env ~/.hermes/.env --map CUSTOM_KEY=custom-service:api_key
       hermes-vault import --from-env ~/.hermes/.env --redact-source
       hermes-vault import --from-file secrets.json
+      hermes-vault import --from-csv creds.csv --service-column provider --secret-column key
     """
-    if not from_env and not from_file:
-        console.print("[red]Provide --from-env or --from-file[/red]")
+    if not from_env and not from_file and not from_csv:
+        console.print("[red]Provide --from-env, --from-file, or --from-csv[/red]")
         raise typer.Exit(code=1)
-    if from_env and from_file:
-        console.print("[red]Provide only one source: --from-env or --from-file[/red]")
+    if sum(1 for x in (from_env, from_file, from_csv) if x) > 1:
+        console.print("[red]Provide only one source: --from-env, --from-file, or --from-csv[/red]")
         raise typer.Exit(code=1)
     if from_file and env_map:
         console.print("[red]--map only applies to --from-env imports[/red]")
@@ -579,6 +589,49 @@ def import_credentials(
             console.print("[yellow]--redact-source only applies to --from-env files.[/yellow]")
         elif not dry_run:
             console.print("Review plaintext source removal separately.")
+        return
+
+    # ── CSV import ──────────────────────────────────────────────────
+    if from_csv:
+        import csv as _csv
+        import io as _io
+        vault, _, _, mutations = build_services(prompt=True)
+        content = from_csv.read_text(encoding="utf-8", errors="ignore")
+        reader = _csv.DictReader(_io.StringIO(content))
+        if reader.fieldnames is None:
+            console.print("[red]CSV file has no header row[/red]")
+            raise typer.Exit(code=1)
+        parsed_tags = _parse_tags(tags)
+        imported = 0
+        skipped = 0
+        for row_num, row in enumerate(reader, start=2):
+            svc = normalize(row.get(service_column, "").strip())
+            secret = row.get(secret_column, "").strip()
+            if not svc or not secret:
+                skipped += 1
+                continue
+            als = (row.get(alias_column) or "").strip() if alias_column else "default"
+            if dry_run:
+                console.print(f"[cyan]Would import[/cyan] row {row_num}: {svc} (alias={als})")
+                continue
+            result = mutations.add_credential(
+                agent_id=OPERATOR_AGENT_ID,
+                service=svc,
+                secret=secret,
+                credential_type="api_key",
+                alias=als,
+                imported_from=str(from_csv),
+                tags=parsed_tags,
+                notes=notes,
+            )
+            if not result.allowed:
+                console.print(f"[red]Denied importing row {row_num} '{svc}': {result.reason}[/red]")
+                continue
+            imported += 1
+        if dry_run:
+            console.print(f"[green]Dry run: {imported} row(s) would be imported; {skipped} skipped.[/green]")
+        else:
+            console.print(f"[green]Imported {imported} credential(s); skipped {skipped} row(s).[/green]")
         return
 
     vault, _, _, mutations = build_services(prompt=True)
@@ -1571,6 +1624,73 @@ def verify(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(output_results, indent=2, sort_keys=True), encoding="utf-8")
         report_path.chmod(0o600)
+
+
+@_typer_app.command("export")
+def export_cmd(
+    ctx: typer.Context,
+    output: Path | None = typer.Option(None, "--output", "-o", help="Write to file instead of stdout."),
+    fmt: str = typer.Option("json", "--format", help="Output format: json, csv, or env."),
+    service: str | None = typer.Option(None, "--service", help="Filter by service."),
+    tag: str | None = typer.Option(None, "--tag", help="Filter by tag."),
+    unverified: bool = typer.Option(False, "--unverified", help="Only export never-verified credentials."),
+    with_secrets: bool = typer.Option(False, "--with-secrets", help="Include plaintext secrets in export."),
+) -> None:
+    """Export filtered credentials to JSON, CSV, or .env format."""
+    if fmt not in ("json", "csv", "env"):
+        console.print("[red]--format must be json, csv, or env[/red]")
+        raise typer.Exit(code=1)
+    vault, _, _, _ = build_services(prompt=True)
+    records = vault.list_credentials()
+    if service:
+        records = [r for r in records if r.service == normalize(service)]
+    if tag:
+        records = [r for r in records if tag in r.tags]
+    if unverified:
+        records = [r for r in records if r.last_verified_at is None]
+    content = export_credentials(records, fmt=fmt, include_secrets=with_secrets, vault=vault)
+    if output:
+        output.write_text(content, encoding="utf-8")
+        output.chmod(0o600)
+        console.print(f"[green]Exported {len(records)} credential(s) to {output}[/green]")
+    else:
+        console.print(content)
+
+
+@_typer_app.command("tag")
+def tag_cmd(
+    ctx: typer.Context,
+    target: str = typer.Argument(help="Service name or credential ID."),
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias."),
+    add_tags: list[str] | None = typer.Option(None, "--add", help="Tags to add. Repeatable."),
+    remove_tags: list[str] | None = typer.Option(None, "--remove", help="Tags to remove. Repeatable."),
+    set_tags: list[str] | None = typer.Option(None, "--set", help="Replace all tags. Repeatable."),
+) -> None:
+    """Manage tags on one credential or bulk by service.
+
+    \\b
+    Examples:
+      hermes-vault tag openai --add production,primary
+      hermes-vault tag github --alias work --remove deprecated
+      hermes-vault tag openai --set production
+    """
+    if not add_tags and not remove_tags and set_tags is None:
+        console.print("[red]Provide --add, --remove, or --set[/red]")
+        raise typer.Exit(code=1)
+    vault, _, _, _ = build_services(prompt=True)
+    try:
+        record = vault.resolve_credential(target, alias=alias)
+    except KeyError:
+        console.print(f"[red]Credential not found: {target} (alias={alias})[/red]")
+        raise typer.Exit(code=1)
+    new_tags = list(record.tags)
+    if set_tags is not None:
+        new_tags = vault._normalize_tags(set_tags)
+    elif add_tags:
+        new_tags = add_tags_to_credential(vault, record.id, add_tags)
+    elif remove_tags:
+        new_tags = remove_tags_from_credential(vault, record.id, remove_tags)
+    console.print(f"[green]Tags for {record.service} ({record.alias}): {', '.join(new_tags) or '(none)'}[/green]")
 
 
 @_typer_app.command()
