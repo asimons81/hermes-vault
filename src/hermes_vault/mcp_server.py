@@ -52,6 +52,17 @@ from hermes_vault.vault import Vault
 
 logger = logging.getLogger("hermes_vault.mcp")
 
+
+def _mask_secret_value(value: str, prefix_len: int = 5, suffix_len: int = 4) -> str:
+    """Mask a secret value for safe display in MCP responses.
+
+    Returns ``sk-a48...dd69`` style — first N chars + ... + last N chars.
+    Values shorter than prefix+suffix are fully masked.
+    """
+    if not isinstance(value, str) or len(value) <= prefix_len + suffix_len:
+        return "***"
+    return f"{value[:prefix_len]}...{value[-suffix_len:]}"
+
 # ── tool schemas ───────────────────────────────────────────────────────────────
 
 _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -1174,11 +1185,13 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             expires_at = None
             if env_result.ttl_seconds is not None:
                 expires_at = (datetime.now(timezone.utc) + timedelta(seconds=env_result.ttl_seconds)).isoformat()
+            masked_env = {k: _mask_secret_value(str(v)) for k, v in env_result.env.items()}
             return [TextContent(type="text", text=_json_text({
-                "env": env_result.env,
+                "env": masked_env,
                 "ttl_seconds": env_result.ttl_seconds,
                 "expires_at": expires_at,
                 "metadata": env_result.metadata,
+                "_secret_lengths": {k: len(str(v)) for k, v in env_result.env.items()},
             }))]
 
         if name == "lease_issue":

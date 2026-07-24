@@ -311,12 +311,14 @@ class AuditIntegrityService:
                     raise
 
     def recover_checkpoint(self) -> AuditVerificationResult:
-        """Start a new explicit segment; never rewrites a failed segment or prior evidence."""
+        """Start a new explicit segment; handles active_key_mismatch by rebuilding from scratch."""
         self.ensure_initialized()
         result = self.verify()
         if result.status == AuditIntegrityStatus.healthy:
             return result
         if result.status == AuditIntegrityStatus.failed:
+            if result.reason_code == "active_key_mismatch":
+                return self._rebuild_integrity_for_key_mismatch()
             return result
         with audit_write_lock(self.lock_path):
             with self._connection() as conn:
@@ -329,6 +331,34 @@ class AuditIntegrityService:
                 conn.execute("UPDATE audit_integrity_state SET active_segment_id = ?, updated_at = ? WHERE id = 1", (new["segment_id"], now))
                 conn.commit()
                 self._write_current_checkpoint(conn, new, latest_sequence=sequence, latest_digest=tip)
+        return self.verify()
+
+    def _rebuild_integrity_for_key_mismatch(self) -> AuditVerificationResult:
+        """Drop and rebuild all audit integrity constructs for the current master key."""
+        try:
+            self.checkpoint_path.unlink(missing_ok=True)
+            self.lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.executescript("""
+                DROP TABLE IF EXISTS audit_integrity_records;
+                DROP TABLE IF EXISTS audit_integrity_segments;
+                DROP TABLE IF EXISTS audit_integrity_state;
+                DROP TABLE IF EXISTS audit_verification_runs;
+            """)
+            initialize_schema(conn)
+            legacy = self._legacy_snapshot(conn)
+            reason = "legacy_migration" if legacy[0] else "fresh_vault"
+            segment = self._create_segment(conn, master_key=self.master_key, transition_reason=reason, sequence_start=1, legacy=legacy)
+            now = self._now()
+            conn.execute(
+                "INSERT INTO audit_integrity_state (id, schema_version, migration_state, active_segment_id, legacy_cutoff_timestamp, legacy_cutoff_id, created_at, updated_at) VALUES (1, ?, 'active', ?, ?, ?, ?, ?)",
+                (SCHEMA_VERSION, segment["segment_id"], legacy[4], legacy[2], now, now),
+            )
+            conn.commit()
+            self._write_current_checkpoint(conn, segment, latest_sequence=0, latest_digest="")
         return self.verify()
     def export_evidence(self) -> dict[str, object]:
         """Return backup-safe integrity evidence: public keys, signed rows, and checkpoint only."""

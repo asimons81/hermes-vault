@@ -90,3 +90,26 @@ def test_rotation_creates_a_new_segment_and_retains_history(tmp_path: Path) -> N
     assert result.status is AuditIntegrityStatus.healthy
     assert result.active_segment_number == 2
     assert result.verified_count == 1
+
+
+def test_recover_checkpoint_handles_active_key_mismatch(tmp_path: Path) -> None:
+    vault1 = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "passphrase-a")
+    logger1 = AuditLogger(vault1.db_path, master_key=vault1.key)
+    record(logger1)
+    # Unlock with a different passphrase — integrity should detect key mismatch
+    vault2 = Vault(vault1.db_path, vault1.salt_path, "passphrase-b")
+    service2 = AuditLogger(vault2.db_path, master_key=vault2.key).integrity  # type: ignore[union-attr]
+
+    result = service2.verify()
+    assert result.status is AuditIntegrityStatus.failed
+    assert result.reason_code == "active_key_mismatch"
+
+    # recover_checkpoint should rebuild integrity for the new key
+    recovered = service2.recover_checkpoint()
+    assert recovered.status is AuditIntegrityStatus.healthy
+    # After recovery, append works with the new key
+    logger2 = AuditLogger(vault2.db_path, master_key=vault2.key)
+    record(logger2, reason="post-recovery")
+    post_result = logger2.integrity.verify()  # type: ignore[union-attr]
+    assert post_result.status is AuditIntegrityStatus.healthy
+    assert post_result.verified_count == 1  # only the new record is protected
