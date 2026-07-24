@@ -1,10 +1,7 @@
 """Tests for import_export module."""
 from __future__ import annotations
 
-import csv
-import io
 import json
-import tempfile
 from pathlib import Path
 
 from hermes_vault.import_export import (
@@ -12,13 +9,10 @@ from hermes_vault.import_export import (
     parse_env,
     parse_json_backup,
     export_credentials,
-    add_tags,
-    remove_tags,
-    set_tags,
     _guess_service_from_env_var,
     _service_to_env_var,
 )
-from hermes_vault.models import CredentialRecord, CredentialStatus, CredentialSecret, utc_now
+from hermes_vault.models import CredentialRecord, CredentialStatus, utc_now
 
 
 class TestCsvImport:

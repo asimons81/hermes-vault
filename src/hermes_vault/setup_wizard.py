@@ -12,7 +12,6 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 
-from hermes_vault.crypto import resolve_passphrase
 
 
 console = Console()
@@ -31,7 +30,7 @@ def run_setup_wizard() -> int:
     # Step 1: Vault location
     default_home = os.environ.get("HERMES_VAULT_HOME",
                                     os.path.expanduser("~/.hermes/hermes-vault-data"))
-    console.print(f"\n[bold]Step 1: Vault Location[/bold]")
+    console.print("\n[bold]Step 1: Vault Location[/bold]")
     console.print(f"Default: {default_home}")
     vault_home = typer.prompt("Vault directory (press Enter for default)",
                                default=default_home, show_default=False)
@@ -39,7 +38,7 @@ def run_setup_wizard() -> int:
     console.print(f"[green]Vault will be created at: {vault_path}[/green]")
 
     # Step 2: Passphrase
-    console.print(f"\n[bold]Step 2: Vault Passphrase[/bold]")
+    console.print("\n[bold]Step 2: Vault Passphrase[/bold]")
     console.print("Choose a strong passphrase. You'll need this every time you access the vault.")
     passphrase = typer.prompt("Passphrase", hide_input=True, confirmation_prompt=True)
     if not passphrase:
@@ -47,7 +46,7 @@ def run_setup_wizard() -> int:
         return 1
 
     # Step 3: Import from .env
-    console.print(f"\n[bold]Step 3: Import Secrets[/bold]")
+    console.print("\n[bold]Step 3: Import Secrets[/bold]")
     env_candidates = [
         Path.home() / ".hermes" / ".env",
         Path.home() / ".env",
@@ -69,16 +68,16 @@ def run_setup_wizard() -> int:
         console.print("[yellow]  hermes-vault add <service> --secret <value>[/yellow]")
 
     # Step 4: Bootstrap policy
-    console.print(f"\n[bold]Step 4: Bootstrap Policy[/bold]")
+    console.print("\n[bold]Step 4: Bootstrap Policy[/bold]")
     policy_path = vault_path / "policy.yaml"
     if policy_path.exists():
         console.print(f"[yellow]Policy already exists at {policy_path}[/yellow]")
     else:
-        console.print(f"Run: [yellow]hermes-vault bootstrap[/yellow]")
+        console.print("Run: [yellow]hermes-vault bootstrap[/yellow]")
         console.print("This creates a default policy with deny-by-default rules.")
 
     # Step 5: Schedule verification
-    console.print(f"\n[bold]Step 5: Schedule Verification[/bold]")
+    console.print("\n[bold]Step 5: Schedule Verification[/bold]")
     console.print("Automated verification keeps your vault healthy. Default: daily at midnight.")
     cron_line = "0 0 * * * hermes-vault verify --all --format json --report ~/vault-last-verify.json"
     console.print(f"[yellow]  {cron_line}[/yellow]")
@@ -86,19 +85,19 @@ def run_setup_wizard() -> int:
     console.print("Or generate a systemd unit: [yellow]hermes-vault schedule-verify --print-unit[/yellow]")
 
     # Step 6: Enable Secret Source / MCP
-    console.print(f"\n[bold]Step 6: Enable Integrations[/bold]")
+    console.print("\n[bold]Step 6: Enable Integrations[/bold]")
     console.print("Hermes Vault integrates with Hermes Agent via Secret Source and MCP.")
     console.print("See: [yellow]hermes-vault secret-source --help[/yellow]")
     console.print("     [yellow]hermes-vault mcp --help[/yellow]")
 
     # Done
-    console.print(f"\n[bold green]Setup Complete![/bold green]")
+    console.print("\n[bold green]Setup Complete![/bold green]")
     console.print(f"Vault location: {vault_path}")
-    console.print(f"\nNext steps:")
-    console.print(f"  1. Import credentials: [yellow]hermes-vault import --from-env <path>[/yellow]")
-    console.print(f"  2. Check health: [yellow]hermes-vault health[/yellow]")
-    console.print(f"  3. List credentials: [yellow]hermes-vault list[/yellow]")
-    console.print(f"  4. Start dashboard: [yellow]hermes-vault dashboard[/yellow]")
-    console.print(f"\n[dim]Run `hermes-vault --help` to see all commands.[/dim]")
+    console.print("\nNext steps:")
+    console.print("  1. Import credentials: [yellow]hermes-vault import --from-env <path>[/yellow]")
+    console.print("  2. Check health: [yellow]hermes-vault health[/yellow]")
+    console.print("  3. List credentials: [yellow]hermes-vault list[/yellow]")
+    console.print("  4. Start dashboard: [yellow]hermes-vault dashboard[/yellow]")
+    console.print("\n[dim]Run `hermes-vault --help` to see all commands.[/dim]")
 
     return 0

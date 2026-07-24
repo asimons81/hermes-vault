@@ -1735,7 +1735,7 @@ def schedule_verify(
         console.print(_schedule_verify_cron(every, svc_args))
     if not print_unit and not print_cron:
         console.print("Use --print-unit or --print-cron to see template.")
-        console.print(f"Example: hermes-vault schedule-verify --every 24h --print-cron")
+        console.print("Example: hermes-vault schedule-verify --every 24h --print-cron")
 
 
 @_typer_app.command("catalog")

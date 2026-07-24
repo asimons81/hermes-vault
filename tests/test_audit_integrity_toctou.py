@@ -21,10 +21,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-import uuid
 from pathlib import Path
 
-import pytest
 
 from hermes_vault.audit import AuditLogger
 from hermes_vault.audit_integrity.models import AuditIntegrityStatus

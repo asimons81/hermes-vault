@@ -4,7 +4,7 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.21.0 is the **Audit Assurance** release. Hermes Vault now provides signed, verifiable audit continuity with authenticated checkpoints, backup integrity, and read-only verification through CLI, dashboard, and MCP surfaces.
+v0.22.0 is the **Vault Intelligence** release — Hermes Vault now knows credential health: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and a new setup wizard.
 
 ## What's New in 0.21.0
 
@@ -51,10 +51,10 @@ Hermes Vault runs natively on Windows -- no WSL required.
 
 ```powershell
 # Install with uv (recommended)
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.21.0
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.22.0
 
 # Or with pipx
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.21.0
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.22.0
 
 # Or with pip (editable dev install)
 python -m venv .venv

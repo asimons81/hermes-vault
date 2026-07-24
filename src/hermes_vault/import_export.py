@@ -8,11 +8,10 @@ from __future__ import annotations
 import csv
 import io
 import json
-import os
 from pathlib import Path
 from typing import Any
 
-from hermes_vault.models import CredentialRecord, CredentialSecret, CredentialStatus, utc_now
+from hermes_vault.models import CredentialRecord
 from hermes_vault.service_ids import normalize
 from hermes_vault.vault import Vault
 
@@ -46,7 +45,6 @@ def parse_csv(source: Path | str, *, service_column: str = "service", secret_col
 
 def parse_env(source: Path | str) -> list[dict[str, str]]:
     """Parse a .env file into credential rows using known env var maps."""
-    from hermes_vault.service_ids import get_env_var_map
     path = Path(source) if isinstance(source, str) else source
     entries: list[dict[str, str]] = []
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -238,7 +236,7 @@ def set_tags(vault: Vault, credential_id: str, tags: list[str]) -> bool:
                 "UPDATE credentials SET tags = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (_json.dumps(normalized), credential_id),
             )
-            return c.rowcount > 0
+            return True
     except Exception:
         return False
 
