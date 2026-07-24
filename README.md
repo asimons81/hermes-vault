@@ -6,19 +6,19 @@ Hermes Vault is a local-first credential broker and encrypted vault for Hermes a
 
 v0.22.0 is the **Vault Intelligence** release — Hermes Vault now knows credential health: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and a new setup wizard.
 
-## What's New in 0.21.0
+## What's New in 0.22.0
 
-v0.21.0 adds cryptographic audit integrity assurance to Hermes Vault's existing protection surface.
+v0.22.0 adds universal credential health intelligence to Hermes Vault.
 
-- Every audit append generates a signed, chain-authenticated integrity record using HKDF-derived Ed25519 signatures.
-- An authenticated checkpoint outside the audit table protects the verification boundary.
-- Legacy v0.20 audit history is preserved and anchored without destructive migration.
-- `hvbackup-v2` backup format includes audit integrity evidence, segments, and verification summary.
-- Transactional restore stages database and checkpoint changes atomically.
-- `hermes-vault audit-verify`, `audit-checkpoint`, and `audit-export --with-integrity` provide operator visibility.
-- The dashboard exposes read-only integrity status via `GET /api/audit-integrity`.
-- MCP exposes metadata-only integrity status through `vault://audit-integrity` and a summary in `vault://status`.
-- Backward-compatible with v0.20 vaults, policies, and cloud provider configs.
+- 45 built-in verifiers covering every canonical service — adding a new one takes 4 lines of YAML
+- `hermes-vault verify --all` now covers 45 services (up from 6), with coverage metrics and A-F health scores
+- Filtered credential listing: `--unverified`, `--stale`, `--service`, `--tag`
+- Bulk import from CSV/env/JSON and filtered export to JSON/CSV/env
+- Tag management CLI: `hermes-vault tag <target> --add|--remove|--set`
+- `hermes-vault catalog` lists all 45 canonical services with env vars and descriptions
+- `hermes-vault schedule-verify` generates cron or systemd timer templates
+- `hermes-vault setup` interactive first-time wizard
+- `hermes-vault export --format json|csv|env` with `--service`, `--tag`, `--unverified` filters
 
 ## What It Does
 
@@ -201,7 +201,7 @@ When `--redact-source` is used, only successfully imported env lines are comment
 
 ## Hermes Vault Console
 
-Hermes Vault Console, introduced in v0.8.0 and expanded through v0.21.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
+Hermes Vault Console, introduced in v0.8.0 and expanded through v0.22.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
 
 Launch it from the same machine that owns the vault:
 
@@ -231,7 +231,7 @@ Screenshot set captured with a temporary demo vault and fake/demo credentials on
 - [Recovery Posture view](docs/assets/v0.8.0-dashboard/dashboard-recovery-posture.png)
 - [Operations Panel view](docs/assets/v0.8.0-dashboard/dashboard-operations.png)
 
-The screenshots and launch notes above are the legacy v0.8.0 baseline. They still document the local-only, token-guarded safety boundary, but the dashboard has grown since then and the v0.21.0 launch visuals need a fresh screenshot set before publishing updated images.
+The screenshots and launch notes above are the legacy v0.8.0 baseline. They still document the local-only, token-guarded safety boundary, but the dashboard has grown since then and the v0.22.0 launch visuals need a fresh screenshot set before publishing updated images.
 
 ## MCP Server
 
