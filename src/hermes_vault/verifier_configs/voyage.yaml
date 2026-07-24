@@ -1,0 +1,8 @@
+verifiers:
+  voyage:
+    type: http
+    method: POST
+    url: https://api.voyageai.com/v1/embeddings
+    headers:
+      Authorization: "Bearer {secret}"
+      Content-Type: application/json

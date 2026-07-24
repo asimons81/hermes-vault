@@ -1,0 +1,10 @@
+verifiers:
+  tavily:
+    type: http
+    method: POST
+    url: https://api.tavily.com/search
+    headers:
+      Authorization: "Bearer {secret}"
+      Content-Type: application/json
+    # Tavily search endpoint with minimal payload
+    # Note: POST with empty body; some providers need a body to pass validation

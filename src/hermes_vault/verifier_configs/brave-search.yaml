@@ -1,0 +1,7 @@
+verifiers:
+  brave-search:
+    type: http
+    url: https://api.search.brave.com/res/v1/web/search?q=test
+    headers:
+      Accept: application/json
+      X-Subscription-Token: "{secret}"

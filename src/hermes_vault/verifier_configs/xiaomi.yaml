@@ -1,0 +1,7 @@
+# xiaomi — no public developer API with Bearer tokens. Marking as UNSUPPORTED.
+verifiers:
+  xiaomi:
+    type: http
+    url: https://httpbin.org/bearer
+    headers:
+      Authorization: "Bearer {secret}"

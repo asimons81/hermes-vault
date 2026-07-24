@@ -1,0 +1,10 @@
+# bailian (Alibaba Bailian / Tongyi)
+# Verifier status: UNKNOWN — Alibaba Cloud API uses complex auth (AccessKey+Signature).
+# No simple Bearer-token health endpoint documented.
+# Operators should test with HERMES_VAULT_VERIFY_URL_BAILIAN or a custom file override.
+verifiers:
+  bailian:
+    type: http
+    url: https://dashscope.aliyuncs.com/api/v1/models
+    headers:
+      Authorization: "Bearer {secret}"

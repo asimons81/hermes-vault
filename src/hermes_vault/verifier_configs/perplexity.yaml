@@ -1,0 +1,6 @@
+verifiers:
+  perplexity:
+    type: http
+    url: https://api.perplexity.ai/auth/user
+    headers:
+      Authorization: "Bearer {secret}"

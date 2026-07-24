@@ -1,0 +1,6 @@
+verifiers:
+  cloudflare:
+    type: http
+    url: https://api.cloudflare.com/client/v4/user/tokens/verify
+    headers:
+      Authorization: "Bearer {secret}"

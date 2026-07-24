@@ -1,0 +1,7 @@
+# kimi (Moonshot AI) — uses OpenAI-compatible /v1/chat or /v1/models.
+verifiers:
+  kimi:
+    type: http
+    url: https://api.moonshot.cn/v1/models
+    headers:
+      Authorization: "Bearer {secret}"

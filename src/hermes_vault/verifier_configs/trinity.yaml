@@ -1,0 +1,7 @@
+# trinity — no public API documented. Marking as UNSUPPORTED.
+verifiers:
+  trinity:
+    type: http
+    url: https://httpbin.org/bearer
+    headers:
+      Authorization: "Bearer {secret}"

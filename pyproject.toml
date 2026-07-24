@@ -66,4 +66,4 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-hermes_vault = ["dashboard_static/*", "dashboard_static/assets/*"]
+hermes_vault = ["dashboard_static/*", "dashboard_static/assets/*", "verifier_configs/*.yaml"]

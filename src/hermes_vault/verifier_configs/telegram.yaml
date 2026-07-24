@@ -1,0 +1,8 @@
+verifiers:
+  telegram:
+    type: http
+    url: https://api.telegram.org/bot{secret}/getMe
+    headers:
+      Accept: application/json
+    # Telegram bot tokens are used in the URL path, not as a header.
+    # The {secret} placeholder works in the URL; no Authorization header needed.

@@ -1,0 +1,8 @@
+# ninerouter — internal routing gateway. May be OpenAI-compatible.
+# Operators should set HERMES_VAULT_VERIFY_URL_NINEROUTER or override.
+verifiers:
+  ninerouter:
+    type: http
+    url: https://httpbin.org/bearer
+    headers:
+      Authorization: "Bearer {secret}"

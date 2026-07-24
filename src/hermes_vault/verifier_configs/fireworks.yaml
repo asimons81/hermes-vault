@@ -1,0 +1,6 @@
+verifiers:
+  fireworks:
+    type: http
+    url: https://api.fireworks.ai/inference/v1/models
+    headers:
+      Authorization: "Bearer {secret}"

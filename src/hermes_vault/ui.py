@@ -304,6 +304,8 @@ def render_health_report_markdown(report) -> str:
         f"| Expired | {report.expired_count} |",
         f"| Expiring | {report.expiring_count} |",
         f"| Never verified | {report.never_verified_count} |",
+        f"| Verification coverage | {report.verification_coverage:.0%} |",
+        f"| Registered verifiers | {report.registered_verifiers} |",
         f"| Total leases | {report.leases.get('total', 0)} |",
         f"| Active leases | {report.leases.get('active', 0)} |",
         f"| Expired leases | {report.leases.get('expired', 0)} |",

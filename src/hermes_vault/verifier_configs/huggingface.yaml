@@ -1,0 +1,6 @@
+verifiers:
+  huggingface:
+    type: http
+    url: https://huggingface.co/api/whoami-v2
+    headers:
+      Authorization: "Bearer {secret}"

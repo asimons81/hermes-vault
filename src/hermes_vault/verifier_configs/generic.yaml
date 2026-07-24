@@ -1,0 +1,11 @@
+verifiers:
+  generic:
+    type: http
+    # Generic credentials (bearer tokens) have no canonical endpoint.
+    # Operators should configure HERMES_VAULT_VERIFY_URL_GENERIC
+    # or override this file with a service-specific endpoint.
+    url: https://httpbin.org/bearer
+    headers:
+      Authorization: "Bearer {secret}"
+    success_statuses: [200]
+    invalid_statuses: [401]

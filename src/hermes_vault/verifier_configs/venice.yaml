@@ -1,0 +1,6 @@
+verifiers:
+  venice:
+    type: http
+    url: https://api.venice.ai/api/v1/models
+    headers:
+      Authorization: "Bearer {secret}"

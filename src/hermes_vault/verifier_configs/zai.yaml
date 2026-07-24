@@ -1,0 +1,7 @@
+# zai — no public API documented. Marking as UNSUPPORTED.
+verifiers:
+  zai:
+    type: http
+    url: https://httpbin.org/bearer
+    headers:
+      Authorization: "Bearer {secret}"

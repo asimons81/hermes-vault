@@ -1,0 +1,7 @@
+verifiers:
+  gemini:
+    type: http
+    url: https://generativelanguage.googleapis.com/v1beta/models
+    headers:
+      x-goog-api-key: "{secret}"
+  # Google's API key-based auth uses ?key= or x-goog-api-key header, not Bearer

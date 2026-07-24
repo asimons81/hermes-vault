@@ -1,0 +1,10 @@
+verifiers:
+  google:
+    type: http
+    url: https://www.googleapis.com/oauth2/v1/tokeninfo
+    headers:
+      # Tokeninfo accepts access_token as query param or body field.
+      # For header-only verifiers, use Authorization: Bearer and expect 200/400.
+      Authorization: "Bearer {secret}"
+    invalid_statuses: [400, 401, 403]
+    success_statuses: [200]

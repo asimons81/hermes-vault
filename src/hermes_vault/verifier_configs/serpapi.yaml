@@ -1,0 +1,14 @@
+verifiers:
+  serpapi:
+    type: http
+    url: https://serpapi.com/account
+    headers:
+      # SerpAPI uses api_key query param; header-based auth is not standard.
+      # In practice, GET https://serpapi.com/account?api_key={secret} works.
+      # The generic HTTP verifier places tokens in headers.
+      # This verifier will likely need a custom key placement mechanism.
+      # For now: use Bearer-compatible fallback; operators should test.
+      Authorization: "Bearer {secret}"
+    method: GET
+    success_statuses: [200]
+    invalid_statuses: [401, 403]

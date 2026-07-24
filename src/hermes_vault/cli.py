@@ -689,13 +689,30 @@ def add(
 
 
 @_typer_app.command(name="list")
-def list_credentials_cmd(ctx: typer.Context) -> None:
+def list_credentials_cmd(
+    ctx: typer.Context,
+    unverified: bool = typer.Option(False, "--unverified", help="Only show credentials that have never been verified."),
+    stale: bool = typer.Option(False, "--stale", help="Only show credentials not verified in 30+ days."),
+    service: str | None = typer.Option(None, "--service", help="Filter by service."),
+    tag: str | None = typer.Option(None, "--tag", help="Filter by tag."),
+) -> None:
     """List all credentials in the vault.
 
     Shows canonical service IDs, aliases, and credential status.
     """
     vault, _, _, _ = build_services(prompt=True)
     records = vault.list_credentials()
+    now = datetime.now(timezone.utc)
+    if unverified:
+        records = [r for r in records if r.last_verified_at is None]
+    if stale:
+        records = [r for r in records if r.last_verified_at is None
+                   or (r.last_verified_at.replace(tzinfo=timezone.utc) if r.last_verified_at.tzinfo is None
+                       else r.last_verified_at) < now - timedelta(days=30)]
+    if service:
+        records = [r for r in records if r.service == normalize(service)]
+    if tag:
+        records = [r for r in records if tag in r.tags]
     table = Table(title="Vault Credentials")
     table.add_column("ID")
     table.add_column("Service")
