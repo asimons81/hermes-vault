@@ -155,3 +155,96 @@ Browser screenshots could not be captured — this environment lacks a graphical
 | Browser screenshots not captured | Low | Dashboard API validated directly; browser captures deferred to post-release CI enhancement |
 | Adversarial tests at DB level only | Low | SQL-level corruption covers all failure classifications; file-level adversarial path is defense-in-depth |
 | DPAPI validation on local runner only | Low | 16 assertions pass on real Windows with real pywin32; CI workflow would repeat same script |
+
+---
+
+## Post-Release Independent Verification (2026-07-18)
+
+**Verification Type:** Fresh-session independent post-release sanity check
+**Verified Release Tag:** `v0.21.0` (annotated)
+**Tag Commit:** `5bb84061b58387663b0b581963fa77cde0ed5f81`
+**Current Master Commit:** `a21aa973396bd082b91687869d356ed6b072579f`
+**Master Moved After Tag:** Yes — master advanced by 2 documentation-only commits after the tag.
+**Tag Integrity:** The v0.21.0 tag remains attached to the validated release commit `5bb8406`. Subsequent master commits contain documentation or website corrections only.
+
+### GitHub Release
+- **URL:** https://github.com/asimons81/hermes-vault/releases/tag/v0.21.0
+- **Status:** Published, not draft, not prerelease
+- **Title:** "Hermes Vault v0.21.0: Audit Assurance"
+- **Tag:** v0.21.0 — points to `5bb8406`
+- **Assets:** 2 standard source archives only — no databases, secrets, or checkpoints
+- **PRs #39, #40, #41, #42:** All merged
+- **Issues #30, #31, #32, #33:** All closed
+- **CI:** 9/9 checks passed on release commit; 13/13 on post-release docs PR
+
+### Test Suite
+- **Count:** 877 passed, 1 skipped
+- **Skip Reason:** `test_mode_is_insecure_posix` — expected POSIX-only skip on Windows
+- **Secret Source Plugin:** 14 passed
+- **Regression Tests:** 16 passed
+
+### Quality Checks
+- **Ruff:** All checks passed
+- **mypy:** No issues found (58 source files)
+- **pip-audit:** No actionable vulnerabilities
+- **Wheel Build:** `hermes_vault-0.21.0-py3-none-any.whl` — 69 files, no secrets/dev artifacts
+- **Version:** `__version__ == "0.21.0"` — confirmed from installed wheel
+
+### Operator Proof (Disposable Vault)
+- DPAPI-backed vault: created and verified ✓
+- Fake credentials added: 2 ✓
+- Audit events (allow + deny): recorded ✓
+- Integrity verification: healthy (7 verified) ✓
+- Vault reopen + re-verify: healthy ✓
+- Master-key rotation: successful ✓
+- Post-rotation verification: healthy ✓
+- hvbackup-v2 backup: created and verified ✓
+- Restore dry-run: passed ✓
+- Full restore: 2 credentials restored ✓
+- Plaintext scan: no fake credentials leaked ✓
+- **0 assertion failures**
+
+### Dashboard Proof (Packaged Wheel)
+- healthy, legacy-anchor, stale-checkpoint, failed: all 4 states verified ✓
+- Auth rejection (missing/invalid token): 401 ✓
+- GET/POST `/api/audit-integrity`: correct status in all states ✓
+- POST endpoint is read-only in all states ✓
+- Static assets present ✓
+- Status text included ✓
+- **All checks passed**
+
+### DPAPI Verification on This Machine
+- **Python:** 3.11.9 (MSC v.1938 64 bit AMD64)
+- **Windows:** Windows 11
+- **pywin32:** Available
+- **Assertion count:** 16 assertions, all passed
+- **Result:** Full round-trip validated — DPAPI envelope, vault creation, credential add, audit, integrity verification, reopen, rotation, backup, restore, plaintext absence
+
+### Website Verification
+- **Source Commit:** `a21aa97` (post-release docs PR)
+- **Production URL:** https://hermesvault.tonysimons.dev
+- **HTTP Status:** 200
+- **Content:** v0.21.0 branded, "Audit Assurance" identified, installation commands use `@v0.21.0`, GitHub release link present
+- **Release Link:** "View release" in current-release card points to GitHub v0.21.0 release
+- **Deployment:** Vercel project `hermesvault-site`, deployed from `site/` directory
+
+### Corrections Made (PR #43)
+1. CHANGELOG.md: Removed "(unreleased)" from v0.21.0 entry
+2. README.md: Updated install command tags from v0.20.0 to v0.21.0
+3. README.md: Updated dashboard expansion reference from v0.20.0 to v0.21.0
+4. docs/operator-guide.md: Updated v0.20.0 references to v0.21.0
+5. release-readiness report: Updated release SHA to merged tag commit
+6. site/index.html: Updated gallery note from v0.20.0 to v0.21.0
+7. site/index.html: Added direct GitHub release link to current-release card
+
+### Final Branch Inventory
+- **Local:** `master` only
+- **Remote:** `origin/master` only
+- **Stale branches:** None — `docs/v0.21.0-sync` deleted after merge
+
+### Remaining Limitations (Unchanged from Release)
+- Legacy audit history is not retrospectively protected
+- Local integrity verification is not third-party attestation
+- Browser screenshots not captured (dashboard API validated directly)
+- DPAPI validation run on local machine only
+- Adversarial tests at database level only
