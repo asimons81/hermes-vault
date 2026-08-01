@@ -14,7 +14,7 @@ authors = [
 license = "MIT"
 dependencies = [
   "cryptography>=42.0.0",
-  "mcp>=1.0.0",
+  "mcp>=1.0.0,<2.0.0",
   "pydantic>=2.7.0",
   "PyYAML>=6.0.0",
   "rich>=13.7.0",
@@ -26,7 +26,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0.0",
-  "mcp>=1.0.0",
+  "mcp>=1.0.0,<2.0.0",
 ]
 # DPAPI support. Required at runtime for Windows DPAPI; absent on
 # POSIX installs. The import is deferred (see hermes_vault/dpapi.py)
