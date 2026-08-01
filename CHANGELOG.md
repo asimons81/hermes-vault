@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.1 -- Patch: mcp SDK cap (2026-08-01)
+
+### Fixed
+
+- **Cap mcp SDK below 2.0**: pin `mcp>=1.0.0,<2.0.0` in runtime and dev dependencies. mcp 2.0.0 removed `Server.list_tools`, which broke `import hermes_vault.mcp_server` (line 853, `@server.list_tools()`) on fresh pip installs of 0.23.0.
+
+### Upgrade notes
+
+- No upgrade or migration steps required. Users on 0.23.0 should reinstall as 0.23.1 (`uv tool install hermes-vault==0.23.1` or reinstall the git URL) so pip resolves mcp < 2.0.0.
+
 ## 0.23.0 -- Maintenance & Docs (2026-08-01)
 
 ### Fixed
