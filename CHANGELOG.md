@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.23.0 -- Maintenance & Docs (2026-08-01)
+
+### Fixed
+
+- **PYTHONPATH pollution guard**: `tests/conftest.py` now strips `sys.path` entries containing `hermes-agent` before test collection, so the Hermes agent venv's Python 3.11 pydantic can no longer leak into uv's Python 3.12 process and break collection with `ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'`. Cherry-picked from `release/v0.22.0` (`a9057bd`).
+
+### Docs
+
+- Add independent post-release sanity verification record for the v0.21.0 release to `release-readiness/v0.21.0/readiness-report.md` (`ecc9947`).
+
+### Chore
+
+- Bump all version surfaces to 0.23.0 (package metadata, README, site, tests).
+
+### Upgrade notes
+
+- No upgrade or migration steps required. 0.23.0 contains no storage schema, encryption, key-derivation, or policy changes since v0.22.0.
+
 ## 0.22.0 -- Vault Intelligence
 
 ### Added

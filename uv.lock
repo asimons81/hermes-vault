@@ -301,7 +301,7 @@ wheels = [
 
 [[package]]
 name = "hermes-vault"
-version = "0.22.0"
+version = "0.23.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -326,8 +326,8 @@ windows = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=42.0.0" },
-    { name = "mcp", specifier = ">=1.0.0" },
-    { name = "mcp", marker = "extra == 'dev'", specifier = ">=1.0.0" },
+    { name = "mcp", specifier = ">=1.0.0,<2.0.0" },
+    { name = "mcp", marker = "extra == 'dev'", specifier = ">=1.0.0,<2.0.0" },
     { name = "pathspec", specifier = ">=0.12.1" },
     { name = "pydantic", specifier = ">=2.7.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },

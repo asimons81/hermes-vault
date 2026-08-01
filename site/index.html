@@ -42,7 +42,7 @@
     <!-- Hero Section -->
     <section class="hero section-pad reveal hero-reveal-1">
       <div class="hero-copy">
-        <p class="eyebrow">v0.22.0 &bull; Vault Intelligence &bull; 45 verifiers, health scores, bulk operations</p>
+        <p class="eyebrow">v0.23.0 &bull; Maintenance &amp; Docs &bull; 45 verifiers, health scores, bulk operations</p>
         <h1>From <span>.env</span> to safe agent access.</h1>
         <p class="lede">
           Bootstrap a messy plaintext env file into an encrypted local vault, explain every access decision, route approvals through an audit trail, bind env handoffs to leases, and prove recovery before the incident. Less key sprawl, fewer auth lies, fewer agent mistakes.
@@ -63,8 +63,8 @@
         <div class="hero-metrics" aria-label="Release and platform notes">
           <div class="metric-card">
             <span>Current Release</span>
-            <strong>0.22.0</strong>
-            <small>45 built-in verifiers, health scores, bulk import/export, setup wizard, and expanded credential intelligence. <a href="https://github.com/asimons81/hermes-vault/releases/tag/v0.22.0" target="_blank" rel="noreferrer noopener">View release</a></small>
+            <strong>0.23.0</strong>
+            <small>Maintenance and documentation update following the Vault Intelligence (v0.22.0) line: post-release verification records, release notes, and version-surface sync. <a href="https://github.com/asimons81/hermes-vault/releases/tag/v0.23.0" target="_blank" rel="noreferrer noopener">View release</a></small>
           </div>
           <div class="metric-card">
             <span>Operator Loop</span>
@@ -376,7 +376,7 @@
                 <span>Production Install</span>
                 <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
               </div>
-              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.22.0
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.23.0
 hermes-vault bootstrap --from-env .env --agent hermes --dry-run
 hermes-vault audit-verify
 hermes-vault audit-checkpoint show

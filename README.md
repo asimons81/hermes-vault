@@ -4,7 +4,14 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.22.0 is the **Vault Intelligence** release — Hermes Vault now knows credential health: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and a new setup wizard.
+v0.23.0 is the current release — a maintenance and documentation update following the **Vault Intelligence** (v0.22.0) line. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
+
+## What's New in 0.23.0
+
+v0.23.0 is a maintenance and documentation release.
+
+- Independent post-release sanity verification recorded for the v0.21.0 line
+- Draft release notes for the 0.23.0 line, including the unmerged PYTHONPATH guard fix flagged for cherry-pick review
 
 ## What's New in 0.22.0
 
@@ -51,10 +58,10 @@ Hermes Vault runs natively on Windows -- no WSL required.
 
 ```powershell
 # Install with uv (recommended)
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.22.0
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.23.0
 
 # Or with pipx
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.22.0
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.23.0
 
 # Or with pip (editable dev install)
 python -m venv .venv
@@ -201,7 +208,7 @@ When `--redact-source` is used, only successfully imported env lines are comment
 
 ## Hermes Vault Console
 
-Hermes Vault Console, introduced in v0.8.0 and expanded through v0.22.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
+Hermes Vault Console, introduced in v0.8.0 and expanded through v0.23.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
 
 Launch it from the same machine that owns the vault:
 
