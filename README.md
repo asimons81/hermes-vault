@@ -4,7 +4,14 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.23.1 is the current release — a patch on the **Vault Intelligence** (v0.22.0) line that caps the MCP SDK below 2.0 so pip-based installs import cleanly. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
+v0.23.2 is the current release — a patch on the **Vault Intelligence** (v0.22.0) line that fixes an audit-integrity chain wedge (six CLI write paths now protect their audit rows) and makes `export --with-secrets` fail closed on a wrong passphrase. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
+
+## What's New in 0.23.2
+
+v0.23.2 is a patch release fixing an audit chain wedge and a fail-open export.
+
+- **Audit chain wedge (HIGH)**: `set-expiry`, `clear-expiry`, `backup-verify`, `restore --dry-run`, `rotate-master-key`, and `recovery drill` now pass the master key to their audit loggers, so every audit row stays protected and the chain never wedges (previously the next protected write crashed with `AuditIntegrityError`)
+- **Export fail-closed (MEDIUM)**: `export --with-secrets` with a wrong passphrase now fails with a clear error instead of exiting 0 with `"secret": null` for every credential
 
 ## What's New in 0.23.1
 
@@ -64,10 +71,10 @@ Hermes Vault runs natively on Windows -- no WSL required.
 
 ```powershell
 # Install with uv (recommended)
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.23.1
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.23.2
 
 # Or with pipx
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.23.1
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.23.2
 
 # Or with pip (editable dev install)
 python -m venv .venv
@@ -214,7 +221,7 @@ When `--redact-source` is used, only successfully imported env lines are comment
 
 ## Hermes Vault Console
 
-Hermes Vault Console, introduced in v0.8.0 and expanded through v0.23.1, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
+Hermes Vault Console, introduced in v0.8.0 and expanded through v0.23.2, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
 
 Launch it from the same machine that owns the vault:
 

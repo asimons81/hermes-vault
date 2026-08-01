@@ -162,10 +162,13 @@ def export_credentials(
             if include_secrets and vault is not None:
                 try:
                     cs = vault.get_secret(r.id)
-                    if cs:
-                        entry["secret"] = cs.secret
-                except Exception:
-                    entry["secret"] = None
+                except Exception as exc:
+                    raise ValueError(
+                        f"Failed to decrypt secret for {r.service}/{r.alias or 'default'} "
+                        f"({type(exc).__name__}). Export --with-secrets requires the correct "
+                        "vault passphrase; no secret was exported."
+                    ) from exc
+                entry["secret"] = cs.secret if cs else None
             out.append(entry)
         return json.dumps(out, indent=2, sort_keys=True)
 
@@ -197,8 +200,12 @@ def export_credentials(
                 try:
                     cs = vault.get_secret(r.id)
                     secret = cs.secret if cs else ""
-                except Exception:
-                    secret = ""
+                except Exception as exc:
+                    raise ValueError(
+                        f"Failed to decrypt secret for {r.service}/{r.alias or 'default'} "
+                        f"({type(exc).__name__}). Export --with-secrets requires the correct "
+                        "vault passphrase; no secret was exported."
+                    ) from exc
             else:
                 secret = "REDACTED_USE_EXPORT_WITH_SECRETS"
             env_key = _service_to_env_var(r.service)
