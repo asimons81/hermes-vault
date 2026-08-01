@@ -1421,7 +1421,7 @@ def set_expiry(
 
     vault, policy, broker, mutations = build_services(prompt=True)
     settings = get_settings()
-    audit = AuditLogger(settings.db_path)
+    audit = AuditLogger(settings.db_path, master_key=vault.key)
 
     # Resolve target to get canonical service name
     try:
@@ -1477,7 +1477,7 @@ def clear_expiry(
 
     vault, policy, broker, mutations = build_services(prompt=True)
     settings = get_settings()
-    audit = AuditLogger(settings.db_path)
+    audit = AuditLogger(settings.db_path, master_key=vault.key)
 
     # Resolve target to get canonical service name
     try:
@@ -1662,7 +1662,11 @@ def export_cmd(
         records = [r for r in records if tag in r.tags]
     if unverified:
         records = [r for r in records if r.last_verified_at is None]
-    content = export_credentials(records, fmt=fmt, include_secrets=with_secrets, vault=vault)
+    try:
+        content = export_credentials(records, fmt=fmt, include_secrets=with_secrets, vault=vault)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
     if output:
         output.write_text(content, encoding="utf-8")
         output.chmod(0o600)
@@ -2644,7 +2648,7 @@ def rotate_master_key(
 
     settings = get_settings()
     vault, _, _, _ = build_services(prompt=True)
-    audit = AuditLogger(settings.db_path)
+    audit = AuditLogger(settings.db_path, master_key=vault.key)
 
     console.print("[bold]Master Key Rotation[/bold]")
     console.print(f"  Vault: {settings.db_path}")
@@ -2814,7 +2818,7 @@ def recovery_drill(
     from hermes_vault.recovery import run_recovery_drill
 
     report = run_recovery_drill(backup_path=backup, vault=vault, policy=policy)
-    audit = AuditLogger(get_settings().db_path)
+    audit = AuditLogger(get_settings().db_path, master_key=vault.key)
     audit.record(
         AccessLogRecord(
             agent_id=OPERATOR_AGENT_ID,
@@ -2904,7 +2908,7 @@ def restore_vault(
 
         report = restore_dry_run(input, vault)
         _print_backup_report(report, format=format)
-        audit = AuditLogger(get_settings().db_path)
+        audit = AuditLogger(get_settings().db_path, master_key=vault.key)
         audit.record(
             AccessLogRecord(
                 agent_id=OPERATOR_AGENT_ID,
@@ -2953,7 +2957,7 @@ def backup_verify(
 
     report = verify_backup_file(input, vault)
     _print_backup_report(report, format=format)
-    audit = AuditLogger(get_settings().db_path)
+    audit = AuditLogger(get_settings().db_path, master_key=vault.key)
     audit.record(
         AccessLogRecord(
             agent_id=OPERATOR_AGENT_ID,

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.23.2 -- Patch: audit chain wedge + export fail-closed (2026-08-01)
+
+### Fixed
+
+- **Audit chain wedge (HIGH)**: six CLI write paths (`set-expiry`, `clear-expiry`, `backup-verify`, `restore --dry-run`, `rotate-master-key` pre-rotation logger, and `recovery drill`) constructed `AuditLogger` without a master key, so their audit rows were written through the legacy unprotected INSERT branch. The next integrity-protected append then failed with `AuditIntegrityError: An audit row is not protected by an integrity record`, wedging the entire chain so `delete`, `add`, lease issuance, and access requests crashed. All six sites now pass `master_key=vault.key` (matching `build_services`), keeping the chain protected after every operator action.
+- **Export fail-closed (MEDIUM)**: `export --with-secrets` with a wrong passphrase used to exit 0 and write `"secret": null` for every credential because decrypt exceptions were swallowed. It now fails with a clear error and non-zero exit instead of emitting null secrets.
+
+### Added
+
+- Regression tests (`tests/test_audit_chain_regression.py`) that reproduce the smoke-test sequence for each of the six commands — seed the chain with a protected `add`, run the command, then assert `audit-verify` stays healthy and a subsequent mutation still succeeds — plus fail-closed export coverage.
+
+### Upgrade notes
+
+- No upgrade or migration steps required. Users on 0.23.0/0.23.1 should reinstall as 0.23.2 (`uv tool install hermes-vault==0.23.2` or reinstall the git URL).
+
 ## 0.23.1 -- Patch: mcp SDK cap (2026-08-01)
 
 ### Fixed
