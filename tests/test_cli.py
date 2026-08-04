@@ -1855,4 +1855,3 @@ def test_desktop_bridge_real_missing_passphrase_envelope(monkeypatch, tmp_path: 
     assert payload["error"]["locked"] is True
     assert "Traceback" not in result.output
     assert "sk-" not in result.output
-
