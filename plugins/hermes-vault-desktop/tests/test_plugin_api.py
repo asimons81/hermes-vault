@@ -257,5 +257,3 @@ def test_real_child_output_is_bounded(plugin, client, monkeypatch, tmp_path):
     response = client.get("/api/plugins/hermes-vault-desktop/overview")
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "OUTPUT_LIMIT"
-
-
