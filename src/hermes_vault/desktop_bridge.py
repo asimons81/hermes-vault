@@ -33,20 +33,34 @@ context-backed method returns a ``MISSING_PASSPHRASE`` locked envelope.
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Iterator, TextIO
+from urllib.parse import quote
 
 from hermes_vault import __version__
-from hermes_vault.config import validate_profile_name
-from hermes_vault.crypto import MissingPassphraseError
-from hermes_vault.dashboard import (
-    DashboardAPI,
-    DashboardContext,
-    build_dashboard_context,
+from hermes_vault.audit import AuditLogger
+from hermes_vault.audit_integrity.service import AuditIntegrityService
+from hermes_vault.broker import Broker
+from hermes_vault.config import AppSettings, resolve_profile, validate_profile_name
+from hermes_vault.crypto import (
+    CorruptKeyMaterialError,
+    MissingKeyMaterialError,
+    MissingPassphraseError,
+    load_or_create_master_key,
+    resolve_passphrase_with_source,
 )
+from hermes_vault.dashboard import DashboardAPI, DashboardContext
 from hermes_vault.health import run_health
 from hermes_vault.logging_redaction import redact_text
+from hermes_vault.models import AccessRequestStatus, LeaseStatus, utc_now
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.policy_doctor import run_policy_doctor
+from hermes_vault.service_ids import normalize
+from hermes_vault.vault import Vault
+from hermes_vault.verifier import Verifier
 
 PROTOCOL_VERSION = 1
 BRIDGE_NAME = "hermes-vault-desktop-bridge"
@@ -74,7 +88,9 @@ ALL_METHODS = (
 )
 
 # Canonical metadata-only field sets. Serializers below never include
-# encrypted payloads, env maps, raw token material, or absolute paths.
+# encrypted payloads, env maps, raw token material, arbitrary operator-entered
+# text, or absolute paths. Presence flags below preserve useful UI state without
+# turning free-text fields into an accidental secret transport.
 CREDENTIAL_FIELDS = (
     "id",
     "service",
@@ -83,7 +99,6 @@ CREDENTIAL_FIELDS = (
     "status",
     "scopes",
     "tags",
-    "notes",
     "created_at",
     "updated_at",
     "last_verified_at",
@@ -99,7 +114,6 @@ LEASE_FIELDS = (
     "credential_type",
     "agent_id",
     "issued_by",
-    "purpose",
     "status",
     "ttl_seconds",
     "issued_at",
@@ -107,7 +121,6 @@ LEASE_FIELDS = (
     "revoked_at",
     "renewed_at",
     "renew_count",
-    "reason",
     "scopes",
 )
 
@@ -117,13 +130,11 @@ REQUEST_FIELDS = (
     "service",
     "alias",
     "action",
-    "purpose",
     "status",
     "requested_ttl_seconds",
     "created_at",
     "decided_at",
     "decided_by",
-    "decision_reason",
     "lease_id",
 )
 
@@ -134,7 +145,6 @@ AUDIT_FIELDS = (
     "service",
     "action",
     "decision",
-    "reason",
     "ttl_seconds",
     "verification_result",
 )
@@ -182,34 +192,40 @@ def _iso(value: Any) -> Any:
 
 
 def _credential_metadata(record: Any) -> dict[str, Any]:
-    """Metadata-only credential projection (never the encrypted payload)."""
-    return {
+    """Metadata-only credential projection (never arbitrary note text)."""
+    data = {
         field: _iso(getattr(record, field, None))
         for field in CREDENTIAL_FIELDS
     }
+    data["has_notes"] = bool(getattr(record, "notes", None))
+    return data
 
 
 def _lease_metadata(record: Any) -> dict[str, Any]:
-    """Metadata-only lease projection; metadata values never serialize."""
+    """Metadata-only lease projection; free-text values never serialize."""
     data = {
         field: _iso(getattr(record, field, None))
         for field in LEASE_FIELDS
     }
+    data["has_purpose"] = bool(getattr(record, "purpose", None))
+    data["has_reason"] = bool(getattr(record, "reason", None))
     data["metadata_keys"] = sorted((record.metadata or {}).keys())
     data["has_metadata"] = bool(record.metadata)
     return data
 
 
 def _request_metadata(request: dict[str, Any]) -> dict[str, Any]:
-    """Metadata-only access-request projection (raw nested metadata stripped)."""
-    return _pick(request, REQUEST_FIELDS)
+    """Metadata-only access-request projection (raw text/nested metadata stripped)."""
+    data = _pick(request, REQUEST_FIELDS)
+    data["has_purpose"] = bool(request.get("purpose"))
+    data["has_decision_reason"] = bool(request.get("decision_reason"))
+    return data
 
 
 def _audit_metadata(entry: dict[str, Any]) -> dict[str, Any]:
-    """Metadata-only audit projection; nested metadata values never serialize."""
+    """Metadata-only audit projection; reason and nested values never serialize."""
     data = _pick(entry, AUDIT_FIELDS)
-    if data.get("reason") is not None:
-        data["reason"] = redact_text(str(data["reason"]))
+    data["has_reason"] = bool(entry.get("reason"))
     raw_metadata = entry.get("metadata")
     metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     data["metadata_keys"] = sorted(metadata.keys())
@@ -218,10 +234,24 @@ def _audit_metadata(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def _doctor_metadata(report: Any) -> dict[str, Any]:
-    """Policy-doctor projection without absolute path fields."""
+    """Policy-doctor projection without paths or arbitrary policy text."""
     data = report.as_dict(exclude_none=False)
-    data.pop("policy_path", None)
-    return data
+    finding_fields = ("kind", "severity", "agent_id", "service", "strict_violation")
+    return {
+        "version": data.get("version"),
+        "generated_at": data.get("generated_at"),
+        "policy_hash": data.get("policy_hash"),
+        "strict_mode": bool(data.get("strict_mode")),
+        "strict_violation": bool(data.get("strict_violation")),
+        "finding_count": int(data.get("finding_count") or 0),
+        "strict_violation_count": int(data.get("strict_violation_count") or 0),
+        "severity_counts": data.get("severity_counts") or {},
+        "findings": [
+            _pick(finding, finding_fields)
+            for finding in data.get("findings", [])
+            if isinstance(finding, dict)
+        ],
+    }
 
 
 def _policy_agents(policy: PolicyEngine) -> list[dict[str, Any]]:
@@ -247,29 +277,223 @@ def _policy_agents(policy: PolicyEngine) -> list[dict[str, Any]]:
     return summary
 
 
+class _ReadOnlyVault(Vault):
+    """Vault-shaped metadata reader that never opens SQLite for writing."""
+
+    def __init__(self, db_path: Path, salt_path: Path, key: bytes) -> None:
+        self.db_path = db_path
+        self.salt_path = salt_path
+        self.key = key
+
+    @staticmethod
+    def _connect(path: Path) -> sqlite3.Connection:
+        if not path.is_file():
+            raise MissingKeyMaterialError("Vault database is not initialized")
+        uri = f"file:{quote(str(path), safe='/')}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=5)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def list_credentials(self) -> list[Any]:
+        with self._connect(self.db_path) as conn:
+            rows = conn.execute("SELECT * FROM credentials ORDER BY service, alias").fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def list_leases(
+        self,
+        agent_id: str | None = None,
+        service: str | None = None,
+        status: LeaseStatus | str | None = None,
+    ) -> list[Any]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if agent_id is not None:
+            conditions.append("agent_id = ?")
+            params.append(agent_id)
+        if service is not None:
+            conditions.append("service = ?")
+            params.append(normalize(service))
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        with self._connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"SELECT * FROM leases WHERE {where_clause} ORDER BY issued_at DESC",
+                params,
+            ).fetchall()
+        now = utc_now()
+        requested_status = status.value if isinstance(status, LeaseStatus) else str(status) if status is not None else None
+        records: list[Any] = []
+        for row in rows:
+            record = self._row_to_lease_record(row)
+            if record.status is LeaseStatus.active and record.expires_at <= now:
+                record = record.model_copy(update={"status": LeaseStatus.expired})
+            if requested_status is None or record.status.value == requested_status:
+                records.append(record)
+        return records
+
+    def list_access_requests(
+        self,
+        *,
+        agent_id: str | None = None,
+        service: str | None = None,
+        status: AccessRequestStatus | str | None = None,
+    ) -> list[Any]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if agent_id is not None:
+            conditions.append("agent_id = ?")
+            params.append(agent_id)
+        if service is not None:
+            conditions.append("service = ?")
+            params.append(normalize(service))
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status.value if isinstance(status, AccessRequestStatus) else str(status))
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        with self._connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"SELECT * FROM access_requests WHERE {where_clause} ORDER BY created_at DESC",
+                params,
+            ).fetchall()
+        return [self._row_to_access_request_record(row) for row in rows]
+
+
+class _ReadOnlyAudit(AuditLogger):
+    """Audit reader that does not create or migrate the access-log table."""
+
+    def list_recent(
+        self,
+        limit: int = 100,
+        agent_id: str | None = None,
+        service: str | None = None,
+        action: str | None = None,
+        decision: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[dict[str, object]]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        for field, value in (
+            ("agent_id", agent_id),
+            ("service", service),
+            ("action", action),
+            ("decision", decision),
+        ):
+            if value is not None:
+                conditions.append(f"{field} = ?")
+                params.append(value)
+        if since is not None:
+            conditions.append("timestamp >= ?")
+            params.append(since.isoformat())
+        if until is not None:
+            conditions.append("timestamp <= ?")
+            params.append(until.isoformat())
+        params.append(max(0, int(limit)))
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        try:
+            with _ReadOnlyVault._connect(self.db_path) as conn:
+                rows = conn.execute(
+                    f"SELECT * FROM access_logs WHERE {where_clause} ORDER BY timestamp DESC LIMIT ?",
+                    params,
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return []
+            raise
+        results: list[dict[str, object]] = []
+        for row in rows:
+            item = dict(row)
+            raw = item.get("metadata_json")
+            try:
+                item["metadata"] = json.loads(raw) if isinstance(raw, str) and raw else {}
+            except json.JSONDecodeError:
+                item["metadata"] = {"raw": raw}
+            item.pop("metadata_json", None)
+            results.append(item)
+        return results
+
+
+class _ReadOnlyAuditIntegrityService(AuditIntegrityService):
+    """Verify integrity without initializing schema or recording a run."""
+
+    def _connection(self) -> sqlite3.Connection:
+        return _ReadOnlyVault._connect(self.db_path)
+
+    def _record_run(self, conn: sqlite3.Connection, result: Any) -> None:
+        # The parent verifier records a verification run and commits it. The
+        # desktop bridge is explicitly read-only, so that side effect is skipped.
+        return None
+
+
+def _read_only_settings(profile: str | None = None) -> AppSettings:
+    resolved = resolve_profile(profile)
+    env_policy = os.environ.get("HERMES_VAULT_POLICY")
+    return AppSettings(
+        runtime_home=resolved.profile_home,
+        base_home=resolved.base_home,
+        profile_name=resolved.name,
+        profile_source=resolved.source,
+        profile_home_source=resolved.home_source,
+        policy_source="env" if env_policy else "profile",
+        policy_path=Path(env_policy).expanduser() if env_policy else None,
+    )
+
+
+def _build_read_only_context(*, prompt: bool = False, profile: str | None = None) -> DashboardContext:
+    if prompt:
+        raise MissingPassphraseError("The desktop bridge never prompts for a passphrase")
+    settings = _read_only_settings(profile)
+    passphrase_result = resolve_passphrase_with_source(prompt=False, profile_name=settings.profile_name)
+    if not settings.db_path.is_file() or not settings.salt_path.is_file():
+        raise MissingKeyMaterialError("Vault key material is not initialized")
+    key = load_or_create_master_key(settings.salt_path, passphrase_result.passphrase, enable_dpapi=False)
+    policy = PolicyEngine.from_yaml(settings.effective_policy_path)
+    vault = _ReadOnlyVault(settings.db_path, settings.salt_path, key)
+    audit = _ReadOnlyAudit(settings.db_path)
+    broker = Broker(
+        vault=vault,
+        policy=policy,
+        verifier=Verifier(
+            plugin_dir=settings.verifier_plugin_dir,
+            load_file_plugins=False,
+            load_entry_points=False,
+        ),
+        audit=audit,
+    )
+    return DashboardContext(
+        settings=settings,
+        vault=vault,
+        policy=policy,
+        broker=broker,
+        audit=audit,
+        passphrase_source=passphrase_result.source,
+    )
+
+
 class DesktopBridge:
     """Stateless, read-only NDJSON bridge dispatcher.
 
-    The context factory mirrors ``build_dashboard_context``: it is called
-    with ``prompt=False`` so the bridge never prompts, and passphrase
-    resolution happens through the environment only.
+    The default context is a side-effect-free metadata reader: it uses
+    environment-only passphrase resolution and read-only SQLite connections.
+    Callers may inject a context factory for unit tests or a trusted embedding.
     """
 
     def __init__(
         self,
-        context_factory: Callable[..., DashboardContext] = build_dashboard_context,
+        context_factory: Callable[..., DashboardContext] | None = None,
         api_factory: Callable[[DashboardContext], DashboardAPI] | None = None,
     ) -> None:
-        self._context_factory = context_factory
-        self._api_factory = api_factory or (lambda ctx: DashboardAPI(context_factory=lambda: ctx))
+        self._context_factory = context_factory or _build_read_only_context
+        self._api_factory = api_factory
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
         """Dispatch one decoded request object to a response envelope."""
         request_id = request.get("id")
         raw_protocol = request.get("protocol_version")
         try:
-            requested_protocol = int(raw_protocol) if raw_protocol is not None else PROTOCOL_VERSION
-        except (TypeError, ValueError):
+            requested_protocol = PROTOCOL_VERSION if raw_protocol is None else raw_protocol
+            if isinstance(requested_protocol, bool) or not isinstance(requested_protocol, int):
+                raise TypeError
+        except TypeError:
             return _error(request_id, "UNSUPPORTED_PROTOCOL", "protocol_version must be an integer")
         if requested_protocol != PROTOCOL_VERSION:
             return _error(request_id, "UNSUPPORTED_PROTOCOL", f"unsupported protocol_version: {requested_protocol}")
@@ -284,6 +508,8 @@ class DesktopBridge:
             result = handler(params)
         except MissingPassphraseError as exc:
             return _error(request_id, "MISSING_PASSPHRASE", str(exc), locked=True)
+        except (MissingKeyMaterialError, CorruptKeyMaterialError):
+            return _error(request_id, "VAULT_NOT_READY", "Vault key material is unavailable", locked=True)
         except ValueError as exc:
             return _error(request_id, "INVALID_PARAMS", str(exc))
         except Exception as exc:
@@ -293,7 +519,7 @@ class DesktopBridge:
 
     def handle_line(self, line: str) -> dict[str, Any]:
         """Parse one request line and return a response envelope."""
-        if len(line) > MAX_REQUEST_BYTES:
+        if _utf8_size(line) > MAX_REQUEST_BYTES:
             return _error(None, "OVERSIZED_REQUEST", f"request line exceeds {MAX_REQUEST_BYTES} bytes")
         try:
             request = json.loads(line)
@@ -423,9 +649,29 @@ class DesktopBridge:
 
     def _method_integrity(self, params: dict[str, Any]) -> dict[str, Any]:
         ctx = self._ctx(params.get("profile"))
-        result = dict(self._api_factory(ctx).audit_integrity())
-        # The dashboard helper embeds a raw child message on error; keep the
-        # envelope metadata-only by redacting any embedded error text.
+        if self._api_factory is not None:
+            result = dict(self._api_factory(ctx).audit_integrity())
+        else:
+            service = _ReadOnlyAuditIntegrityService(ctx.settings.db_path, ctx.vault.key)
+            verification = service.verify()
+            result = {
+                "version": "audit-integrity-dashboard-v1",
+                "status": verification.status.value,
+                "reason_code": verification.reason_code,
+                "chain_version": verification.chain_version,
+                "active_segment_id": verification.active_segment_id,
+                "active_segment_number": verification.active_segment_number,
+                "verified_count": verification.verified_count,
+                "legacy_count": verification.legacy_count,
+                "first_verified_sequence": verification.first_verified_sequence,
+                "last_verified_sequence": verification.last_verified_sequence,
+                "checkpoint_status": verification.checkpoint_status.value,
+                "last_verification_time": verification.verified_at.isoformat()
+                if verification.verified_at
+                else None,
+                "sanitized_reason": verification.sanitized_reason,
+                "recommended_next_step": verification.recommended_next_step,
+            }
         if isinstance(result.get("error"), str):
             result["error"] = redact_text(result["error"])[:300]
         result["version"] = "desktop-bridge-v1"
@@ -433,35 +679,51 @@ class DesktopBridge:
         return result
 
 
+def _utf8_size(value: str) -> int:
+    return len(value.encode("utf-8", errors="replace"))
+
+
 def _iter_request_lines(
     stream: TextIO,
     max_bytes: int = MAX_REQUEST_BYTES,
 ) -> Iterator[tuple[str, bool]]:
-    """Yield (line, oversized) pairs with a hard per-line byte bound.
-
-    Oversized lines are drained (not parsed) so the stream framing stays
-    intact; the caller replies with an OVERSIZED_REQUEST envelope.
-    """
+    """Yield (line, oversized) pairs with a hard UTF-8 byte bound."""
+    parts: list[str] = []
+    line_bytes = 0
+    oversized = False
     while True:
-        line = stream.readline(max_bytes + 1)
-        if not line:
+        chunk = stream.read(4096)
+        if not chunk:
+            if parts or line_bytes or oversized:
+                yield "".join(parts).rstrip("\r"), oversized
             return
-        oversized = len(line) > max_bytes
-        if oversized:
-            while not line.endswith("\n"):
-                chunk = stream.readline(max_bytes + 1)
-                if not chunk:
-                    break
-                line = chunk
-        yield line.rstrip("\r\n"), oversized
+        remainder = chunk
+        while remainder:
+            newline = remainder.find("\n")
+            part = remainder if newline < 0 else remainder[:newline]
+            if not oversized:
+                part_bytes = _utf8_size(part)
+                if line_bytes + part_bytes > max_bytes:
+                    oversized = True
+                    parts.clear()
+                else:
+                    parts.append(part)
+                    line_bytes += part_bytes
+            if newline < 0:
+                break
+            yield "".join(parts).rstrip("\r"), oversized
+            parts = []
+            line_bytes = 0
+            oversized = False
+            remainder = remainder[newline + 1 :]
 
 
 def _render(response: dict[str, Any], max_bytes: int = MAX_OUTPUT_BYTES) -> str:
     """Serialize one response line; hard-cap output so no response is unbounded."""
     text = json.dumps(response, sort_keys=True)
-    if len(text) > max_bytes:
+    if _utf8_size(text) > max_bytes:
         response = _error(
-            response.get("id"),
+            None,
             "OUTPUT_LIMIT",
             f"response exceeds {max_bytes} bytes",
         )
