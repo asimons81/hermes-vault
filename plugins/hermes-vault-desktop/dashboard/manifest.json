@@ -1,0 +1,8 @@
+{
+  "name": "hermes-vault-desktop",
+  "label": "Hermes Vault",
+  "description": "Read-only Hermes Vault dashboard — credentials, leases, policy, access requests, audit, and integrity status via the Vault desktop bridge",
+  "icon": "KeyRound",
+  "version": "1.0.0",
+  "api": "plugin_api.py"
+}
