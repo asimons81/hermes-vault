@@ -33,7 +33,9 @@ context-backed method returns a ``MISSING_PASSPHRASE`` locked envelope.
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -150,6 +152,35 @@ AUDIT_FIELDS = (
 )
 
 
+_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])(?:/[^\s'\"<>]+|[A-Za-z]:[\\/][^\s'\"<>]+)")
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{16,}")
+_HEX_TOKEN_RE = re.compile(r"\b[0-9A-Fa-f]{32,}\b")
+
+
+def _safe_text(value: Any) -> str:
+    text = redact_text(str(value))
+    text = _ABSOLUTE_PATH_RE.sub("[path]", text)
+    text = _JWT_RE.sub("[redacted:jwt]", text)
+    text = _BEARER_RE.sub("[redacted:bearer]", text)
+    text = _HEX_TOKEN_RE.sub("[redacted:hex-token]", text)
+    return text[:300]
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
+def _valid_request_id(value: Any) -> Any:
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return value
+    return None
+
+
 def _ok(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": request_id,
@@ -167,7 +198,7 @@ def _error(
     locked: bool = False,
     **extra: Any,
 ) -> dict[str, Any]:
-    error: dict[str, Any] = {"code": code, "message": redact_text(message)}
+    error: dict[str, Any] = {"code": code, "message": _safe_text(message)}
     if locked:
         error["locked"] = True
     error.update(extra)
@@ -487,7 +518,7 @@ class DesktopBridge:
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
         """Dispatch one decoded request object to a response envelope."""
-        request_id = request.get("id")
+        request_id = _valid_request_id(request.get("id"))
         raw_protocol = request.get("protocol_version")
         try:
             requested_protocol = PROTOCOL_VERSION if raw_protocol is None else raw_protocol
@@ -514,7 +545,7 @@ class DesktopBridge:
             return _error(request_id, "INVALID_PARAMS", str(exc))
         except Exception as exc:
             # Child exception envelope: sanitized message, never a traceback.
-            return _error(request_id, "INTERNAL", redact_text(str(exc))[:300])
+            return _error(request_id, "INTERNAL", _safe_text(exc))
         return _ok(request_id, result)
 
     def handle_line(self, line: str) -> dict[str, Any]:
@@ -522,9 +553,9 @@ class DesktopBridge:
         if _utf8_size(line) > MAX_REQUEST_BYTES:
             return _error(None, "OVERSIZED_REQUEST", f"request line exceeds {MAX_REQUEST_BYTES} bytes")
         try:
-            request = json.loads(line)
-        except json.JSONDecodeError:
-            return _error(None, "MALFORMED_REQUEST", "request must be valid JSON")
+            request = json.loads(line, parse_constant=_reject_json_constant)
+        except (json.JSONDecodeError, RecursionError, ValueError) as exc:
+            return _error(None, "MALFORMED_REQUEST", f"invalid JSON request: {exc}")
         if not isinstance(request, dict):
             return _error(None, "MALFORMED_REQUEST", "request must be a JSON object")
         return self.handle_request(request)
@@ -635,10 +666,12 @@ class DesktopBridge:
     def _method_audit(self, params: dict[str, Any]) -> dict[str, Any]:
         ctx = self._ctx(params.get("profile"))
         raw_limit = params.get("limit")
-        try:
-            limit = int(raw_limit) if raw_limit not in (None, "") else 50
-        except (TypeError, ValueError):
+        if raw_limit in (None, ""):
+            limit = 50
+        elif isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
             raise ValueError("limit must be an integer")
+        else:
+            limit = raw_limit
         bounded = max(1, min(limit, MAX_AUDIT_LIMIT))
         return {
             "version": "desktop-bridge-v1",
@@ -673,7 +706,7 @@ class DesktopBridge:
                 "recommended_next_step": verification.recommended_next_step,
             }
         if isinstance(result.get("error"), str):
-            result["error"] = redact_text(result["error"])[:300]
+            result["error"] = _safe_text(result["error"])
         result["version"] = "desktop-bridge-v1"
         result["profile"] = ctx.settings.profile_name
         return result
