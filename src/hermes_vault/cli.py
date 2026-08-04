@@ -2332,6 +2332,27 @@ def dashboard(
         server.server_close()
 
 
+@_typer_app.command("desktop-bridge")
+def desktop_bridge(
+    ctx: typer.Context,
+) -> None:
+    """Serve the read-only NDJSON desktop bridge on stdin/stdout.
+
+    Each request is one JSON object per line; each response is one JSON
+    object per line. The bridge never prompts for a passphrase (env-only),
+    never returns raw credential material, and never mutates the vault.
+
+    \\b
+    Examples:
+      echo '{"id":1,"method":"hello"}' | hermes-vault --no-banner desktop-bridge
+    """
+    from hermes_vault.desktop_bridge import run_desktop_bridge
+
+    code = run_desktop_bridge()
+    if code:
+        raise typer.Exit(code=code)
+
+
 @broker_app.command("get")
 def broker_get(
     ctx: typer.Context,
