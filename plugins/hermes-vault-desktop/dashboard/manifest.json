@@ -1,0 +1,13 @@
+{
+  "name": "hermes-vault-desktop",
+  "label": "Hermes Vault",
+  "description": "Read-only Hermes Vault status and integrity metadata for Hermes Desktop.",
+  "icon": "ShieldCheck",
+  "version": "0.1.0",
+  "api": "plugin_api.py",
+  "entry": "dist/index.js",
+  "tab": {
+    "path": "/hermes-vault",
+    "hidden": true
+  }
+}
