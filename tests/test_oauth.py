@@ -142,6 +142,62 @@ class TestCallbackServer:
         assert "user denied" in result.error_description
         server.shutdown()
 
+    def test_concurrent_servers_receive_only_their_own_callback(self):
+        from urllib.request import urlopen
+
+        server_a = CallbackServer(timeout=5)
+        server_b = CallbackServer(timeout=5)
+        port_a = server_a.start()
+        port_b = server_b.start()
+        server_thread_a = server_a._thread
+        server_thread_b = server_b._thread
+        assert server_thread_a is not None
+        assert server_thread_b is not None
+        a_waiting = threading.Event()
+        b_waiting = threading.Event()
+        a_result = []
+        b_result = []
+
+        def wait_for_callback(server, waiting, results):
+            waiting.set()
+            results.append(server.wait())
+
+        a_thread = threading.Thread(target=wait_for_callback, args=(server_a, a_waiting, a_result))
+        b_thread = threading.Thread(target=wait_for_callback, args=(server_b, b_waiting, b_result))
+        a_thread.start()
+        b_thread.start()
+
+        try:
+            assert a_waiting.wait(timeout=1)
+            assert b_waiting.wait(timeout=1)
+            with urlopen(f"http://127.0.0.1:{port_a}/callback?code=code-a&state=state-a", timeout=1):
+                pass
+
+            a_thread.join(timeout=1)
+            assert not a_thread.is_alive()
+            assert not server_thread_a.is_alive()
+            assert b_thread.is_alive()
+            assert server_thread_b.is_alive()
+            assert a_result[0].code == "code-a"
+            assert a_result[0].state == "state-a"
+
+            with urlopen(f"http://127.0.0.1:{port_b}/callback?code=code-b&state=state-b", timeout=1):
+                pass
+            b_thread.join(timeout=1)
+            assert not b_thread.is_alive()
+            assert not server_thread_b.is_alive()
+            assert server_a._server is None
+            assert server_a._thread is None
+            assert server_b._server is None
+            assert server_b._thread is None
+            assert b_result[0].code == "code-b"
+            assert b_result[0].state == "state-b"
+        finally:
+            server_a.shutdown()
+            server_b.shutdown()
+            a_thread.join(timeout=6)
+            b_thread.join(timeout=6)
+
 
 # ── Provider registry ────────────────────────────────────────────────────────────
 

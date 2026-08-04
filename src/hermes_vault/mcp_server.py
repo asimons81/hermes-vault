@@ -1435,9 +1435,7 @@ def _handle_oauth_login(arguments: dict[str, Any], broker: Broker, agent_id: str
         "profile_name": settings.profile_name,
     }
 
-    # Attach auto-exchange handler onto CallbackServer's result mechanism.
-    # Because CallbackServer uses class-level static state, we spin a
-    # background thread that waits for the callback, then completes the flow.
+    # Wait for the callback in a background thread, then complete the flow.
     def _wait_and_exchange() -> None:
         try:
             result = callback_server.wait()

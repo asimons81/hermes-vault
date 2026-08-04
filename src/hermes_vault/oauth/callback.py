@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler
 import socketserver
 import threading
 from dataclasses import dataclass
+from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 
@@ -22,8 +23,6 @@ class CallbackResult:
 
 class CallbackHandler(BaseHTTPRequestHandler):
     """HTTP handler for the OAuth callback route."""
-    result: CallbackResult | None = None
-    event: threading.Event | None = None
 
     @staticmethod
     def _first(seq):
@@ -47,62 +46,82 @@ class CallbackHandler(BaseHTTPRequestHandler):
             return
 
         qs = parse_qs(parsed.query)
-        CallbackHandler.result = CallbackResult(
+        server = cast("CallbackHTTPServer", self.server)
+        server.result = CallbackResult(
             code=self._first(qs.get("code")),
             state=self._first(qs.get("state")),
             error=self._first(qs.get("error")),
             error_description=self._first(qs.get("error_description")),
         )
         self._send_html(200, "Authorization received. You may close this window.")
-        if CallbackHandler.event is not None:
-            CallbackHandler.event.set()
+        server.event.set()
 
     def log_message(self, format, *args):
         """Suppress default HTTP access logging to avoid leaking state/code."""
 
 
+class CallbackHTTPServer(socketserver.TCPServer):
+    """Loopback callback server with state isolated to this instance."""
+
+    def __init__(self, server_address: tuple[str, int], event: threading.Event):
+        self.event = event
+        self.result: CallbackResult | None = None
+        super().__init__(server_address, CallbackHandler)
+
+
 class CallbackServer:
     """Ephemeral TCPServer bound to 127.0.0.1, port 0 auto-assigned."""
-    result: CallbackResult | None = None
 
     def __init__(self, host: str = "127.0.0.1", port: int = 0, timeout: int = 120):
         self.host = host
         self.port = port
         self.timeout = timeout
-        self._server: socketserver.TCPServer | None = None
+        self._server: CallbackHTTPServer | None = None
         self._result: CallbackResult | None = None
-        self._event: threading.Event | None = None
+        self._thread: threading.Thread | None = None
+        self._shutdown_lock = threading.Lock()
 
     def start(self) -> int:
         """Start the server in a background thread. Returns the actual port."""
-        self._event = threading.Event()
-        self._result = CallbackResult()
-        CallbackHandler.event = self._event
-        CallbackHandler.result = None
-        self._server = socketserver.TCPServer((self.host, self.port), CallbackHandler)
-        actual_port = self._server.server_address[1]
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-        self._thread.start()
+        with self._shutdown_lock:
+            self._result = CallbackResult()
+            server = CallbackHTTPServer((self.host, self.port), threading.Event())
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            self._server = server
+            self._thread = thread
+            actual_port = server.server_address[1]
+            thread.start()
         return actual_port
 
     def wait(self) -> CallbackResult:
         """Block until callback result or timeout."""
-        event = self._event
         result = self._result
-        if event is None or result is None:
+        server = self._server
+        if result is None or server is None:
             raise RuntimeError("Callback server must be started before wait().")
-        if not event.wait(timeout=self.timeout):
+        if not server.event.wait(timeout=self.timeout):
             result.error = "timeout"
             result.error_description = f"Timed out after {self.timeout}s. No callback received."
             self.shutdown()
             return result
         self.shutdown()
-        if CallbackHandler.result is not None:
-            return CallbackHandler.result
+        if server.result is not None:
+            return server.result
         return result
 
     def shutdown(self) -> None:
         """Signal the server to shut down and clean up resources."""
-        if self._server:
-            self._server.shutdown()
-            self._server.server_close()
+        with self._shutdown_lock:
+            server = self._server
+            thread = self._thread
+            if server is None and thread is None:
+                return
+
+            if server is not None:
+                server.shutdown()
+                server.server_close()
+            if thread is not None and thread is not threading.current_thread():
+                thread.join()
+
+            self._server = None
+            self._thread = None
