@@ -28,6 +28,38 @@ const QUERY_ROOT = [ID]
 const REFRESH_INTERVAL_MS = 30_000
 const REQUEST_TIMEOUT_MS = 8_000
 
+// Tailwind utilities this plugin relies on that the packaged Hermes Desktop
+// CSS bundle does NOT generate (verified against app.asar 0.17.0: each
+// selector below is absent from dist/assets/index-*.css). A missing
+// `bg-(--ui-*)` class silently renders the element transparent — the four
+// LoadingState skeleton cards (and the sticky page header) have no fill,
+// which is the "four blank panes". Inject them scoped so the page keeps its
+// intended layout and fills on every app build, and use only theme vars the
+// bundle defines (--ui-bg-*, --ui-editor-surface-background).
+const STYLE_ID = 'hermes-vault-desktop-styles'
+const SCOPED_CSS = [
+  '.bg-\\(--ui-control-background\\) { background-color: var(--ui-bg-tertiary); }',
+  '.bg-\\(--ui-background\\) { background-color: var(--ui-editor-surface-background); }',
+  '.max-w-5xl { max-width: 64rem; }',
+  '.pb-5 { padding-bottom: 1.25rem; }',
+  '.w-96 { width: 24rem; }',
+  '@media (min-width: 768px) { .md\\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }',
+  '@media (min-width: 1024px) { .lg\\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }'
+].join('\n')
+
+export const STYLESHEET = SCOPED_CSS
+
+function ensureStyles() {
+  if (typeof document === 'undefined') return
+  let style = document.getElementById(STYLE_ID)
+  if (!style) {
+    style = document.createElement('style')
+    style.id = STYLE_ID
+    document.head.appendChild(style)
+  }
+  if (style.textContent !== SCOPED_CSS) style.textContent = SCOPED_CSS
+}
+
 function profilePath(path, profile, extra = '') {
   const query = `profile=${encodeURIComponent(profile)}`
   return `${path}?${query}${extra}`
@@ -438,6 +470,7 @@ const plugin = {
   name: 'Hermes Vault',
   defaultEnabled: false,
   register(ctx) {
+    ensureStyles()
     const Page = () => jsx(VaultPage, { ctx })
     ctx.registerMany([
       {
