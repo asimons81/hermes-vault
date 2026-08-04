@@ -238,6 +238,11 @@ def test_audit_dispatch_is_bounded_and_metadata_only(tmp_path: Path) -> None:
     assert "req-1" not in json.dumps(response)
     assert "«redacted:sk-…»" not in json.dumps(response)
 
+    for invalid_limit in (1.5, True):
+        invalid = _dispatch(bridge, "audit", {"limit": invalid_limit})
+        assert invalid["ok"] is False
+        assert invalid["error"]["code"] == "INVALID_PARAMS"
+
 
 def test_integrity_dispatch(tmp_path: Path) -> None:
     bridge = _bridge(tmp_path)
@@ -260,6 +265,19 @@ def test_malformed_json_line(tmp_path: Path) -> None:
 
     assert response["ok"] is False
     assert response["error"]["code"] == "MALFORMED_REQUEST"
+
+
+def test_deep_json_and_nonstandard_constants_return_envelopes(tmp_path: Path) -> None:
+    bridge = _bridge(tmp_path)
+
+    deeply_nested = bridge.handle_line("[" * 1000 + "]" * 1000)
+    nan_request = bridge.handle_line('{"id": NaN, "method": "hello"}')
+
+    assert deeply_nested["ok"] is False
+    assert deeply_nested["error"]["code"] == "MALFORMED_REQUEST"
+    assert nan_request["ok"] is False
+    assert nan_request["error"]["code"] == "MALFORMED_REQUEST"
+    assert "NaN" in nan_request["error"]["message"]
 
 
 def test_non_object_json_line(tmp_path: Path) -> None:
@@ -330,7 +348,11 @@ def test_invalid_profile_returns_invalid_params(tmp_path: Path) -> None:
 
 def test_child_exception_returns_sanitized_envelope(tmp_path: Path) -> None:
     def exploding(prompt: bool = True, profile: str | None = None) -> DashboardContext:
-        raise RuntimeError("boom with sk-ABCDEFGHIJKLMNOPQRST child value inside")
+        raise RuntimeError(
+            "boom with «redacted:sk-…» /tmp/private/vault.db "
+            "eyJhbGciOiJIUzI1NiJ9.abcDEF12.xyzXYZ34 "
+            "Bearer abcdefghijklmnop 0123456789abcdef0123456789abcdef"
+        )
 
     bridge = DesktopBridge(context_factory=exploding)
 
@@ -338,8 +360,13 @@ def test_child_exception_returns_sanitized_envelope(tmp_path: Path) -> None:
 
     assert response["ok"] is False
     assert response["error"]["code"] == "INTERNAL"
-    assert "sk-ABCDEFGHIJKLMNOPQRST" not in json.dumps(response)
-    assert "Traceback" not in json.dumps(response)
+    serialized = json.dumps(response)
+    assert "«redacted:sk-…»" not in serialized
+    assert "/tmp/private/vault.db" not in serialized
+    assert "eyJhbGciOiJIUzI1NiJ9" not in serialized
+    assert "Bearer abcdefghijklmnop" not in serialized
+    assert "0123456789abcdef0123456789abcdef" not in serialized
+    assert "Traceback" not in serialized
     assert "boom" in response["error"]["message"]
 
 
