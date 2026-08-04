@@ -1806,3 +1806,53 @@ agents:
     assert "expired-oauth-token" not in data["reason"], (
         f"Raw token leaked in reason: {data['reason']}"
     )
+
+
+# ── desktop-bridge CLI ──────────────────────────────────────────────────────
+
+
+def test_desktop_bridge_real_hello_via_stdin(monkeypatch, tmp_path: Path) -> None:
+    """End-to-end hello through the real bridge runner via the CLI command."""
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["--no-banner", "desktop-bridge"],
+        input='{"id": 3, "method": "hello", "params": {}}\n',
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    assert lines, f"no NDJSON output: {result.output!r}"
+    payload = json.loads(lines[-1])
+    assert payload["id"] == 3
+    assert payload["ok"] is True
+    assert payload["protocol_version"] == 1
+    assert payload["result"]["name"] == "hermes-vault-desktop-bridge"
+    assert payload["result"]["raw_values_returned"] is False
+    assert "Traceback" not in result.output
+
+
+def test_desktop_bridge_real_missing_passphrase_envelope(monkeypatch, tmp_path: Path) -> None:
+    """Context-backed requests with no passphrase must return a locked envelope."""
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path / "vault-home"))
+    monkeypatch.delenv("HERMES_VAULT_PASSPHRASE", raising=False)
+    monkeypatch.delenv("HERMES_VAULT_PASSPHRASE_DEFAULT", raising=False)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["--no-banner", "desktop-bridge"],
+        input='{"id": 4, "method": "overview", "params": {}}\n',
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    assert lines
+    payload = json.loads(lines[-1])
+    assert payload["id"] == 4
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "MISSING_PASSPHRASE"
+    assert payload["error"]["locked"] is True
+    assert "Traceback" not in result.output
+    assert "sk-" not in result.output
+
