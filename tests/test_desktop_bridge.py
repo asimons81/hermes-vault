@@ -125,6 +125,16 @@ def test_request_with_non_integer_protocol_version_is_rejected(tmp_path: Path) -
     assert response["error"]["code"] == "UNSUPPORTED_PROTOCOL"
 
 
+@pytest.mark.parametrize("protocol_version", [1.5, True])
+def test_request_with_non_integer_protocol_types_is_rejected(tmp_path: Path, protocol_version: object) -> None:
+    bridge = _bridge(tmp_path)
+
+    response = bridge.handle_request({"id": 9, "method": "hello", "protocol_version": protocol_version})
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "UNSUPPORTED_PROTOCOL"
+
+
 # ── dispatch coverage ───────────────────────────────────────────────────────
 
 
@@ -154,7 +164,8 @@ def test_credentials_dispatch_is_metadata_only(tmp_path: Path) -> None:
     credentials = response["result"]["credentials"]
     assert len(credentials) == 1
     assert credentials[0]["service"] == "openai"
-    assert credentials[0]["notes"] == "bridge note"
+    assert credentials[0]["has_notes"] is True
+    assert "bridge note" not in json.dumps(response)
     assert "encrypted_payload" not in credentials[0]
     assert "«redacted:sk-…»" not in json.dumps(response)
 
@@ -168,7 +179,8 @@ def test_leases_dispatch_is_metadata_only(tmp_path: Path) -> None:
     leases = response["result"]["leases"]
     assert len(leases) == 1
     assert leases[0]["service"] == "openai"
-    assert leases[0]["purpose"] == "bridge test"
+    assert leases[0]["has_purpose"] is True
+    assert "bridge test" not in json.dumps(response)
     assert "metadata_keys" in leases[0]
     assert "«redacted:sk-…»" not in json.dumps(response)
 
@@ -204,7 +216,8 @@ def test_requests_dispatch(tmp_path: Path) -> None:
     assert response["ok"] is True
     requests = response["result"]["requests"]
     assert len(requests) == 1
-    assert requests[0]["purpose"] == "bridge request"
+    assert requests[0]["has_purpose"] is True
+    assert "bridge request" not in json.dumps(response)
     assert requests[0]["status"] == "pending"
     assert "«redacted:sk-…»" not in json.dumps(response)
 
@@ -350,6 +363,14 @@ def test_canary_values_never_serialize(tmp_path: Path) -> None:
         purpose="CANARY-PURPOSE",
         metadata={"access_token": "CANARY-TOKEN", "env": {"GITHUB_TOKEN": "CANARY-ENV-VALUE"}},
     )
+    ctx.broker.request_access(
+        agent_id="hermes",
+        service="github",
+        alias="work",
+        action="get_env",
+        purpose="CANARY-REQUEST-PURPOSE",
+        requested_ttl_seconds=60,
+    )
     ctx.audit.record(
         AccessLogRecord(
             agent_id="operator",
@@ -372,6 +393,10 @@ def test_canary_values_never_serialize(tmp_path: Path) -> None:
     # serialize. Key *names* may appear via metadata_keys, never values.
     for canary in (
         "CANARY-RAW-CREDENTIAL-VALUE",
+        "CANARY-NOTE",
+        "CANARY-PURPOSE",
+        "CANARY-REQUEST-PURPOSE",
+        "CANARY-REASON",
         "CANARY-TOKEN",
         "CANARY-ENV-VALUE",
         "CANARY-OAUTH-TOKEN",
@@ -388,6 +413,36 @@ def test_raw_credential_value_never_appears_in_credentials_dispatch(tmp_path: Pa
     response = _dispatch(bridge, "credentials")
 
     assert "CANARY-SMTP-PASSWORD" not in json.dumps(response)
+
+
+def test_default_bridge_is_filesystem_read_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _context(tmp_path)
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+    monkeypatch.setenv("HERMES_VAULT_POLICY", str(tmp_path / "policy.yaml"))
+
+    def snapshot() -> dict[str, tuple[int, bytes]]:
+        return {
+            str(path): (path.stat().st_mtime_ns, path.read_bytes())
+            for path in tmp_path.rglob("*")
+            if path.is_file()
+        }
+
+    before = snapshot()
+    bridge = DesktopBridge()
+    for method in ("overview", "credentials", "leases", "policy", "requests", "audit", "integrity"):
+        response = _dispatch(bridge, method, {"limit": 50})
+        assert response["ok"] is True, response
+    assert snapshot() == before
+
+
+def test_request_size_limit_counts_utf8_bytes(tmp_path: Path) -> None:
+    bridge = _bridge(tmp_path)
+
+    response = bridge.handle_line("😀" * (MAX_REQUEST_BYTES // 4 + 1))
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "OVERSIZED_REQUEST"
 
 
 # ── stream / bounded output behavior ────────────────────────────────────────
