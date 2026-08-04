@@ -1229,7 +1229,7 @@ def test_policy_explain_tool_returns_policy_explain(vault_with_policy, tmp_path)
     assert data["service"] == "openai"
 
 
-def test_lease_checkout_tool_returns_env_through_broker(vault_with_policy, tmp_path):
+def test_lease_checkout_tool_returns_redacted_env_through_broker(vault_with_policy, tmp_path):
     import hermes_vault.mcp_server as mcp_mod
 
     os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
@@ -1242,9 +1242,13 @@ def test_lease_checkout_tool_returns_env_through_broker(vault_with_policy, tmp_p
         "purpose": "deploy",
         "ttl_seconds": 60,
     }))
-    data = _json(result)
+    serialized_output = _text(result)
+    data = json.loads(serialized_output)
 
-    assert data["env"]["OPENAI_API_KEY"] == "test-openai-key"
+    assert "OPENAI_API_KEY" in data["env"]
+    assert data["env"]["OPENAI_API_KEY"] == "test-...-key"
+    assert data["_secret_lengths"]["OPENAI_API_KEY"] == len("test-openai-key")
+    assert "test-openai-key" not in serialized_output
     assert data["metadata"]["lease_checkout"]["lease_issued"] is True
 
 
