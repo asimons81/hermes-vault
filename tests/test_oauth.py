@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import threading
 from pathlib import Path
 
@@ -141,6 +142,92 @@ class TestCallbackServer:
         assert result.error == "access_denied"
         assert "user denied" in result.error_description
         server.shutdown()
+
+    @staticmethod
+    def _fetch_status(url: str) -> int:
+        """Fetch a callback URL and return the HTTP status (non-2xx included)."""
+        from urllib.error import HTTPError
+        from urllib.request import urlopen
+        try:
+            with urlopen(url, timeout=5) as resp:
+                resp.read()
+                return resp.status
+        except HTTPError as e:
+            return e.code
+
+    def test_first_callback_wins(self):
+        """Issue #65: a later callback to the same server must not overwrite the first.
+
+        The second request arrives before the waiter shuts the listener down, so the
+        narrow window described in the issue is exercised deterministically.
+        """
+        server = CallbackServer(timeout=5)
+        server.start()
+        port = server._server.server_address[1]
+        base = f"http://127.0.0.1:{port}/callback"
+        status_first = self._fetch_status(f"{base}?code=first&state=expected")
+        status_later = self._fetch_status(f"{base}?code=second&state=other")
+        result = server.wait()
+        server.shutdown()
+        assert status_first == 200
+        assert status_later >= 400, "later callback must receive a non-success response"
+        assert result.code == "first"
+        assert result.state == "expected"
+
+    def test_explicit_port_can_be_reused_after_shutdown(self):
+        """An explicit loopback port can be rebound after a completed callback."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        first = CallbackServer(port=port, timeout=5)
+        assert first.start() == port
+        self._fetch_status(f"http://127.0.0.1:{port}/callback?code=first")
+        assert first.wait().code == "first"
+        first.shutdown()
+
+        second = CallbackServer(port=port, timeout=5)
+        assert second.start() == port
+        self._fetch_status(f"http://127.0.0.1:{port}/callback?code=second")
+        assert second.wait().code == "second"
+        second.shutdown()
+
+    def test_concurrent_servers_are_isolated(self):
+        """Issue #61/#64: two simultaneous logins must not share callback state.
+
+        Each waiter must receive only its own code/state even though both servers
+        are accepting callbacks at the same time.
+        """
+        server_a = CallbackServer(timeout=2)
+        server_b = CallbackServer(timeout=2)
+        port_a = server_a.start()
+        port_b = server_b.start()
+        assert port_a != port_b
+        status_a = self._fetch_status(f"http://127.0.0.1:{port_a}/callback?code=aaa&state=stateA")
+        status_b = self._fetch_status(f"http://127.0.0.1:{port_b}/callback?code=bbb&state=stateB")
+        result_a = server_a.wait()
+        result_b = server_b.wait()
+        server_a.shutdown()
+        server_b.shutdown()
+        assert status_a == 200
+        assert status_b == 200
+        assert result_a.code == "aaa"
+        assert result_a.state == "stateA"
+        assert result_b.code == "bbb"
+        assert result_b.state == "stateB"
+
+    def test_server_terminates_internal_thread_after_wait(self):
+        """The serving thread must exit after wait()/shutdown cleanup."""
+        server = CallbackServer(timeout=5)
+        server.start()
+        thread = server._thread
+        port = server._server.server_address[1]
+        self._fetch_status(f"http://127.0.0.1:{port}/callback?code=one")
+        server.wait()
+        server.shutdown()
+        assert thread is not None
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 # ── Provider registry ────────────────────────────────────────────────────────────

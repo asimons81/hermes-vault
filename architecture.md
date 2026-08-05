@@ -181,7 +181,7 @@ class StateManager:
 
 ### 4.3 `callback.py` -- CallbackServer
 
-An ephemeral `HTTPServer` bound to `127.0.0.1` only. Handles exactly one GET request on `/callback`, extracts query parameters, then signals the main thread and shuts down.
+An ephemeral `HTTPServer` bound to `127.0.0.1` only. Handles exactly one GET request on `/callback`, extracts query parameters, then signals the main thread and shuts down. Each `CallbackServer` instance owns its result and event state, so concurrent login flows are isolated, and the first accepted callback is immutable — later callbacks get a non-success response and cannot overwrite it.
 
 #### Port selection strategy
 
@@ -205,16 +205,20 @@ class CallbackResult:
     error: str | None = None
     error_description: str | None = None
 
-class CallbackHandler(http.server.BaseHTTPRequestHandler):
-    # Shared mutable state -- set by the server factory before each run
-    result: CallbackResult | None = None
-    event: threading.Event | None = None
+class CallbackHTTPServer(socketserver.TCPServer):
+    # Per-instance state: result and event live on the server, not the handler
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.result: CallbackResult | None = None
+        self.event: threading.Event | None = None
+        self._accept_lock = threading.Lock()
 
+class CallbackHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         # Parse query string
-        # Populate CallbackHandler.result
-        # Send 200 OK with a simple HTML success / failure page
-        # Set CallbackHandler.event to unblock the main thread
+        # With the server instance lock: if result already accepted,
+        # reply 409 and return (first callback wins).
+        # Otherwise populate server.result and set server.event.
         pass
 
     def log_message(self, format, *args):
@@ -226,33 +230,37 @@ class CallbackServer:
         self.host = host
         self.port = port
         self.timeout = timeout
-        self.result: CallbackResult = CallbackResult()
-        self._event = threading.Event()
-        self._server: socketserver.TCPServer | None = None
+        self._server: CallbackHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> int:
-        """Start the server in a background thread. Returns the actual port."""
-        CallbackHandler.result = self.result
-        CallbackHandler.event = self._event
-        self._server = socketserver.TCPServer((self.host, self.port), CallbackHandler)
-        actual_port = self._server.server_address[1]
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        server = CallbackHTTPServer((self.host, self.port), CallbackHandler)
+        server.event = threading.Event()
+        server.result = None
+        self._server = server
+        actual_port = server.server_address[1]
+        self._thread = threading.Thread(target=server.serve_forever, daemon=True)
         self._thread.start()
         return actual_port
 
     def wait(self) -> CallbackResult:
-        """Block until callback or timeout. Returns the result."""
-        if not self._event.wait(timeout=self.timeout):
-            self.result.error = "timeout"
-            self.result.error_description = f"No callback received within {self.timeout}s"
+        if not self._server.event.wait(timeout=self.timeout):
+            return CallbackResult(error="timeout", error_description="No callback received.")
+        accepted = self._server.result
         self.shutdown()
-        return self.result
+        return accepted or CallbackResult(error="timeout", error_description="No callback received.")
 
     def shutdown(self) -> None:
-        if self._server:
-            self._server.shutdown()
-            self._server.server_close()
+        server = self._server
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+            server.result = None
+            server.event = None
+            self._server = None
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            self._thread = None
 ```
 
 #### HTML response pages
