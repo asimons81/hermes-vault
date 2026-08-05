@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from hermes_vault.backup import restore_dry_run, verify_backup_file
+from hermes_vault.backup import BACKUP_INTEGRITY_HEALTHY, restore_dry_run, verify_backup_file
 from hermes_vault.diff import diff_backups
 from hermes_vault.models import utc_now
 from hermes_vault.policy import PolicyEngine
@@ -90,9 +90,14 @@ def run_recovery_drill(
     if policy is not None:
         report.policy_hash = policy.compute_policy_hash()
 
+    integrity_ok = (
+        not verify_report.integrity_available
+        or verify_report.integrity_status == BACKUP_INTEGRITY_HEALTHY
+    )
     report.healthy = (
         verify_report.decryptable
         and restore_report.decryptable
+        and integrity_ok
         and not report.findings
     )
     report.recommended_next_step = (

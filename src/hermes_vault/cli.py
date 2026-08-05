@@ -2953,22 +2953,30 @@ def backup_verify(
         raise typer.Exit(code=2)
 
     vault, _, _, _ = build_services(prompt=True)
-    from hermes_vault.backup import verify_backup_file
+    from hermes_vault.backup import BACKUP_INTEGRITY_HEALTHY, verify_backup_file
 
     report = verify_backup_file(input, vault)
     _print_backup_report(report, format=format)
+    # Fail closed on tampered evidence: exit 0 only when decryptable AND
+    # (no integrity evidence OR evidence verified healthy). v2 backups with
+    # integrity_available exit nonzero on anything less than healthy (#59).
+    integrity_ok = (
+        not report.integrity_available
+        or report.integrity_status == BACKUP_INTEGRITY_HEALTHY
+    )
+    verified = report.decryptable and integrity_ok
     audit = AuditLogger(get_settings().db_path, master_key=vault.key)
     audit.record(
         AccessLogRecord(
             agent_id=OPERATOR_AGENT_ID,
             service="*",
             action="backup_verify",
-            decision=Decision.allow if report.decryptable else Decision.deny,
-            reason=f"backup verify for {input}: {'ok' if report.decryptable else '; '.join(report.findings)}",
+            decision=Decision.allow if verified else Decision.deny,
+            reason=f"backup verify for {input}: {'ok' if verified else '; '.join(report.findings)}",
             metadata=report.as_dict(exclude_none=False),
         )
     )
-    raise typer.Exit(code=0 if report.decryptable else 1)
+    raise typer.Exit(code=0 if verified else 1)
 
 
 def _print_backup_report(report, *, format: str) -> None:
@@ -2985,6 +2993,10 @@ def _print_backup_report(report, *, format: str) -> None:
     table.add_row("Decryptable", "yes" if report.decryptable else "no")
     table.add_row("Would restore", str(report.would_restore_count))
     table.add_row("Audit included", "yes" if report.audit_included else "no")
+    if report.integrity_available:
+        table.add_row("Integrity status", report.integrity_status or "-")
+        if report.integrity_reason:
+            table.add_row("Integrity reason", report.integrity_reason)
     console.print(table)
     for finding in report.findings:
         console.print(f"[red]{finding}[/red]")
