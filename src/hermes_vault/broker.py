@@ -137,7 +137,18 @@ class Broker:
                 "lease_expires_at": lease.expires_at.isoformat(),
                 "lease_purpose": lease.purpose,
             }
-        secret = self.vault.get_secret(record.id)
+        try:
+            secret = self.vault.get_secret(record.id)
+        except Exception:
+            # Relabeled/tampered v2 row or unsupported version label: fail
+            # closed as a clean denial. Never leak the raw secret (issue #60).
+            return self._deny(
+                agent_id,
+                canonical,
+                "get_ephemeral_env",
+                "credential metadata mismatch — secret could not be decrypted",
+                ttl_seconds=effective_ttl,
+            )
         if not secret:
             return self._deny(agent_id, canonical, "get_ephemeral_env", "credential not found in vault", ttl_seconds=effective_ttl)
         # ── OAuth freshness check ────────────────────────────────────────
@@ -159,7 +170,16 @@ class Broker:
             )
         if freshness_result.get("re_resolve"):
             record = self.vault.resolve_credential(canonical, alias=alias)
-            secret = self.vault.get_secret(record.id)
+            try:
+                secret = self.vault.get_secret(record.id)
+            except Exception:
+                return self._deny(
+                    agent_id,
+                    canonical,
+                    "get_ephemeral_env",
+                    "credential metadata mismatch — secret could not be decrypted after OAuth refresh",
+                    ttl_seconds=effective_ttl,
+                )
             if not secret:
                 return self._deny(agent_id, canonical, "get_ephemeral_env", "credential not found after OAuth refresh", ttl_seconds=effective_ttl)
         env_template = get_env_var_map(canonical)

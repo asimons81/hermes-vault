@@ -15,12 +15,16 @@ from hermes_vault import _platform
 from hermes_vault.audit_integrity.service import AuditIntegrityError, AuditIntegrityService
 from hermes_vault.crypto import (
     CRYPTO_VERSION,
+    CRYPTO_VERSION_V2,
     CorruptKeyMaterialError,
     MissingKeyMaterialError,
     SALT_SIZE,
-    decrypt_secret,
+    build_canonical_aad,
+    credential_aad_metadata,
+    current_write_version,
+    decrypt_secret_versioned,
     derive_key,
-    encrypt_secret,
+    encrypt_secret_versioned,
     load_or_create_master_key,
 )
 from hermes_vault.models import (
@@ -47,6 +51,17 @@ class AmbiguousTargetError(RuntimeError):
 
 class RotationRecoveryError(RuntimeError):
     """Raised when an interrupted master-key rotation cannot be recovered."""
+
+
+def _record_aad_metadata(record: "CredentialRecord") -> dict[str, Any]:
+    """Authorization metadata bound into a credential row's v2 AAD."""
+    return credential_aad_metadata(
+        record.id,
+        record.service,
+        record.alias,
+        record.credential_type,
+        record.scopes,
+    )
 
 
 class Vault:
@@ -329,18 +344,28 @@ class Vault:
             payload = derivation_salt
         self._replace_salt_durable(payload)
 
-    def _first_encrypted_payload(self) -> str | None:
+    def _first_encrypted_payload(self) -> dict[str, Any] | None:
+        """Return the most recently updated credential row (or None)."""
         if not self.db_path.exists():
             return None
         with self._connection() as conn:
+            conn.row_factory = sqlite3.Row
             row = conn.execute(
-                "SELECT encrypted_payload FROM credentials ORDER BY updated_at DESC LIMIT 1"
+                "SELECT * FROM credentials ORDER BY updated_at DESC LIMIT 1"
             ).fetchone()
-        return row[0] if row else None
+        return dict(row) if row else None
 
-    def _payload_decrypts_with_salt(self, passphrase: str, salt: bytes, payload: str) -> bool:
+    def _payload_decrypts_with_salt(
+        self,
+        passphrase: str,
+        salt: bytes,
+        payload: str,
+        *,
+        version: str = CRYPTO_VERSION,
+        aad_metadata: dict[str, Any] | None = None,
+    ) -> bool:
         try:
-            decrypt_secret(payload, derive_key(passphrase, salt))
+            decrypt_secret_versioned(payload, derive_key(passphrase, salt), version, aad_metadata)
             return True
         except Exception:
             return False
@@ -358,17 +383,32 @@ class Vault:
                 f"Master-key rotation journal at {journal_path} is unreadable."
             ) from exc
 
-        payload = self._first_encrypted_payload()
-        if payload is None:
+        first = self._first_encrypted_payload()
+        if first is None:
             recovered_salt = new_salt if journal.get("status") == "db_committed" else old_salt
-        elif self._payload_decrypts_with_salt(passphrase, new_salt, payload):
-            recovered_salt = new_salt
-        elif self._payload_decrypts_with_salt(passphrase, old_salt, payload):
-            recovered_salt = old_salt
         else:
-            raise RotationRecoveryError(
-                "Interrupted master-key rotation could not be recovered with either journaled salt."
+            version = first.get("crypto_version") or CRYPTO_VERSION
+            aad_metadata = credential_aad_metadata(
+                first.get("id", ""),
+                first.get("service", ""),
+                first.get("alias", "default"),
+                first.get("credential_type", ""),
+                json.loads(first.get("scopes") or "[]"),
             )
+            if self._payload_decrypts_with_salt(
+                passphrase, new_salt, first["encrypted_payload"],
+                version=version, aad_metadata=aad_metadata,
+            ):
+                recovered_salt = new_salt
+            elif self._payload_decrypts_with_salt(
+                passphrase, old_salt, first["encrypted_payload"],
+                version=version, aad_metadata=aad_metadata,
+            ):
+                recovered_salt = old_salt
+            else:
+                raise RotationRecoveryError(
+                    "Interrupted master-key rotation could not be recovered with either journaled salt."
+                )
 
         self._replace_salt_durable(recovered_salt)
         journal_path.unlink()
@@ -399,13 +439,24 @@ class Vault:
             )
         resolved_tags = self._normalize_tags(tags) if tags is not None else (existing.tags if existing else [])
         resolved_notes = self._normalize_notes(notes) if notes is not None else (existing.notes if existing else None)
+        # Pre-generate the record id so the authorization metadata bound into
+        # the v2 AAD matches the row that is actually stored (issue #60).
+        write_version = current_write_version()
+        record_id = existing.id if (existing and replace_existing) else str(uuid4())
+        aad_metadata = credential_aad_metadata(
+            record_id,
+            service,
+            alias,
+            credential_type,
+            scopes or [],
+        )
         payload = CredentialSecret(
             secret=secret,
             metadata=self._resolve_secret_metadata(existing.id if existing else None, metadata),
             tags=resolved_tags,
             notes=resolved_notes,
         ).model_dump_json()
-        encrypted_payload = encrypt_secret(payload, self.key)
+        encrypted_payload = encrypt_secret_versioned(payload, self.key, write_version, aad_metadata)
         record = existing.model_copy(update={
             "credential_type": credential_type,
             "encrypted_payload": encrypted_payload,
@@ -416,8 +467,9 @@ class Vault:
             "status": CredentialStatus.unknown,
             "updated_at": utc_now(),
             "expiry": None,
-            "crypto_version": CRYPTO_VERSION,
+            "crypto_version": write_version,
         }) if existing and replace_existing else CredentialRecord(
+            id=record_id,
             service=service,
             alias=alias,
             credential_type=credential_type,
@@ -426,7 +478,7 @@ class Vault:
             scopes=scopes or [],
             tags=resolved_tags,
             notes=resolved_notes,
-            crypto_version=CRYPTO_VERSION,
+            crypto_version=write_version,
         )
         with self._connection() as conn:
             if existing and replace_existing:
@@ -520,7 +572,12 @@ class Vault:
         record = self.get_credential(service_or_id)
         if not record:
             return None
-        payload = decrypt_secret(record.encrypted_payload, self.key)
+        payload = decrypt_secret_versioned(
+            record.encrypted_payload,
+            self.key,
+            record.crypto_version,
+            _record_aad_metadata(record),
+        )
         return CredentialSecret.model_validate_json(payload)
 
     def update_status(
@@ -603,7 +660,12 @@ class Vault:
             tags=current.tags,
             notes=current.notes,
         ).model_dump_json()
-        encrypted_payload = encrypt_secret(payload, self.key)
+        encrypted_payload = encrypt_secret_versioned(
+            payload,
+            self.key,
+            current.crypto_version,
+            _record_aad_metadata(current),
+        )
         current.encrypted_payload = encrypted_payload
         current.imported_from = imported_from or current.imported_from
         current.updated_at = utc_now()
@@ -1363,9 +1425,44 @@ class Vault:
                 crypto_version=cred_data.get("crypto_version", "aesgcm-v1"),
             )
             if existing:
+                # The destination row keeps its own id/metadata. A v2 payload
+                # from the backup was encrypted against the SOURCE row's
+                # metadata; when the bound metadata differs (e.g. a different
+                # id), rebind the payload to this row so restore stays
+                # decryptable (issue #60).
+                incoming_version = record.crypto_version
+                dest_payload = record.encrypted_payload
+                if incoming_version == CRYPTO_VERSION_V2:
+                    source_meta = credential_aad_metadata(
+                        cred_data.get("id") or existing.id,
+                        normalize(cred_data.get("service") or existing.service),
+                        cred_data.get("alias") or existing.alias,
+                        cred_data.get("credential_type") or existing.credential_type,
+                        cred_data.get("scopes") or existing.scopes,
+                    )
+                    dest_meta = credential_aad_metadata(
+                        existing.id,
+                        existing.service,
+                        existing.alias,
+                        record.credential_type,
+                        record.scopes,
+                    )
+                    if build_canonical_aad(source_meta) != build_canonical_aad(dest_meta):
+                        try:
+                            plaintext = decrypt_secret_versioned(
+                                dest_payload, self.key, incoming_version, source_meta
+                            )
+                        except Exception:
+                            raise ValueError(
+                                "Imported v2 credential payload could not be decrypted "
+                                f"with the source metadata for {service}/{record.alias}."
+                            )
+                        dest_payload = encrypt_secret_versioned(
+                            plaintext, self.key, incoming_version, dest_meta
+                        )
                 record = existing.model_copy(update={
                     "credential_type": cred_data["credential_type"],
-                    "encrypted_payload": cred_data["encrypted_payload"],
+                    "encrypted_payload": dest_payload,
                     "status": CredentialStatus(cred_data.get("status", "unknown")),
                     "scopes": cred_data.get("scopes", []),
                     "tags": self._normalize_tags(cred_data.get("tags")) if "tags" in cred_data else existing.tags,
@@ -1373,6 +1470,7 @@ class Vault:
                     "imported_from": cred_data.get("imported_from"),
                     "last_verified_at": last_verified_at,
                     "updated_at": utc_now(),
+                    "crypto_version": incoming_version,
                 })
             with self._connection() as conn:
                 if existing:
@@ -1380,7 +1478,7 @@ class Vault:
                         """
                         UPDATE credentials
                         SET credential_type=?, encrypted_payload=?, status=?, scopes=?,
-                            tags=?, notes=?, updated_at=?, last_verified_at=?, imported_from=?, expiry=?
+                            tags=?, notes=?, updated_at=?, last_verified_at=?, imported_from=?, expiry=?, crypto_version=?
                         WHERE id=?
                         """,
                         (
@@ -1394,6 +1492,7 @@ class Vault:
                             record.last_verified_at.isoformat() if record.last_verified_at else None,
                             record.imported_from,
                             record.expiry.isoformat() if record.expiry else None,
+                            record.crypto_version,
                             record.id,
                         ),
                     )
@@ -1553,7 +1652,12 @@ class Vault:
         test_records = self.list_credentials()
         if test_records:
             try:
-                decrypt_secret(test_records[0].encrypted_payload, old_key)
+                decrypt_secret_versioned(
+                    test_records[0].encrypted_payload,
+                    old_key,
+                    test_records[0].crypto_version,
+                    _record_aad_metadata(test_records[0]),
+                )
             except Exception:
                 raise ValueError(
                     "Old passphrase does not match this vault — rotation aborted."
@@ -1597,8 +1701,18 @@ class Vault:
             conn.execute("BEGIN EXCLUSIVE")
             try:
                 for rec in all_records:
-                    payload_plain = decrypt_secret(rec.encrypted_payload, old_key)
-                    new_encrypted = encrypt_secret(payload_plain, new_key)
+                    payload_plain = decrypt_secret_versioned(
+                        rec.encrypted_payload,
+                        old_key,
+                        rec.crypto_version,
+                        _record_aad_metadata(rec),
+                    )
+                    new_encrypted = encrypt_secret_versioned(
+                        payload_plain,
+                        new_key,
+                        rec.crypto_version,
+                        _record_aad_metadata(rec),
+                    )
                     conn.execute(
                         "UPDATE credentials SET encrypted_payload = ?, updated_at = ? WHERE id = ?",
                         (new_encrypted, utc_now().isoformat(), rec.id),

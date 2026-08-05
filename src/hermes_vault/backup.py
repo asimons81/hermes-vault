@@ -5,7 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from hermes_vault.crypto import decrypt_secret
+from hermes_vault.crypto import (
+    CRYPTO_VERSION,
+    credential_aad_metadata,
+    decrypt_secret_versioned,
+)
 from hermes_vault.models import utc_now
 from hermes_vault.vault import Vault
 
@@ -155,7 +159,18 @@ def _verify_v1_backup(report: BackupVerificationReport, backup: dict[str, Any], 
     decryptable_count = 0
     for entry in credentials:
         try:
-            decrypt_secret(entry["encrypted_payload"], vault.key)
+            decrypt_secret_versioned(
+                entry["encrypted_payload"],
+                vault.key,
+                entry.get("crypto_version") or CRYPTO_VERSION,
+                credential_aad_metadata(
+                    entry.get("id", ""),
+                    entry.get("service", ""),
+                    entry.get("alias", "default"),
+                    entry.get("credential_type", ""),
+                    entry.get("scopes") or [],
+                ),
+            )
         except Exception:
             service = entry.get("service", "?")
             alias = entry.get("alias", "default")

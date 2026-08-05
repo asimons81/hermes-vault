@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import base64
 import getpass
+import json
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Mapping
 
 from hermes_vault import _platform
 from cryptography.hazmat.primitives import hashes
@@ -14,9 +16,24 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 
 CRYPTO_VERSION = "aesgcm-v1"
+CRYPTO_VERSION_V2 = "aesgcm-v2"
 NONCE_SIZE = 12
 SALT_SIZE = 16
 PBKDF2_ITERATIONS = 390_000
+
+# Write-side cutover point for Issue #60. New credential writes use this
+# version label. Keeping it at ``CRYPTO_VERSION`` (aesgcm-v1) means every
+# decrypt path is versioned and v1-compatible before any v2 ciphertext is
+# produced by default. Flip to ``CRYPTO_VERSION_V2`` (or set the
+# HERMES_VAULT_CRYPTO_VERSION env var) to begin writing AAD-bound v2 rows.
+WRITE_CRYPTO_VERSION = CRYPTO_VERSION
+
+# Canonical AAD domain/kind/version marker. Bound into every v2 AAD so the
+# same metadata bytes cannot be replayed as AAD for a different product,
+# record kind, or envelope version (AAD reuse prevention, issue #60).
+AAD_DOMAIN = "hermes-vault"
+AAD_KIND = "credential-aad"
+AAD_VERSION = "v2"
 
 # DPAPI envelope magic. Re-exported here so crypto and dpapi share one
 # constant. See hermes_vault.dpapi for the wrapping semantics.
@@ -200,3 +217,136 @@ def decrypt_secret(encoded: str, key: bytes) -> str:
     nonce = raw[:NONCE_SIZE]
     ciphertext = raw[NONCE_SIZE:]
     return AESGCM(key).decrypt(nonce, ciphertext, None).decode("utf-8")
+
+
+def current_write_version() -> str:
+    """Return the crypto version label for NEW credential writes.
+
+    Honors the ``HERMES_VAULT_CRYPTO_VERSION`` env var as a feature flag;
+    otherwise falls back to :data:`WRITE_CRYPTO_VERSION` (the explicit
+    in-code cutover point). Unknown labels fail closed.
+    """
+    override = os.environ.get("HERMES_VAULT_CRYPTO_VERSION", "").strip()
+    if override:
+        if override not in (CRYPTO_VERSION, CRYPTO_VERSION_V2):
+            raise ValueError(f"Unsupported HERMES_VAULT_CRYPTO_VERSION: {override!r}")
+        return override
+    return WRITE_CRYPTO_VERSION
+
+
+def credential_aad_metadata(
+    record_id: str,
+    service: str,
+    alias: str,
+    credential_type: str,
+    scopes: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build the authorization metadata bound into a v2 credential AAD.
+
+    Fields are the same ones the broker consumes at policy time, so a
+    relabeled row can never decrypt (issue #60).
+    """
+    return {
+        "id": record_id,
+        "service": service,
+        "alias": alias,
+        "credential_type": credential_type,
+        "scopes": scopes or [],
+    }
+
+
+def build_canonical_aad(metadata: Mapping[str, Any]) -> bytes:
+    """Deterministic canonical AAD for credential authorization metadata.
+
+    Serialization is stable: keys are sorted, list values are sorted, JSON is
+    compact (no whitespace) and ASCII-escaped, and the whole body is prefixed
+    with a domain/kind/version marker so identical field values cannot be
+    replayed as AAD for a different product, record kind, or envelope
+    version. Any change to a bound field changes the AAD and therefore fails
+    authenticated decryption (issue #60).
+    """
+    normalized: dict[str, Any] = {}
+    for key in sorted(metadata):
+        value = metadata[key]
+        if isinstance(value, (list, tuple)):
+            normalized[key] = sorted(str(item) for item in value)
+        elif isinstance(value, str):
+            normalized[key] = value
+        elif value is None:
+            normalized[key] = None
+        elif isinstance(value, bool):
+            normalized[key] = value
+        else:
+            raise TypeError(f"Unsupported AAD metadata type for {key!r}: {type(value).__name__}")
+    marker = f"{AAD_DOMAIN}:{AAD_KIND}:{AAD_VERSION}"
+    body = json.dumps(
+        normalized,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return f"{marker}:{body}".encode("utf-8")
+
+
+def encrypt_secret_v2(secret: str, key: bytes, aad_metadata: Mapping[str, Any]) -> str:
+    """AAD-bound AES-GCM encryption (v2 envelope).
+
+    The canonical AAD is derived from *aad_metadata* via
+    :func:`build_canonical_aad`; the ciphertext cannot be decrypted without
+    the exact same bound metadata.
+    """
+    nonce = os.urandom(NONCE_SIZE)
+    aad = build_canonical_aad(aad_metadata)
+    ciphertext = AESGCM(key).encrypt(nonce, secret.encode("utf-8"), aad)
+    return base64.b64encode(nonce + ciphertext).decode("ascii")
+
+
+def decrypt_secret_v2(encoded: str, key: bytes, aad_metadata: Mapping[str, Any]) -> str:
+    """AAD-bound AES-GCM decryption (v2 envelope)."""
+    raw = base64.b64decode(encoded.encode("ascii"))
+    nonce = raw[:NONCE_SIZE]
+    ciphertext = raw[NONCE_SIZE:]
+    aad = build_canonical_aad(aad_metadata)
+    return AESGCM(key).decrypt(nonce, ciphertext, aad).decode("utf-8")
+
+
+def encrypt_secret_versioned(
+    secret: str,
+    key: bytes,
+    version: str,
+    aad_metadata: Mapping[str, Any] | None = None,
+) -> str:
+    """Encrypt using the envelope version explicitly.
+
+    ``aesgcm-v1`` keeps the legacy AAD=None format (byte-for-byte identical
+    to :func:`encrypt_secret`); ``aesgcm-v2`` binds the canonical AAD.
+    """
+    if version == CRYPTO_VERSION:
+        return encrypt_secret(secret, key)
+    if version == CRYPTO_VERSION_V2:
+        if aad_metadata is None:
+            raise ValueError("aesgcm-v2 encryption requires authorization metadata for AAD")
+        return encrypt_secret_v2(secret, key, aad_metadata)
+    raise ValueError(f"Unsupported crypto version: {version!r}")
+
+
+def decrypt_secret_versioned(
+    encoded: str,
+    key: bytes,
+    version: str,
+    aad_metadata: Mapping[str, Any] | None = None,
+) -> str:
+    """Decrypt routing on the row's envelope version label.
+
+    ``aesgcm-v1`` legacy rows keep AAD=None reads unchanged (existing
+    ciphertexts and backups keep working). ``aesgcm-v2`` rows require the
+    exact authorization metadata that was bound at write time. Unknown
+    version labels fail closed with ``ValueError``.
+    """
+    if version == CRYPTO_VERSION:
+        return decrypt_secret(encoded, key)
+    if version == CRYPTO_VERSION_V2:
+        if aad_metadata is None:
+            raise ValueError("aesgcm-v2 decryption requires authorization metadata for AAD")
+        return decrypt_secret_v2(encoded, key, aad_metadata)
+    raise ValueError(f"Unsupported crypto version: {version!r}")
