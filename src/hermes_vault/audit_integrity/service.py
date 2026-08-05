@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -37,10 +39,15 @@ class AuditIntegrityService:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def _connection(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _failure(
         self, reason: str, checkpoint: AuditCheckpointStatus = AuditCheckpointStatus.valid, *, sequence: int | None = None,

@@ -126,9 +126,16 @@ def _classify_v2_integrity(integrity: dict[str, Any], vault: Vault) -> tuple[str
                 return BACKUP_INTEGRITY_INCOMPLETE, "record_missing_required_fields"
 
     # Legacy anchor check.
-    if state.get("migration_state") == "active":
-        return BACKUP_INTEGRITY_HEALTHY, None
-    return BACKUP_INTEGRITY_LEGACY, "migration_not_active"
+    if state.get("migration_state") != "active":
+        return BACKUP_INTEGRITY_LEGACY, "migration_not_active"
+
+    # Detached cryptographic verification over the exported evidence (Slice D,
+    # #59). No live-DB reads: recompute registry/entry digests, verify record
+    # signatures and continuity, checkpoint signature/tip, access-log bindings,
+    # and segment key material. Never report healthy unless this passes.
+    from hermes_vault.audit_integrity.detached import verify_detached_evidence
+
+    return verify_detached_evidence(integrity, vault.key)
 
 
 def _verify_v1_backup(report: BackupVerificationReport, backup: dict[str, Any], vault: Vault) -> BackupVerificationReport:

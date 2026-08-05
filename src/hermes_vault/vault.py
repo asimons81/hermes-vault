@@ -4,9 +4,11 @@ import json
 import os
 import sqlite3
 import sys
-from typing import Any
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from hermes_vault import _platform
@@ -87,9 +89,18 @@ class Vault:
     def rotation_journal_path(self) -> Path:
         return self.salt_path.with_name(f"{self.salt_path.name}.rotation.json")
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.db_path)
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS credentials (
@@ -321,7 +332,7 @@ class Vault:
     def _first_encrypted_payload(self) -> str | None:
         if not self.db_path.exists():
             return None
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 "SELECT encrypted_payload FROM credentials ORDER BY updated_at DESC LIMIT 1"
             ).fetchone()
@@ -417,7 +428,7 @@ class Vault:
             notes=resolved_notes,
             crypto_version=CRYPTO_VERSION,
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             if existing and replace_existing:
                 conn.execute(
                     """
@@ -472,14 +483,14 @@ class Vault:
         return record
 
     def list_credentials(self) -> list[CredentialRecord]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT * FROM credentials ORDER BY service, alias").fetchall()
         return [self._row_to_record(row) for row in rows]
 
     def get_credential(self, service_or_id: str) -> CredentialRecord | None:
         # Try by raw id first (UUID), then by canonicalized service name
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 """
@@ -523,7 +534,7 @@ class Vault:
         """
         if alias is not None:
             normalized = normalize(service_or_id)
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connection() as conn:
                 conn.execute(
                     """
                     UPDATE credentials
@@ -535,7 +546,7 @@ class Vault:
                 conn.commit()
             return
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             # Try raw id first
             cursor = conn.execute(
                 """
@@ -597,7 +608,7 @@ class Vault:
         current.imported_from = imported_from or current.imported_from
         current.updated_at = utc_now()
         current.status = CredentialStatus.unknown
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE credentials
@@ -625,7 +636,7 @@ class Vault:
         """
         if alias is not None:
             normalized = normalize(service_or_id)
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connection() as conn:
                 cursor = conn.execute(
                     "DELETE FROM credentials WHERE service = ? AND alias = ?",
                     (normalized, alias),
@@ -633,7 +644,7 @@ class Vault:
                 conn.commit()
             return cursor.rowcount > 0
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             # Try raw id first
             cursor = conn.execute(
                 "DELETE FROM credentials WHERE id = ?", (service_or_id,)
@@ -755,7 +766,7 @@ class Vault:
             return record
 
         # Try by raw id first (UUID exact match)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM credentials WHERE id = ?", (service_or_id,)
@@ -805,7 +816,7 @@ class Vault:
         """
         record = self.resolve_credential(service_or_id, alias=alias)
         updated_at = utc_now()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE credentials
@@ -839,7 +850,7 @@ class Vault:
         """
         record = self.resolve_credential(service_or_id, alias=alias)
         updated_at = utc_now()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             cursor = conn.execute(
                 """
                 UPDATE credentials
@@ -856,14 +867,14 @@ class Vault:
 
     def _count_by_service(self, service: str) -> int:
         """Count credentials for a normalized service name."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) FROM credentials WHERE service = ?", (service,)
             ).fetchone()
             return row[0] if row else 0
 
     def _find_by_service_alias(self, service: str, alias: str) -> CredentialRecord | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 """
@@ -928,7 +939,7 @@ class Vault:
         return LeaseRecord.model_validate(payload)
 
     def _find_lease(self, lease_id: str) -> LeaseRecord | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             self._refresh_expired_leases(conn)
             row = conn.execute("SELECT * FROM leases WHERE id = ?", (lease_id,)).fetchone()
@@ -963,7 +974,7 @@ class Vault:
             scopes=record.scopes,
             metadata=metadata or {},
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT INTO leases (
@@ -1002,7 +1013,7 @@ class Vault:
         service: str | None = None,
         status: LeaseStatus | str | None = None,
     ) -> list[LeaseRecord]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             self._refresh_expired_leases(conn)
             conditions: list[str] = []
@@ -1034,7 +1045,7 @@ class Vault:
         alias: str = "default",
     ) -> LeaseRecord | None:
         service = normalize(service)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             self._refresh_expired_leases(conn)
             row = conn.execute(
@@ -1081,7 +1092,7 @@ class Vault:
             requested_ttl_seconds=requested_ttl_seconds,
             metadata=metadata or {},
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT INTO access_requests (
@@ -1117,7 +1128,7 @@ class Vault:
         service: str | None = None,
         status: str | AccessRequestStatus | None = None,
     ) -> list[AccessRequestRecord]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             conditions: list[str] = []
             params: list[Any] = []
@@ -1139,7 +1150,7 @@ class Vault:
         return [self._row_to_access_request_record(row) for row in rows]
 
     def get_access_request(self, request_id: str) -> AccessRequestRecord | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT * FROM access_requests WHERE id = ?", (request_id,)).fetchone()
         return self._row_to_access_request_record(row) if row else None
@@ -1160,7 +1171,7 @@ class Vault:
             raise ValueError(f"Access request '{request_id}' is already {current.status.value}")
         status_value = status.value if isinstance(status, AccessRequestStatus) else str(status)
         decided_at = utc_now()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE access_requests
@@ -1194,7 +1205,7 @@ class Vault:
             "renewed_at": now,
             "renew_count": lease.renew_count + 1,
         })
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE leases
@@ -1225,7 +1236,7 @@ class Vault:
             "revoked_at": now,
             "reason": reason if reason is not None else lease.reason,
         })
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE leases
@@ -1363,7 +1374,7 @@ class Vault:
                     "last_verified_at": last_verified_at,
                     "updated_at": utc_now(),
                 })
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connection() as conn:
                 if existing:
                     conn.execute(
                         """
@@ -1445,7 +1456,7 @@ class Vault:
                 metadata=metadata,
             )
             if existing_lease:
-                with sqlite3.connect(self.db_path) as conn:
+                with self._connection() as conn:
                     conn.execute(
                         """
                         UPDATE leases
@@ -1477,7 +1488,7 @@ class Vault:
                     )
                     conn.commit()
             else:
-                with sqlite3.connect(self.db_path) as conn:
+                with self._connection() as conn:
                     conn.execute(
                         """
                         INSERT INTO leases (
@@ -1582,7 +1593,7 @@ class Vault:
 
         re_encrypted = 0
         all_records = self.list_credentials()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute("BEGIN EXCLUSIVE")
             try:
                 for rec in all_records:
