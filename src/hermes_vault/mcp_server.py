@@ -63,6 +63,27 @@ def _mask_secret_value(value: str, prefix_len: int = 5, suffix_len: int = 4) -> 
         return "***"
     return f"{value[:prefix_len]}...{value[-suffix_len:]}"
 
+
+def _redacted_env_payload(
+    env: dict[str, Any],
+    ttl_seconds: int | None,
+    expires_at: str | None,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Serialize an ephemeral environment without exposing secret values.
+
+    Single transport-level redaction path shared by ``get_ephemeral_env`` and
+    ``lease_checkout``. Preserves key names, TTL/expiry, metadata, and secret
+    lengths so callers retain usable context without raw credential material.
+    """
+    return {
+        "env": {key: _mask_secret_value(str(value)) for key, value in env.items()},
+        "ttl_seconds": ttl_seconds,
+        "expires_at": expires_at,
+        "metadata": metadata,
+        "_secret_lengths": {key: len(str(value)) for key, value in env.items()},
+    }
+
 # ── tool schemas ───────────────────────────────────────────────────────────────
 
 _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -1185,14 +1206,12 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             expires_at = None
             if env_result.ttl_seconds is not None:
                 expires_at = (datetime.now(timezone.utc) + timedelta(seconds=env_result.ttl_seconds)).isoformat()
-            masked_env = {k: _mask_secret_value(str(v)) for k, v in env_result.env.items()}
-            return [TextContent(type="text", text=_json_text({
-                "env": masked_env,
-                "ttl_seconds": env_result.ttl_seconds,
-                "expires_at": expires_at,
-                "metadata": env_result.metadata,
-                "_secret_lengths": {k: len(str(v)) for k, v in env_result.env.items()},
-            }))]
+            return [TextContent(type="text", text=_json_text(_redacted_env_payload(
+                env_result.env,
+                env_result.ttl_seconds,
+                expires_at,
+                env_result.metadata,
+            )))]
 
         if name == "lease_issue":
             agent_id = binding.effective_agent_id or ""
@@ -1323,12 +1342,12 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             expires_at = None
             if checkout_result.ttl_seconds is not None:
                 expires_at = (datetime.now(timezone.utc) + timedelta(seconds=checkout_result.ttl_seconds)).isoformat()
-            return [TextContent(type="text", text=_json_text({
-                "env": checkout_result.env,
-                "ttl_seconds": checkout_result.ttl_seconds,
-                "expires_at": expires_at,
-                "metadata": checkout_result.metadata,
-            }))]
+            return [TextContent(type="text", text=_json_text(_redacted_env_payload(
+                checkout_result.env,
+                checkout_result.ttl_seconds,
+                expires_at,
+                checkout_result.metadata,
+            )))]
 
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 

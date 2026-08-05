@@ -1229,7 +1229,7 @@ def test_policy_explain_tool_returns_policy_explain(vault_with_policy, tmp_path)
     assert data["service"] == "openai"
 
 
-def test_lease_checkout_tool_returns_env_through_broker(vault_with_policy, tmp_path):
+def test_lease_checkout_tool_returns_redacted_env_through_broker(vault_with_policy, tmp_path):
     import hermes_vault.mcp_server as mcp_mod
 
     os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
@@ -1242,10 +1242,51 @@ def test_lease_checkout_tool_returns_env_through_broker(vault_with_policy, tmp_p
         "purpose": "deploy",
         "ttl_seconds": 60,
     }))
-    data = _json(result)
+    serialized_output = _text(result)
+    data = json.loads(serialized_output)
 
-    assert data["env"]["OPENAI_API_KEY"] == "test-openai-key"
+    # Tool results must never contain raw secret values — Issue #57.
+    assert "OPENAI_API_KEY" in data["env"]
+    assert data["env"]["OPENAI_API_KEY"] == "test-...-key"
+    assert data["_secret_lengths"]["OPENAI_API_KEY"] == len("test-openai-key")
+    assert "test-openai-key" not in serialized_output
     assert data["metadata"]["lease_checkout"]["lease_issued"] is True
+
+
+def test_lease_checkout_denied_does_not_leak_secret(vault_with_policy, tmp_path):
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    mcp_mod._broker = vault_with_policy
+
+    result = _run_async(call_tool("lease_checkout", {
+        "agent_id": "restricted-agent",
+        "service": "github",
+        "alias": "primary",
+        "ttl_seconds": 60,
+    }))
+    text = _text(result)
+
+    assert "Denied:" in text
+    assert "gh-test-token" not in text
+
+
+def test_redacted_env_payload_masks_values_and_preserves_metadata():
+    from hermes_vault.mcp_server import _redacted_env_payload
+
+    payload = _redacted_env_payload(
+        env={"OPENAI_API_KEY": "test-openai-key", "EMPTY": ""},
+        ttl_seconds=60,
+        expires_at="2026-01-01T00:00:00+00:00",
+        metadata={"lease_checkout": {"lease_id": "lease-1", "lease_issued": True}},
+    )
+
+    assert payload["env"]["OPENAI_API_KEY"] == "test-...-key"
+    assert payload["env"]["EMPTY"] == "***"
+    assert payload["_secret_lengths"] == {"OPENAI_API_KEY": 15, "EMPTY": 0}
+    assert payload["ttl_seconds"] == 60
+    assert payload["expires_at"] == "2026-01-01T00:00:00+00:00"
+    assert payload["metadata"]["lease_checkout"]["lease_id"] == "lease-1"
 
 
 def test_lease_issue_denied_returns_decision_shape(vault_with_policy, tmp_path, monkeypatch):
