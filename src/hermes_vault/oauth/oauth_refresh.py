@@ -402,9 +402,23 @@ class RefreshEngine:
             metadata=access_meta,
         )
         new_access_payload = new_access_secret.model_dump_json()
-        from hermes_vault.crypto import encrypt_secret
+        from hermes_vault.crypto import credential_aad_metadata, encrypt_secret_versioned
 
-        new_access_encrypted = encrypt_secret(new_access_payload, self.vault.key)
+        new_access_encrypted = encrypt_secret_versioned(
+            new_access_payload,
+            self.vault.key,
+            access_rec.crypto_version,
+            credential_aad_metadata(
+                access_rec.id,
+                access_rec.service,
+                access_rec.alias,
+                access_rec.credential_type,
+                # The access-token row's scopes are replaced by the refreshed
+                # scopes in the same UPDATE below; bind the value that will be
+                # stored so the v2 AAD matches on the next read.
+                attempt.scopes,
+            ),
+        )
 
         # Build new refresh token secret if rotated
         new_refresh_encrypted: str | None = None
@@ -441,7 +455,18 @@ class RefreshEngine:
                 metadata=refresh_meta,
             )
             new_refresh_payload = new_refresh_secret.model_dump_json()
-            new_refresh_encrypted = encrypt_secret(new_refresh_payload, self.vault.key)
+            new_refresh_encrypted = encrypt_secret_versioned(
+                new_refresh_payload,
+                self.vault.key,
+                refresh_rec.crypto_version,
+                credential_aad_metadata(
+                    refresh_rec.id,
+                    refresh_rec.service,
+                    refresh_rec.alias,
+                    refresh_rec.credential_type,
+                    refresh_rec.scopes,
+                ),
+            )
 
         import sqlite3
 

@@ -1,0 +1,71 @@
+{
+  "credentials": [
+    {
+      "alias": "default",
+      "created_at": "2026-08-05T03:17:50.010840+00:00",
+      "credential_type": "personal_access_token",
+      "encrypted_payload": "Q5+Wid4Ktozx5a1th9PqQYD8ZT8+hku/cRKapcZh1NdqbiCTc8NftPa/vlbXUkygjbnQqe9A+ITuuBRXJOef0BYZTpAqkHFgBCn889qPfJldqCnNRinmMPE46/sy1sTmT4Jp52LGC2dz",
+      "expiry": null,
+      "id": "b275fdcf-97bc-41b6-ba98-1633cc50e361",
+      "imported_from": null,
+      "last_verified_at": null,
+      "notes": null,
+      "scopes": [],
+      "service": "github",
+      "status": "unknown",
+      "tags": [],
+      "updated_at": "2026-08-05T03:17:50.010842+00:00"
+    },
+    {
+      "alias": "primary",
+      "created_at": "2026-08-05T03:17:50.010404+00:00",
+      "credential_type": "api_key",
+      "crypto_version": "aesgcm-v1",
+      "encrypted_payload": "QLk3Xu1MBcTxvIns1FU6HK/8Xf/qS4pGeJLCPxVtxGX7o5GmBAmJmY6DzauNUfHtwsmex7pGHQDzYj/KfUIlGBU/Q8fy3AuLwLc5uFFsm8L9jQ0I5PgEuD3i2EySZcNd8IONWMZsnBXtlfSV9kRLZAJw0l2exXjN3XNRD+gAp/JKkWWlt/SwU7I=",
+      "expiry": null,
+      "id": "6dfee5ee-00ee-4ef0-956b-7cec65b61372",
+      "imported_from": null,
+      "last_verified_at": null,
+      "notes": "fixture main key",
+      "scopes": [
+        "models.read",
+        "models.write"
+      ],
+      "service": "openai",
+      "status": "unknown",
+      "tags": [
+        "production"
+      ],
+      "updated_at": "2026-08-05T03:17:50.010413+00:00"
+    }
+  ],
+  "exported_at": "2026-08-05T03:17:50.011632+00:00",
+  "leases": [
+    {
+      "agent_id": "fixture-agent",
+      "alias": "primary",
+      "credential_id": "6dfee5ee-00ee-4ef0-956b-7cec65b61372",
+      "credential_type": "api_key",
+      "expires_at": "2026-08-05T03:32:50.011125+00:00",
+      "id": "9dc8036b-88df-4f63-8897-b8641f238db5",
+      "issued_at": "2026-08-05T03:17:50.011125+00:00",
+      "issued_by": "fixture-agent",
+      "metadata": {
+        "ticket": "fixture-42"
+      },
+      "purpose": "task",
+      "reason": null,
+      "renew_count": 0,
+      "renewed_at": null,
+      "revoked_at": null,
+      "scopes": [
+        "models.read",
+        "models.write"
+      ],
+      "service": "openai",
+      "status": "active",
+      "ttl_seconds": 900
+    }
+  ],
+  "version": "hvbackup-v1"
+}

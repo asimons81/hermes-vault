@@ -10,7 +10,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
 
-from hermes_vault.crypto import encrypt_secret
+from hermes_vault.crypto import credential_aad_metadata, encrypt_secret_versioned
 from hermes_vault.models import CredentialRecord, CredentialSecret, utc_now
 from hermes_vault.oauth.oauth_refresh import refresh_alias_for
 from hermes_vault.vault import Vault
@@ -170,9 +170,17 @@ def _rewrite_secret(
     secret_value: str,
     metadata: dict[str, Any],
 ) -> None:
-    encrypted = encrypt_secret(
+    encrypted = encrypt_secret_versioned(
         CredentialSecret(secret=secret_value, metadata=metadata).model_dump_json(),
         vault.key,
+        record.crypto_version,
+        credential_aad_metadata(
+            record.id,
+            record.service,
+            record.alias,
+            record.credential_type,
+            record.scopes,
+        ),
     )
     now = utc_now().isoformat()
     with sqlite3.connect(vault.db_path) as conn:
