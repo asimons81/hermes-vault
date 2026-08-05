@@ -180,6 +180,35 @@ def test_rotate_audit_failure_deterministic_append_error(tmp_path: Path, monkeyp
     )
 
 
+def test_rollback_failure_is_reported_without_false_reassurance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed compensating write must not claim the prior row survived."""
+    vault, logger, mutations = make_mutations(tmp_path)
+    _add_original(vault, logger, mutations)
+
+    def _audit_boom(record: object) -> None:
+        raise AuditIntegrityError("deterministic append failure")
+
+    def _restore_boom(record: object) -> None:
+        raise RuntimeError("restore unavailable")
+
+    assert logger.integrity is not None
+    monkeypatch.setattr(logger.integrity, "append", _audit_boom)
+    monkeypatch.setattr(vault, "restore_credential", _restore_boom)
+
+    result = mutations.rotate_credential(
+        agent_id="operator",
+        service_or_id="test-service",
+        new_secret="rotated-secret",
+        alias="rollback-test",
+    )
+
+    assert result.allowed is False
+    assert "ROLLBACK FAILED" in result.reason
+    assert "prior credential may be lost" in result.reason
+
+
 def test_restore_credential_idempotent(tmp_path: Path) -> None:
     """restore_credential is an idempotent upsert by id: applying the same
     before-image twice must not duplicate or corrupt the row."""

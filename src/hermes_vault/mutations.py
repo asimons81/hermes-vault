@@ -36,6 +36,10 @@ from hermes_vault.vault import Vault
 OPERATOR_AGENT_ID = "operator"
 
 
+class AuditRollbackError(AuditIntegrityError):
+    """The protected audit append failed and its compensating write also failed."""
+
+
 class VaultMutations:
     """Policy-checked, audit-backed mutation service for vault credentials.
 
@@ -128,12 +132,20 @@ class VaultMutations:
                 record=record,
                 before_image=before_image,
             )
+        except AuditRollbackError as exc:
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="add_credential",
+                reason=f"audit integrity: {exc}. ROLLBACK FAILED; the prior credential may be lost. Restore from a trusted backup.",
+                record=None,
+                metadata={},
+            )
         except AuditIntegrityError as exc:
             # The credential was committed but the integrity chain refused to seal
-            # the audit row. `_record_mutation` has already rolled back the write:
-            # a genuine new add is deleted, a replace is restored to its
-            # before-image. Surface a clean denial result so the caller gets the
-            # same shape as every other rejection path.
+            # the audit row. `_record_mutation` has already completed the
+            # compensating write. Surface a clean denial result.
             return MutationResult(
                 allowed=False,
                 service=service,
@@ -190,6 +202,16 @@ class VaultMutations:
                 f"rotated credential for service '{service}' alias '{updated.alias}'",
                 record=updated,
                 before_image=current,
+            )
+        except AuditRollbackError as exc:
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="rotate_credential",
+                reason=f"audit integrity: {exc}. ROLLBACK FAILED; the prior credential may be lost. Restore from a trusted backup.",
+                record=None,
+                metadata={},
             )
         except AuditIntegrityError as exc:
             return MutationResult(
@@ -258,11 +280,20 @@ class VaultMutations:
                 metadata={"credential_id": record_id},
                 before_image=current,
             )
+        except AuditRollbackError as exc:
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="delete_credential",
+                reason=f"audit integrity: {exc}. ROLLBACK FAILED; the prior credential may be lost. Restore from a trusted backup.",
+                record=None,
+                metadata={},
+            )
         except AuditIntegrityError as exc:
             # The delete committed but the integrity chain refused to seal
-            # the audit row. `_record_mutation` restored the deleted
-            # credential from its before-image so the vault does not end up
-            # in a desynced state. Surface a clean denial result.
+            # the audit row. `_record_mutation` completed the compensating
+            # write from its before-image. Surface a clean denial result.
             return MutationResult(
                 allowed=False,
                 service=service,
@@ -372,7 +403,7 @@ class VaultMutations:
                     self.vault.restore_credential(before_image)
                 except Exception as rollback_exc:
                     # Surface both errors so the operator knows the rollback failed
-                    raise AuditIntegrityError(
+                    raise AuditRollbackError(
                         f"{exc}. Rollback of credential '{before_image.id}' also failed: {rollback_exc}"
                     ) from exc
             elif record is not None and action == "add_credential":
@@ -382,7 +413,7 @@ class VaultMutations:
                     self.vault.delete(record.id)
                 except Exception as rollback_exc:
                     # Surface both errors so the operator knows the rollback failed
-                    raise AuditIntegrityError(
+                    raise AuditRollbackError(
                         f"{exc}. Rollback of credential '{record.id}' also failed: {rollback_exc}"
                     ) from exc
             raise
