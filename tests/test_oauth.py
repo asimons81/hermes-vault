@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import threading
 from pathlib import Path
 
@@ -172,6 +173,24 @@ class TestCallbackServer:
         assert status_later >= 400, "later callback must receive a non-success response"
         assert result.code == "first"
         assert result.state == "expected"
+
+    def test_explicit_port_can_be_reused_after_shutdown(self):
+        """An explicit loopback port can be rebound after a completed callback."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        first = CallbackServer(port=port, timeout=5)
+        assert first.start() == port
+        self._fetch_status(f"http://127.0.0.1:{port}/callback?code=first")
+        assert first.wait().code == "first"
+        first.shutdown()
+
+        second = CallbackServer(port=port, timeout=5)
+        assert second.start() == port
+        self._fetch_status(f"http://127.0.0.1:{port}/callback?code=second")
+        assert second.wait().code == "second"
+        second.shutdown()
 
     def test_concurrent_servers_are_isolated(self):
         """Issue #61/#64: two simultaneous logins must not share callback state.

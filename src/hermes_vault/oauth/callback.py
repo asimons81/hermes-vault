@@ -29,8 +29,11 @@ class CallbackHTTPServer(socketserver.TCPServer):
 
     ``result`` and ``event`` live on the server instance (not on the handler
     class) so two simultaneous login flows cannot observe or consume each
-    other's callback state.
+    other's callback state. Reusing an explicitly configured loopback port after
+    shutdown is safe because the server opts into ``SO_REUSEADDR``.
     """
+
+    allow_reuse_address = True
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
