@@ -664,6 +664,62 @@ class Vault:
             conn.commit()
         return cursor.rowcount > 0
 
+    def restore_credential(self, record: CredentialRecord) -> None:
+        """Idempotently restore a complete credential row by id (upsert).
+
+        Used to roll back a state-changing mutation when the audit chain
+        refuses to seal the audit append. Because ``(service, alias)`` has
+        no unique constraint, restoring by ``id`` is unambiguous. Safe to
+        call repeatedly: a second application is a no-op write of the same
+        row.
+
+        The row is written verbatim from ``record`` using the same column
+        set as ``add_credential``'s INSERT/UPDATE, so the original
+        ciphertext and metadata are preserved exactly.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO credentials (
+                    id, service, alias, credential_type, encrypted_payload, status, scopes,
+                    tags, notes, created_at, updated_at, last_verified_at, imported_from, expiry, crypto_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    service = excluded.service,
+                    alias = excluded.alias,
+                    credential_type = excluded.credential_type,
+                    encrypted_payload = excluded.encrypted_payload,
+                    status = excluded.status,
+                    scopes = excluded.scopes,
+                    tags = excluded.tags,
+                    notes = excluded.notes,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    last_verified_at = excluded.last_verified_at,
+                    imported_from = excluded.imported_from,
+                    expiry = excluded.expiry,
+                    crypto_version = excluded.crypto_version
+                """,
+                (
+                    record.id,
+                    record.service,
+                    record.alias,
+                    record.credential_type,
+                    record.encrypted_payload,
+                    record.status.value,
+                    json.dumps(record.scopes),
+                    json.dumps(record.tags),
+                    record.notes,
+                    record.created_at.isoformat(),
+                    record.updated_at.isoformat(),
+                    record.last_verified_at.isoformat() if record.last_verified_at else None,
+                    record.imported_from,
+                    record.expiry.isoformat() if record.expiry else None,
+                    record.crypto_version,
+                ),
+            )
+            conn.commit()
+
     def _row_to_record(self, row: sqlite3.Row) -> CredentialRecord:
         payload = dict(row)
         payload["scopes"] = json.loads(payload["scopes"])

@@ -89,6 +89,17 @@ class VaultMutations:
                     agent_id, service, "add_credential", False, svc_reason
                 )
 
+        # Capture the before-image of an existing row so an audit-failure
+        # rollback can restore the original ciphertext instead of deleting
+        # the only copy (issue #56). Mirrors the lookup inside
+        # ``vault.add_credential`` (vault.py) for replace_existing=True.
+        before_image: CredentialRecord | None = None
+        if replace_existing:
+            try:
+                before_image = self.vault.resolve_credential(service, alias=alias)
+            except KeyError:
+                before_image = None
+
         try:
             record = self.vault.add_credential(
                 service=service,
@@ -115,18 +126,20 @@ class VaultMutations:
                 True,
                 f"credential {record.id} added for service '{service}' alias '{alias}'",
                 record=record,
+                before_image=before_image,
             )
         except AuditIntegrityError as exc:
             # The credential was committed but the integrity chain refused to seal
-            # the audit row. `_record_mutation` has already rolled back the
-            # credential via `vault.delete()`. Surface a clean denial result
-            # so the caller gets the same shape as every other rejection path.
+            # the audit row. `_record_mutation` has already rolled back the write:
+            # a genuine new add is deleted, a replace is restored to its
+            # before-image. Surface a clean denial result so the caller gets the
+            # same shape as every other rejection path.
             return MutationResult(
                 allowed=False,
                 service=service,
                 agent_id=agent_id,
                 action="add_credential",
-                reason=f"audit integrity: {exc}. Run `hermes-vault audit-verify` to inspect the chain; the credential was not persisted.",
+                reason=f"audit integrity: {exc}. Run `hermes-vault audit-verify` to inspect the chain; the write was rolled back and any prior credential preserved.",
                 record=None,
                 metadata={},
             )
@@ -176,6 +189,7 @@ class VaultMutations:
                 True,
                 f"rotated credential for service '{service}' alias '{updated.alias}'",
                 record=updated,
+                before_image=current,
             )
         except AuditIntegrityError as exc:
             return MutationResult(
@@ -234,14 +248,30 @@ class VaultMutations:
                 "delete returned False (credential may not exist)",
             )
 
-        return self._record_mutation(
-            agent_id,
-            service,
-            "delete_credential",
-            True,
-            f"deleted credential '{record_id}' for service '{service}'",
-            metadata={"credential_id": record_id},
-        )
+        try:
+            return self._record_mutation(
+                agent_id,
+                service,
+                "delete_credential",
+                True,
+                f"deleted credential '{record_id}' for service '{service}'",
+                metadata={"credential_id": record_id},
+                before_image=current,
+            )
+        except AuditIntegrityError as exc:
+            # The delete committed but the integrity chain refused to seal
+            # the audit row. `_record_mutation` restored the deleted
+            # credential from its before-image so the vault does not end up
+            # in a desynced state. Surface a clean denial result.
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="delete_credential",
+                reason=f"audit integrity: {exc}. Run `hermes-vault audit-verify` to inspect the chain; the credential was restored.",
+                record=None,
+                metadata={},
+            )
 
     def get_metadata(
         self,
@@ -302,6 +332,7 @@ class VaultMutations:
         reason: str,
         record: CredentialRecord | None = None,
         metadata: dict | None = None,
+        before_image: CredentialRecord | None = None,
     ) -> MutationResult:
         """Write the audit entry and build the result.
 
@@ -310,8 +341,15 @@ class VaultMutations:
         of the same logical operation. If the integrity chain refuses to
         seal the audit row, the credential write is rolled back so the
         vault never ends up in a desynced state (credential exists, audit
-        row missing). The integrity exception is re-raised as an
-        :class:`AuditIntegrityError` with an operator-actionable message.
+        row missing).
+
+        The rollback restores ``before_image`` (the pre-mutation row,
+        captured by the caller) whenever one exists — rotate, replace, and
+        delete must preserve the prior ciphertext (issue #56). ``delete``
+        is only used for a genuine new-record add, where the row did not
+        exist before this mutation. The integrity exception is re-raised
+        as an :class:`AuditIntegrityError` with an operator-actionable
+        message.
         """
         try:
             self.audit.record(
@@ -326,8 +364,20 @@ class VaultMutations:
         except AuditIntegrityError as exc:
             # If a credential was just written, roll it back so the vault
             # doesn't desync from its audit chain. This is best-effort: the
-            # vault connection has already committed, so we issue a delete.
-            if record is not None and action in ("add_credential", "rotate_credential"):
+            # vault connection has already committed, so we issue a
+            # compensating write — restore the before-image (rotate, replace,
+            # delete) or delete a brand-new row (genuine add).
+            if before_image is not None:
+                try:
+                    self.vault.restore_credential(before_image)
+                except Exception as rollback_exc:
+                    # Surface both errors so the operator knows the rollback failed
+                    raise AuditIntegrityError(
+                        f"{exc}. Rollback of credential '{before_image.id}' also failed: {rollback_exc}"
+                    ) from exc
+            elif record is not None and action == "add_credential":
+                # Genuine new-record add: the row is new; deleting it undoes
+                # the write.
                 try:
                     self.vault.delete(record.id)
                 except Exception as rollback_exc:
