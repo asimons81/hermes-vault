@@ -5,6 +5,7 @@
 | `backup_aesgcm_v1.json` | Real hvbackup-v1 backup produced by `Vault.export_backup()` with writes pinned to aesgcm-v1. Contains a legacy credential without `crypto_version`, an explicit `aesgcm-v1` credential with scopes/tags/notes, and one lease. |
 | `backup_aesgcm_v1.salt` | The 16-byte salt the backup's ciphertexts were encrypted under. Tests copy it to a temp vault so the derived key matches (a real restore uses the operator's own salt file). |
 | `generate_v1_fixture.py` | Reproducible generator. Re-run with `env -u PYTHONPATH .venv/bin/python tests/testdata/generate_v1_fixture.py` from the repo root. |
+| `rotation_journal_v1.json` | Legacy `rotation-journal-v1` journal (the exact shape written by `Vault.rotate_master_key` pre-v2): a `db_committed`/`pending` journal with 16-byte PBKDF salts and an `old_segment_id`. Consumed by `tests/test_rotation_journal_contradiction.py` to prove a v1 fixture reads without data loss. |
 
 Passphrase for the fixture: `test-passphrase` (constant `PASSPHRASE` in
 `tests/test_backup_roundtrip_v1_v2.py` and in the generator).
