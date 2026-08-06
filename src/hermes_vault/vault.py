@@ -12,6 +12,8 @@ from typing import Any
 from uuid import uuid4
 
 from hermes_vault import _platform
+from hermes_vault.audit_integrity.checkpoint import AuditLockError, audit_write_lock
+from hermes_vault.audit_integrity.models import AuditIntegrityStatus
 from hermes_vault.audit_integrity.service import AuditIntegrityError, AuditIntegrityService
 from hermes_vault.crypto import (
     CRYPTO_VERSION,
@@ -28,11 +30,13 @@ from hermes_vault.crypto import (
     load_or_create_master_key,
 )
 from hermes_vault.models import (
+    AccessLogRecord,
     AccessRequestRecord,
     AccessRequestStatus,
     CredentialRecord,
     CredentialSecret,
     CredentialStatus,
+    Decision,
     LeaseRecord,
     LeaseStatus,
     utc_now,
@@ -1382,12 +1386,34 @@ class Vault:
 
         Supports hvbackup-v1 and hvbackup-v2 (credential portion only).
         Rejects metadata-only backups (entries missing encrypted_payload).
-        Audit integrity restore is not yet implemented. See issue #51.
+
+        Slice E1 (issue #62): the restore is validated by a preflight routine
+        before any mutation — the evidence contract is confirmed (v2 backups
+        must carry audit integrity evidence), restored leases are rejected if
+        they would mint a forged active lease identity or reference a foreign
+        credential, and every lease's broker identity must match the
+        credential it references. The import then runs as a single
+        transaction together with a protected restore audit event through the
+        shared audit seam; if any row, validation, or audit append fails, the
+        whole restore rolls back atomically.
         """
         version = backup.get("version")
         if version not in ("hvbackup-v1", "hvbackup-v2"):
             raise ValueError(f"Unsupported backup version: {version}")
-        imported = []
+
+        # ── E1 preflight: validate before any mutation ──
+        # 1. Evidence contract: hvbackup-v2 backups must carry the detached
+        #    audit integrity evidence (slice D prerequisite).
+        if version == "hvbackup-v2":
+            evidence = backup.get("audit_integrity")
+            if not isinstance(evidence, dict) or evidence.get("integrity_available") is not True:
+                raise ValueError(
+                    "Cannot restore an hvbackup-v2 backup without audit integrity evidence. "
+                    "Use a full v2 backup (with audit evidence) for restore."
+                )
+
+        # 2. Parse and validate every credential row before writing anything.
+        prepared_creds: list[tuple[CredentialRecord, CredentialRecord | None]] = []
         for cred_data in backup.get("credentials", []):
             if cred_data.get("encrypted_payload") is None:
                 raise ValueError(
@@ -1472,59 +1498,20 @@ class Vault:
                     "updated_at": utc_now(),
                     "crypto_version": incoming_version,
                 })
-            with self._connection() as conn:
-                if existing:
-                    conn.execute(
-                        """
-                        UPDATE credentials
-                        SET credential_type=?, encrypted_payload=?, status=?, scopes=?,
-                            tags=?, notes=?, updated_at=?, last_verified_at=?, imported_from=?, expiry=?, crypto_version=?
-                        WHERE id=?
-                        """,
-                        (
-                            record.credential_type,
-                            record.encrypted_payload,
-                            record.status.value,
-                            json.dumps(record.scopes),
-                            json.dumps(record.tags),
-                            record.notes,
-                            record.updated_at.isoformat(),
-                            record.last_verified_at.isoformat() if record.last_verified_at else None,
-                            record.imported_from,
-                            record.expiry.isoformat() if record.expiry else None,
-                            record.crypto_version,
-                            record.id,
-                        ),
-                    )
-                else:
-                    conn.execute(
-                        """
-                        INSERT INTO credentials (
-                            id, service, alias, credential_type, encrypted_payload, status, scopes,
-                            tags, notes, created_at, updated_at, last_verified_at, imported_from, expiry, crypto_version
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            record.id,
-                            record.service,
-                            record.alias,
-                            record.credential_type,
-                            record.encrypted_payload,
-                            record.status.value,
-                            json.dumps(record.scopes),
-                            json.dumps(record.tags),
-                            record.notes,
-                            record.created_at.isoformat(),
-                            record.updated_at.isoformat(),
-                            record.last_verified_at.isoformat() if record.last_verified_at else None,
-                            record.imported_from,
-                            record.expiry.isoformat() if record.expiry else None,
-                            record.crypto_version,
-                        ),
-                    )
-                conn.commit()
-            imported.append(record)
+            prepared_creds.append((record, existing))
 
+        # 3. Parse and validate leases: credential_id linkage must resolve to
+        #    a credential in this backup or already in the vault, and the
+        #    lease's broker identity must match the referenced credential.
+        allowed_credential_ids = {rec.id for rec, _ in prepared_creds}
+        allowed_credential_ids.update(rec.id for rec in self.list_credentials())
+        credential_identity: dict[str, CredentialRecord] = {
+            rec.id: rec for rec, _ in prepared_creds
+        }
+        for rec in self.list_credentials():
+            credential_identity.setdefault(rec.id, rec)
+
+        prepared_leases: list[tuple[LeaseRecord, LeaseRecord | None]] = []
         for lease_data in backup.get("leases", []):
             lease_id = lease_data.get("id") or str(uuid4())
             metadata = lease_data.get("metadata") or {}
@@ -1533,7 +1520,6 @@ class Vault:
             scopes = lease_data.get("scopes") or []
             if not isinstance(scopes, list):
                 scopes = [str(scopes)]
-            existing_lease = self.get_lease(lease_id)
             lease = LeaseRecord(
                 id=lease_id,
                 service=normalize(lease_data.get("service", "")),
@@ -1554,70 +1540,184 @@ class Vault:
                 scopes=[str(item) for item in scopes],
                 metadata=metadata,
             )
-            if existing_lease:
+            if lease.credential_id not in allowed_credential_ids:
+                raise ValueError(
+                    f"Lease {lease_id!r} references credential {lease.credential_id!r} "
+                    "which is not part of the backup or the vault (foreign credential linkage)."
+                )
+            referenced = credential_identity.get(lease.credential_id)
+            if referenced is not None and (
+                lease.service != referenced.service
+                or lease.alias != referenced.alias
+                or lease.credential_type != referenced.credential_type
+            ):
+                raise ValueError(
+                    f"Lease {lease_id!r} broker identity "
+                    f"({lease.service}/{lease.alias}/{lease.credential_type}) does not match "
+                    f"credential {referenced.id!r} ({referenced.service}/{referenced.alias}/{referenced.credential_type})."
+                )
+            # No active forged leases as part of import policy: a restored
+            # lease is never minted active (issue #62).
+            if lease.status is LeaseStatus.active:
+                lease = lease.model_copy(update={
+                    "status": LeaseStatus.revoked,
+                    "revoked_at": utc_now(),
+                    "reason": "restored as revoked (active leases are never restored)",
+                })
+            prepared_leases.append((lease, self.get_lease(lease_id)))
+
+        # 4. Confirm the vault's audit evidence contract is usable so the
+        #    protected restore event can be sealed in the same transaction.
+        audit_service = AuditIntegrityService(self.db_path, self.key)
+        audit_service.ensure_initialized()
+        current = audit_service.verify()
+        if current.status != AuditIntegrityStatus.healthy:
+            raise AuditIntegrityError(current.sanitized_reason)
+
+        restore_event = AccessLogRecord(
+            agent_id="operator",  # matches OPERATOR_AGENT_ID in mutations.py
+            service="*",
+            action="restore",
+            decision=Decision.allow,
+            reason=(
+                f"restored {len(prepared_creds)} credential(s) and "
+                f"{len(prepared_leases)} lease(s) from {version} backup"
+            ),
+            metadata={
+                "backup_version": version,
+                "credential_count": len(prepared_creds),
+                "lease_count": len(prepared_leases),
+            },
+        )
+
+        # ── E1 single transaction: credentials + leases + protected audit ──
+        imported: list[CredentialRecord] = []
+        try:
+            with audit_write_lock(audit_service.lock_path):
                 with self._connection() as conn:
-                    conn.execute(
-                        """
-                        UPDATE leases
-                        SET service=?, alias=?, credential_id=?, credential_type=?, agent_id=?, issued_by=?,
-                            purpose=?, status=?, ttl_seconds=?, issued_at=?, expires_at=?, revoked_at=?,
-                            renewed_at=?, renew_count=?, reason=?, scopes=?, metadata_json=?
-                        WHERE id=?
-                        """,
-                        (
-                            lease.service,
-                            lease.alias,
-                            lease.credential_id,
-                            lease.credential_type,
-                            lease.agent_id,
-                            lease.issued_by,
-                            lease.purpose,
-                            lease.status.value,
-                            lease.ttl_seconds,
-                            lease.issued_at.isoformat(),
-                            lease.expires_at.isoformat(),
-                            lease.revoked_at.isoformat() if lease.revoked_at else None,
-                            lease.renewed_at.isoformat() if lease.renewed_at else None,
-                            lease.renew_count,
-                            lease.reason,
-                            json.dumps(lease.scopes),
-                            json.dumps(lease.metadata, sort_keys=True),
-                            lease.id,
-                        ),
-                    )
-                    conn.commit()
-            else:
-                with self._connection() as conn:
-                    conn.execute(
-                        """
-                        INSERT INTO leases (
-                            id, service, alias, credential_id, credential_type, agent_id, issued_by, purpose,
-                            status, ttl_seconds, issued_at, expires_at, revoked_at, renewed_at, renew_count,
-                            reason, scopes, metadata_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            lease.id,
-                            lease.service,
-                            lease.alias,
-                            lease.credential_id,
-                            lease.credential_type,
-                            lease.agent_id,
-                            lease.issued_by,
-                            lease.purpose,
-                            lease.status.value,
-                            lease.ttl_seconds,
-                            lease.issued_at.isoformat(),
-                            lease.expires_at.isoformat(),
-                            lease.revoked_at.isoformat() if lease.revoked_at else None,
-                            lease.renewed_at.isoformat() if lease.renewed_at else None,
-                            lease.renew_count,
-                            lease.reason,
-                            json.dumps(lease.scopes),
-                            json.dumps(lease.metadata, sort_keys=True),
-                        ),
-                    )
-                    conn.commit()
+                    conn.row_factory = sqlite3.Row
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        for record, existing in prepared_creds:
+                            if existing:
+                                conn.execute(
+                                    """
+                                    UPDATE credentials
+                                    SET credential_type=?, encrypted_payload=?, status=?, scopes=?,
+                                        tags=?, notes=?, updated_at=?, last_verified_at=?, imported_from=?, expiry=?, crypto_version=?
+                                    WHERE id=?
+                                    """,
+                                    (
+                                        record.credential_type,
+                                        record.encrypted_payload,
+                                        record.status.value,
+                                        json.dumps(record.scopes),
+                                        json.dumps(record.tags),
+                                        record.notes,
+                                        record.updated_at.isoformat(),
+                                        record.last_verified_at.isoformat() if record.last_verified_at else None,
+                                        record.imported_from,
+                                        record.expiry.isoformat() if record.expiry else None,
+                                        record.crypto_version,
+                                        record.id,
+                                    ),
+                                )
+                            else:
+                                conn.execute(
+                                    """
+                                    INSERT INTO credentials (
+                                        id, service, alias, credential_type, encrypted_payload, status, scopes,
+                                        tags, notes, created_at, updated_at, last_verified_at, imported_from, expiry, crypto_version
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        record.id,
+                                        record.service,
+                                        record.alias,
+                                        record.credential_type,
+                                        record.encrypted_payload,
+                                        record.status.value,
+                                        json.dumps(record.scopes),
+                                        json.dumps(record.tags),
+                                        record.notes,
+                                        record.created_at.isoformat(),
+                                        record.updated_at.isoformat(),
+                                        record.last_verified_at.isoformat() if record.last_verified_at else None,
+                                        record.imported_from,
+                                        record.expiry.isoformat() if record.expiry else None,
+                                        record.crypto_version,
+                                    ),
+                                )
+                            imported.append(record)
+                        for lease, existing_lease in prepared_leases:
+                            if existing_lease:
+                                conn.execute(
+                                    """
+                                    UPDATE leases
+                                    SET service=?, alias=?, credential_id=?, credential_type=?, agent_id=?, issued_by=?,
+                                        purpose=?, status=?, ttl_seconds=?, issued_at=?, expires_at=?, revoked_at=?,
+                                        renewed_at=?, renew_count=?, reason=?, scopes=?, metadata_json=?
+                                    WHERE id=?
+                                    """,
+                                    (
+                                        lease.service,
+                                        lease.alias,
+                                        lease.credential_id,
+                                        lease.credential_type,
+                                        lease.agent_id,
+                                        lease.issued_by,
+                                        lease.purpose,
+                                        lease.status.value,
+                                        lease.ttl_seconds,
+                                        lease.issued_at.isoformat(),
+                                        lease.expires_at.isoformat(),
+                                        lease.revoked_at.isoformat() if lease.revoked_at else None,
+                                        lease.renewed_at.isoformat() if lease.renewed_at else None,
+                                        lease.renew_count,
+                                        lease.reason,
+                                        json.dumps(lease.scopes),
+                                        json.dumps(lease.metadata, sort_keys=True),
+                                        lease.id,
+                                    ),
+                                )
+                            else:
+                                conn.execute(
+                                    """
+                                    INSERT INTO leases (
+                                        id, service, alias, credential_id, credential_type, agent_id, issued_by, purpose,
+                                        status, ttl_seconds, issued_at, expires_at, revoked_at, renewed_at, renew_count,
+                                        reason, scopes, metadata_json
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        lease.id,
+                                        lease.service,
+                                        lease.alias,
+                                        lease.credential_id,
+                                        lease.credential_type,
+                                        lease.agent_id,
+                                        lease.issued_by,
+                                        lease.purpose,
+                                        lease.status.value,
+                                        lease.ttl_seconds,
+                                        lease.issued_at.isoformat(),
+                                        lease.expires_at.isoformat(),
+                                        lease.revoked_at.isoformat() if lease.revoked_at else None,
+                                        lease.renewed_at.isoformat() if lease.renewed_at else None,
+                                        lease.renew_count,
+                                        lease.reason,
+                                        json.dumps(lease.scopes),
+                                        json.dumps(lease.metadata, sort_keys=True),
+                                    ),
+                                )
+                        append_result = audit_service.append_in_transaction(conn, restore_event)
+                        conn.commit()
+                        audit_service.write_checkpoint_after_append(conn, append_result)
+                    except Exception:
+                        conn.rollback()
+                        raise
+        except AuditLockError as exc:
+            raise AuditIntegrityError(str(exc)) from exc
         return imported
 
     def rotate_master_key(

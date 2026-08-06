@@ -18,6 +18,7 @@ from rich.table import Table
 
 from hermes_vault import _platform
 from hermes_vault.audit import AuditLogger
+from hermes_vault.audit_integrity.service import AuditIntegrityError
 from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings, reset_active_profile, set_active_profile
 from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase
@@ -2893,7 +2894,13 @@ def restore_vault(
     Existing credentials with the same service+alias are replaced.
     Requires --yes to confirm.
 
-    Metadata-only backups are rejected with a clear error.
+    Supports hvbackup-v1 and hvbackup-v2 backups. The restore runs through
+    the E1 atomic preflight + single-transaction import (issue #62): the v2
+    evidence contract, lease credential linkage, and broker identity are
+    validated before any mutation, and the restore — including its protected
+    restore audit event — commits as one transaction. Any preflight rejection
+    or audit failure blocks the restore with a clear, non-zero exit and
+    leaves the vault unchanged.
 
     Example:
       hermes-vault restore --input ~/vault-backup-2026-04.json --yes
@@ -2904,7 +2911,7 @@ def restore_vault(
 
     if dry_run:
         vault, _, _, _ = build_services(prompt=True)
-        from hermes_vault.backup import restore_dry_run
+        from hermes_vault.backup import BACKUP_INTEGRITY_HEALTHY, restore_dry_run
 
         report = restore_dry_run(input, vault)
         _print_backup_report(report, format=format)
@@ -2919,7 +2926,14 @@ def restore_vault(
                 metadata=report.as_dict(exclude_none=False),
             )
         )
-        raise typer.Exit(code=0 if report.decryptable else 1)
+        # Align the preflight exit code with backup-verify (fail closed on
+        # invalid v2 evidence): exit 0 only when decryptable AND any present
+        # integrity evidence is healthy.
+        integrity_ok = (
+            not report.integrity_available
+            or report.integrity_status == BACKUP_INTEGRITY_HEALTHY
+        )
+        raise typer.Exit(code=0 if (report.decryptable and integrity_ok) else 1)
 
     if not yes:
         console.print("[red]Restoration requires --yes flag.[/red]")
@@ -2930,15 +2944,60 @@ def restore_vault(
     except Exception as exc:
         console.print(f"[red]Failed to read backup file: {exc}[/red]")
         raise typer.Exit(code=1)
-    if backup.get("version") != "hvbackup-v1":
-        console.print(f"[red]Unsupported backup version: {backup.get('version')}[/red]")
-        raise typer.Exit(code=1)
+
+    # E2 v2 gate. import_backup runs the E1 preflight (version + evidence
+    # contract + lease linkage + broker identity) and the single-transaction
+    # restore with the protected audit event through the shared seam. The gate
+    # surfaces each failure class distinctly and never lets a rejected or
+    # rolled-back restore exit successfully.
+    active_leases = _count_active_leases(backup)
+    if active_leases:
+        console.print(
+            f"[yellow]Notice: {active_leases} active lease(s) in the backup will be "
+            "force-revoked on restore (active lease identities are never restored).[/yellow]"
+        )
     try:
         imported = vault.import_backup(backup)
-    except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+    except (ValueError, AuditIntegrityError, sqlite3.Error) as exc:
+        error_class = _restore_error_class(exc)
+        console.print(f"[red]Restore blocked ({error_class}): {exc}[/red]")
+        raise typer.Exit(code=1)
+    except Exception as exc:
+        console.print(f"[red]Restore failed: {exc}[/red]")
         raise typer.Exit(code=1)
     console.print(f"[green]Restored {len(imported)} credential(s) from {input}[/green]")
+
+
+def _count_active_leases(backup: dict) -> int:
+    """Count leases in a backup that would be restored as active (E1 force-revokes them)."""
+    leases = backup.get("leases") or []
+    if not isinstance(leases, list):
+        return 0
+    return sum(
+        1
+        for lease in leases
+        if isinstance(lease, dict) and lease.get("status") == "active"
+    )
+
+
+def _restore_error_class(exc: Exception) -> str:
+    """Classify an E1 restore failure into a distinct operator-facing class."""
+    if isinstance(exc, AuditIntegrityError):
+        return "audit failure"
+    if isinstance(exc, sqlite3.Error):
+        return "transaction failure"
+    lowered = str(exc).lower()
+    if "metadata-only" in lowered:
+        return "partial-commit risk (metadata-only backup)"
+    if "foreign credential linkage" in lowered:
+        return "foreign credential linkage"
+    if "does not match" in lowered:
+        return "broker mismatch"
+    if "audit integrity evidence" in lowered:
+        return "missing audit integrity evidence"
+    if "unsupported backup version" in lowered:
+        return "unsupported backup version"
+    return "preflight rejection"
 
 
 @_typer_app.command("backup-verify")
