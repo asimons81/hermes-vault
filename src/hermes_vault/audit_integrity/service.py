@@ -19,6 +19,7 @@ from hermes_vault.audit_integrity.crypto import (
 from hermes_vault.audit_integrity.models import AuditCheckpointStatus, AuditIntegrityStatus, AuditVerificationResult
 from hermes_vault.audit_integrity.repository import access_log_payload, registry_digest, registry_rows
 from hermes_vault.audit_integrity.schema import SCHEMA_VERSION, initialize_schema
+from hermes_vault.rotation_journal import JournalPhase, RotationJournalEntry
 
 CHAIN_VERSION = "sha256-chain-v1"
 
@@ -379,6 +380,135 @@ class AuditIntegrityService:
                 except Exception:
                     self.master_key = old_key
                     raise
+
+    def recover_pending_rotation(
+        self,
+        journal: RotationJournalEntry,
+        *,
+        old_master_key: bytes,
+        new_master_key: bytes | None = None,
+    ) -> AuditVerificationResult:
+        """Reconcile the audit chain after an interrupted master-key rotation.
+
+        Implements the Slice C reconciliation seam (INTEGRITY_RECOVERY_PLAN.md
+        lines 341-345): given the typed v2 rotation journal recording the
+        *old* audit segment id, complete the audit-key transition idempotently
+        so that replaying the same journal converges to the same state and an
+        interrupted audit resumes to the same state as a clean rotation.
+
+        The journal must be in the ``db_committed``/``pending`` phase (the
+        state a rotation leaves after the credential DB commit but before the
+        audit transition completes).  Depending on what the audit chain
+        currently holds:
+
+        * active segment is still the journaled *old* segment — the segment
+          rotation never committed: close it and create its successor under
+          ``new_master_key`` with the journaled predecessor linkage, then
+          rewrite the checkpoint (the ``rotate_segment`` body, minus the
+          healthy-verify precondition that cannot hold mid-rotation);
+        * active segment is already the journaled old segment's successor —
+          the rotation committed but the checkpoint rewrite was lost: only
+          rewrite the checkpoint;
+        * anything else — contradiction: fail closed, raise, and retain the
+          journal and durable key material.
+
+        ``new_master_key`` defaults to the service's current key (the vault
+        reopens with the new passphrase).  The destructive
+        ``recover_checkpoint`` / ``_rebuild_integrity_for_key_mismatch``
+        semantics are never used.
+        """
+        self.ensure_initialized()
+        phase = journal.phase()
+        if phase == JournalPhase.started:
+            raise AuditIntegrityError(
+                "contradictory rotation journal: a 'started' journal has no audit transition to reconcile"
+            )
+        if phase == JournalPhase.checkpoint_committed:
+            # Already reconciled; replay converges to the healthy state.
+            return self.verify()
+        # phase == JournalPhase.db_committed_pending
+        if not journal.old_segment_id:
+            raise AuditIntegrityError(
+                "contradictory rotation journal: a pending journal must record the old segment id"
+            )
+        resolved_new_key = new_master_key if new_master_key is not None else self.master_key
+        journaled_old_segment_id = journal.old_segment_id
+        old_entry_pub = public_key_b64(old_master_key, ENTRY_SIGNING_CONTEXT)
+        old_checkpoint_pub = public_key_b64(old_master_key, CHECKPOINT_SIGNING_CONTEXT)
+
+        with audit_write_lock(self.lock_path):
+            with self._connection() as conn:
+                active = self._active(conn)
+                if active["segment_id"] == journaled_old_segment_id:
+                    # Rotation never reached the audit chain: complete it.
+                    if active["entry_public_key"] != old_entry_pub or active["checkpoint_public_key"] != old_checkpoint_pub:
+                        raise AuditIntegrityError(
+                            "contradictory rotation journal: the active segment is not signed by the journaled old key"
+                        )
+                    conn.execute("BEGIN IMMEDIATE")
+                    sequence, tip = self._tip(conn)
+                    now = self._now()
+                    conn.execute(
+                        "UPDATE audit_integrity_segments SET sequence_end = ?, closed_at = ? WHERE segment_id = ?",
+                        (sequence, now, active["segment_id"]),
+                    )
+                    new = self._create_segment(
+                        conn,
+                        master_key=resolved_new_key,
+                        transition_reason="master_key_rotation",
+                        sequence_start=sequence + 1,
+                        predecessor_segment_id=active["segment_id"],
+                        predecessor_tip_digest=tip,
+                    )
+                    conn.execute(
+                        "UPDATE audit_integrity_state SET active_segment_id = ?, updated_at = ? WHERE id = 1",
+                        (new["segment_id"], now),
+                    )
+                    conn.commit()
+                    previous_key = self.master_key
+                    self.master_key = resolved_new_key
+                    try:
+                        self._write_current_checkpoint(conn, new, latest_sequence=sequence, latest_digest=tip)
+                    except Exception:
+                        self.master_key = previous_key
+                        raise
+                elif active["predecessor_segment_id"] == journaled_old_segment_id:
+                    # Rotation already committed; the checkpoint write was lost.
+                    old_segment = conn.execute(
+                        "SELECT * FROM audit_integrity_segments WHERE segment_id = ?",
+                        (journaled_old_segment_id,),
+                    ).fetchone()
+                    if old_segment is None:
+                        raise AuditIntegrityError(
+                            "contradictory rotation journal: the journaled old segment is missing from the registry"
+                        )
+                    if old_segment["entry_public_key"] != old_entry_pub or old_segment["checkpoint_public_key"] != old_checkpoint_pub:
+                        raise AuditIntegrityError(
+                            "contradictory rotation journal: the journaled old segment is not signed by the journaled old key"
+                        )
+                    expected_tip = conn.execute(
+                        "SELECT entry_digest FROM audit_integrity_records WHERE segment_id = ? ORDER BY sequence DESC LIMIT 1",
+                        (journaled_old_segment_id,),
+                    ).fetchone()
+                    expected_tip_digest = str(expected_tip["entry_digest"]) if expected_tip else ""
+                    if active["predecessor_tip_digest"] != expected_tip_digest:
+                        raise AuditIntegrityError(
+                            "contradictory rotation journal: the successor predecessor tip does not match the journaled old segment"
+                        )
+                    sequence, tip = self._tip(conn)
+                    conn.commit()
+                    previous_key = self.master_key
+                    self.master_key = resolved_new_key
+                    try:
+                        self._write_current_checkpoint(conn, active, latest_sequence=sequence, latest_digest=tip)
+                    except Exception:
+                        self.master_key = previous_key
+                        raise
+                else:
+                    raise AuditIntegrityError(
+                        "contradictory rotation journal: the active segment is neither the journaled old segment nor its successor"
+                    )
+        return self.verify()
 
     def recover_checkpoint(self) -> AuditVerificationResult:
         """Start a new explicit segment; handles active_key_mismatch by rebuilding from scratch."""
