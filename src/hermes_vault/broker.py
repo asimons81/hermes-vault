@@ -120,6 +120,20 @@ class Broker:
                     ttl_seconds=effective_ttl,
                     metadata={"lease_required": True, "alias": record.alias},
                 )
+            # E1 (#62): the lease must reference the same credential identity
+            # being served. A lease whose credential_id no longer matches the
+            # resolved credential (e.g. tampered/relabeled row) is a forged
+            # identity and must be denied instead of serving the raw secret.
+            if lease.credential_id != record.id:
+                return self._deny(
+                    agent_id,
+                    canonical,
+                    "get_ephemeral_env",
+                    f"lease credential identity mismatch: lease {lease.id} references "
+                    f"credential {lease.credential_id} but resolved credential is {record.id}",
+                    ttl_seconds=effective_ttl,
+                    metadata={"lease_required": True, "lease_id": lease.id},
+                )
             remaining = int((lease.expires_at - datetime.now(timezone.utc)).total_seconds())
             if remaining <= 0:
                 return self._deny(

@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypedDict
 from uuid import uuid4
 
 from hermes_vault.audit_integrity.canonical import CANONICAL_JSON_VERSION, canonical_bytes, framed
@@ -20,6 +21,14 @@ from hermes_vault.audit_integrity.repository import access_log_payload, registry
 from hermes_vault.audit_integrity.schema import SCHEMA_VERSION, initialize_schema
 
 CHAIN_VERSION = "sha256-chain-v1"
+
+
+class AppendResult(TypedDict):
+    """Checkpoint payload returned by a transaction-scoped audit append."""
+
+    segment: sqlite3.Row
+    sequence: int
+    digest: str
 
 
 class AuditIntegrityError(RuntimeError):
@@ -185,28 +194,64 @@ class AuditIntegrityService:
             with audit_write_lock(self.lock_path):
                 with self._connection() as conn:
                     conn.execute("BEGIN IMMEDIATE")
-                    active = self._active(conn)
-                    sequence, previous_digest = self._tip(conn)
-                    next_sequence = sequence + 1
-                    metadata_json = canonical_bytes(getattr(record, "metadata")).decode("utf-8") if getattr(record, "metadata") else "{}"
-                    values = (
-                        getattr(record, "id"), getattr(record, "timestamp").isoformat(), getattr(record, "agent_id"),
-                        getattr(record, "service"), getattr(record, "action"), getattr(record, "decision").value,
-                        getattr(record, "reason"), getattr(record, "ttl_seconds"),
-                        getattr(record, "verification_result").value if getattr(record, "verification_result") else None, metadata_json,
-                    )
-                    conn.execute("INSERT INTO access_logs (id, timestamp, agent_id, service, action, decision, reason, ttl_seconds, verification_result, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values)
-                    row = conn.execute("SELECT * FROM access_logs WHERE id = ?", (getattr(record, "id"),)).fetchone()
-                    entry_digest = digest_hex(canonical_bytes(access_log_payload(row)))
-                    envelope = {"chain_version": CHAIN_VERSION, "serialization_version": CANONICAL_JSON_VERSION, "segment_id": active["segment_id"], "sequence": next_sequence, "previous_digest": previous_digest, "entry_digest": entry_digest}
-                    signature = sign(self.master_key, ENTRY_SIGNING_CONTEXT, canonical_bytes(envelope))
-                    conn.execute("INSERT INTO audit_integrity_records (sequence, segment_id, access_log_id, previous_digest, entry_digest, signature, chain_version, serialization_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (next_sequence, active["segment_id"], getattr(record, "id"), previous_digest, entry_digest, signature, CHAIN_VERSION, CANONICAL_JSON_VERSION, self._now()))
-                    conn.execute("UPDATE audit_integrity_state SET updated_at = ? WHERE id = 1", (self._now(),))
+                    result = self.append_in_transaction(conn, record)
                     conn.commit()
-                    self._write_current_checkpoint(conn, active, latest_sequence=next_sequence, latest_digest=entry_digest)
+                    self._write_current_checkpoint(
+                        conn,
+                        result["segment"],
+                        latest_sequence=int(result["sequence"]),
+                        latest_digest=str(result["digest"]),
+                    )
         except AuditLockError as exc:
             raise AuditIntegrityError(str(exc)) from exc
+
+    def append_in_transaction(self, conn: sqlite3.Connection, record: object) -> AppendResult:
+        """Append a protected audit record using a caller-owned connection.
+
+        The caller owns the transaction: this method performs the access-log
+        INSERT, integrity-record INSERT, and state touch WITHOUT committing,
+        so the audit row is committed only when the caller's transaction
+        commits. Returns a checkpoint payload dict (``segment``,
+        ``sequence``, ``digest``) that the caller must persist via
+        :meth:`write_checkpoint_after_append` after committing.
+
+        Raises :class:`AuditIntegrityError` if the active segment or chain
+        state is unavailable on the supplied connection.
+        """
+        conn.row_factory = sqlite3.Row
+        active = self._active(conn)
+        sequence, previous_digest = self._tip(conn)
+        next_sequence = sequence + 1
+        metadata_json = canonical_bytes(getattr(record, "metadata")).decode("utf-8") if getattr(record, "metadata") else "{}"
+        values = (
+            getattr(record, "id"), getattr(record, "timestamp").isoformat(), getattr(record, "agent_id"),
+            getattr(record, "service"), getattr(record, "action"), getattr(record, "decision").value,
+            getattr(record, "reason"), getattr(record, "ttl_seconds"),
+            getattr(record, "verification_result").value if getattr(record, "verification_result") else None, metadata_json,
+        )
+        conn.execute("INSERT INTO access_logs (id, timestamp, agent_id, service, action, decision, reason, ttl_seconds, verification_result, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values)
+        row = conn.execute("SELECT * FROM access_logs WHERE id = ?", (getattr(record, "id"),)).fetchone()
+        entry_digest = digest_hex(canonical_bytes(access_log_payload(row)))
+        envelope = {"chain_version": CHAIN_VERSION, "serialization_version": CANONICAL_JSON_VERSION, "segment_id": active["segment_id"], "sequence": next_sequence, "previous_digest": previous_digest, "entry_digest": entry_digest}
+        signature = sign(self.master_key, ENTRY_SIGNING_CONTEXT, canonical_bytes(envelope))
+        conn.execute("INSERT INTO audit_integrity_records (sequence, segment_id, access_log_id, previous_digest, entry_digest, signature, chain_version, serialization_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (next_sequence, active["segment_id"], getattr(record, "id"), previous_digest, entry_digest, signature, CHAIN_VERSION, CANONICAL_JSON_VERSION, self._now()))
+        conn.execute("UPDATE audit_integrity_state SET updated_at = ? WHERE id = 1", (self._now(),))
+        return {"segment": active, "sequence": next_sequence, "digest": entry_digest}
+
+    def write_checkpoint_after_append(self, conn: sqlite3.Connection, result: AppendResult) -> None:
+        """Persist the authenticated checkpoint after a transaction-scoped append.
+
+        The caller must have committed its transaction before calling this;
+        the supplied connection is used to read the segment registry (a
+        read that remains valid after commit).
+        """
+        self._write_current_checkpoint(
+            conn,
+            result["segment"],
+            latest_sequence=int(result["sequence"]),
+            latest_digest=str(result["digest"]),
+        )
 
     def _verify_checkpoint(self, conn: sqlite3.Connection, active: sqlite3.Row, sequence: int, tip: str) -> tuple[AuditCheckpointStatus, str | None]:
         checkpoint = read_checkpoint(self.checkpoint_path)
