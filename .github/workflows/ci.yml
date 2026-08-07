@@ -51,6 +51,10 @@ jobs:
         if: always()
         run: python -m pytest plugins/hermes-vault-secret-source/tests -q --tb=short --junitxml=plugin-test-results.xml
 
+      - name: Run Desktop plugin tests
+        if: always()
+        run: python -m pytest plugins/hermes-vault-desktop/tests -q --tb=short --junitxml=desktop-plugin-test-results.xml
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v7

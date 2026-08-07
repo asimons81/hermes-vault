@@ -37,6 +37,7 @@ import math
 import os
 import re
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator, TextIO
@@ -446,8 +447,16 @@ class _ReadOnlyAudit(AuditLogger):
 class _ReadOnlyAuditIntegrityService(AuditIntegrityService):
     """Verify integrity without initializing schema or recording a run."""
 
-    def _connection(self) -> sqlite3.Connection:
-        return _ReadOnlyVault._connect(self.db_path)
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        # Parent contracts a context manager (with ... as conn:) that closes
+        # the connection on exit; the read-only variant must match so
+        # connections never leak and the override type-checks.
+        conn = _ReadOnlyVault._connect(self.db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _record_run(self, conn: sqlite3.Connection, result: Any) -> None:
         # The parent verifier records a verification run and commits it. The
