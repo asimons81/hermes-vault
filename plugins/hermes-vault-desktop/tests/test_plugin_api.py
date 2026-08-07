@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -249,6 +250,10 @@ def test_poison_strings_are_not_returned_or_logged(plugin, client, monkeypatch, 
     assert poison not in caplog.text
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="real-child spawn test relies on a POSIX shebang script; the bounded-reader logic is covered by the fake-process tests on all platforms",
+)
 def test_real_child_output_is_bounded(plugin, client, monkeypatch, tmp_path):
     script = tmp_path / "oversized-bridge"
     script.write_text("#!/usr/bin/python3\nimport sys\nsys.stdout.write('x' * 600000)\n", encoding="utf-8")

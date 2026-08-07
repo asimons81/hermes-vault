@@ -105,7 +105,7 @@ def test_runtime_plugin_contract_and_render(tmp_path: Path) -> None:
         "PLUGIN": str(PLUGIN),
     }
     result = subprocess.run(
-        ["node", "--experimental-loader", str(paths["loader.mjs"]), str(paths["harness.mjs"])],
+        ["node", "--experimental-loader", paths["loader.mjs"].as_uri(), str(paths["harness.mjs"])],
         cwd=ROOT,
         env={**__import__("os").environ, **env},
         capture_output=True,
@@ -358,7 +358,7 @@ def _run_render(tmp_path: Path, phase: str) -> dict:
         "PLUGIN": str(PLUGIN),
     }
     result = subprocess.run(
-        ["node", "--experimental-loader", str(paths["loader.mjs"]), str(paths["harness.mjs"])],
+        ["node", "--experimental-loader", paths["loader.mjs"].as_uri(), str(paths["harness.mjs"])],
         cwd=ROOT,
         env={**__import__("os").environ, **env},
         capture_output=True,
