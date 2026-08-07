@@ -43,6 +43,17 @@ from hermes_vault.models import (
     LeaseStatus,
     utc_now,
 )
+from hermes_vault.rotation_journal import (
+    DurableKind,
+    DurableMaterial,
+    JournalPhase,
+    RotationJournalEntry,
+    RotationJournalError,
+    decrypt_old_key_recovery,
+    encrypt_old_key_recovery,
+    looks_like_dpapi_envelope,
+    retain_contradiction_marker,
+)
 from hermes_vault.service_ids import normalize
 
 
@@ -98,6 +109,21 @@ def _record_aad_metadata(record: "CredentialRecord") -> dict[str, Any]:
         record.credential_type,
         record.scopes,
     )
+
+
+def _durable_from_bytes(raw: bytes, fallback_salt: bytes) -> DurableMaterial:
+    """Typed durable material from the on-disk salt bytes.
+
+    The existing salt file is either a 16-byte PBKDF derivation salt or a
+    DPAPI envelope (``HVDP`` magic + payload).  A missing/empty file falls
+    back to the new derivation salt (mirrors the legacy journal behavior of
+    recording ``old_salt = new_salt`` for a fresh vault).
+    """
+    if not raw:
+        return DurableMaterial(kind=DurableKind.pbkdf_salt, salt=fallback_salt)
+    if looks_like_dpapi_envelope(raw):
+        return DurableMaterial(kind=DurableKind.dpapi_envelope, envelope=raw)
+    return DurableMaterial(kind=DurableKind.pbkdf_salt, salt=raw)
 
 
 class Vault:
@@ -391,64 +417,182 @@ class Vault:
             ).fetchone()
         return dict(row) if row else None
 
-    def _payload_decrypts_with_salt(
-        self,
-        passphrase: str,
-        salt: bytes,
-        payload: str,
-        *,
-        version: str = CRYPTO_VERSION,
-        aad_metadata: dict[str, Any] | None = None,
-    ) -> bool:
-        try:
-            decrypt_secret_versioned(payload, derive_key(passphrase, salt), version, aad_metadata)
-            return True
-        except Exception:
-            return False
-
     def _recover_rotation_journal(self, passphrase: str) -> None:
         journal_path = self.rotation_journal_path
         if not journal_path.exists():
             return
         try:
-            journal = json.loads(journal_path.read_text(encoding="utf-8"))
-            old_salt = bytes.fromhex(journal["old_salt"])
-            new_salt = bytes.fromhex(journal["new_salt"])
+            entry = RotationJournalEntry.from_json(journal_path.read_text(encoding="utf-8"))
+        except RotationJournalError as exc:
+            # Contradiction-class failure (v1/v2 version/kind/state conflicts):
+            # retain the original journal, record the marker when available,
+            # and surface a clear recovery error (Slice C retention rule).
+            if exc.marker is not None:
+                try:
+                    retain_contradiction_marker(journal_path, exc.marker)
+                except Exception:
+                    pass
+            raise RotationRecoveryError(
+                f"Master-key rotation journal at {journal_path} is malformed or contradictory "
+                f"and was retained for operator review: {exc}"
+            ) from exc
         except Exception as exc:
             raise RotationRecoveryError(
                 f"Master-key rotation journal at {journal_path} is unreadable."
             ) from exc
 
-        first = self._first_encrypted_payload()
-        if first is None:
-            recovered_salt = new_salt if journal.get("status") == "db_committed" else old_salt
-        else:
-            version = first.get("crypto_version") or CRYPTO_VERSION
-            aad_metadata = credential_aad_metadata(
-                first.get("id", ""),
-                first.get("service", ""),
-                first.get("alias", "default"),
-                first.get("credential_type", ""),
-                json.loads(first.get("scopes") or "[]"),
-            )
-            if self._payload_decrypts_with_salt(
-                passphrase, new_salt, first["encrypted_payload"],
-                version=version, aad_metadata=aad_metadata,
-            ):
-                recovered_salt = new_salt
-            elif self._payload_decrypts_with_salt(
-                passphrase, old_salt, first["encrypted_payload"],
-                version=version, aad_metadata=aad_metadata,
-            ):
-                recovered_salt = old_salt
-            else:
-                raise RotationRecoveryError(
-                    "Interrupted master-key rotation could not be recovered with either journaled salt."
-                )
+        phase = entry.phase()
 
-        self._replace_salt_durable(recovered_salt)
+        if phase == JournalPhase.started:
+            self._recover_started_journal(entry, passphrase, journal_path)
+            return
+
+        # db_committed (pending or checkpoint_committed): the credential DB is
+        # already encrypted under the new key. Derive the new key from the
+        # journaled new durable material, unwrap the old audit/master key from
+        # the recovery envelope, reconcile the audit transition idempotently,
+        # verify a healthy audit state, and only then finalize the new durable
+        # material and delete the journal.
+        new_key = self._durable_key(entry.new_durable, passphrase)
+        if entry.old_key_recovery is None:
+            if phase == JournalPhase.db_committed_pending:
+                # Legacy v1 pending journal predates protected old-key
+                # recovery: cannot reconcile without the old audit key. Retain
+                # and surface a clear recovery error (issue #66 requirement).
+                raise RotationRecoveryError(
+                    "Legacy rotation journal is pending but lacks protected old-key "
+                    "recovery material; journal retained for operator review. Manual "
+                    "recovery is required before this vault can reopen."
+                )
+            # checkpoint_committed: the audit transition already completed, so
+            # the old key is not needed by the reconciliation seam.
+            old_key = new_key
+        else:
+            try:
+                old_key = decrypt_old_key_recovery(
+                    entry.old_key_recovery, new_key, entry.journal_id
+                )
+            except Exception as exc:
+                raise RotationRecoveryError(
+                    "Master-key rotation journal old-key recovery could not be decrypted "
+                    f"(wrong passphrase or tampered journal); journal retained: {exc}"
+                ) from exc
+
+        service = AuditIntegrityService(self.db_path, new_key)
+        try:
+            result = service.recover_pending_rotation(entry, old_master_key=old_key)
+        except AuditIntegrityError as exc:
+            raise RotationRecoveryError(
+                f"Master-key rotation journal audit reconciliation failed; journal retained: {exc}"
+            ) from exc
+        if result.status != AuditIntegrityStatus.healthy:
+            raise RotationRecoveryError(
+                "Master-key rotation journal audit verification is not healthy after recovery "
+                f"({result.sanitized_reason}); journal retained for operator review."
+            )
+
+        # All checks passed: finalize the new durable material, then delete.
+        self._write_new_durable(entry.new_durable, new_key)
         journal_path.unlink()
         self._fsync_directory(journal_path.parent)
+
+    def _recover_started_journal(
+        self,
+        entry: RotationJournalEntry,
+        passphrase: str,
+        journal_path: Path,
+    ) -> None:
+        """Recover a pre-commit ``started`` journal (safe rollback).
+
+        A started journal means the credential DB was never committed under
+        the new key, so the old durable form is still correct.  Restore it
+        and delete the journal.  If the old key does not decrypt the DB but
+        the journaled new key does, the DB was committed without the journal
+        being updated — an ambiguous state that fails closed and retains the
+        journal (issue #66: never silently delete a pending journal).
+        """
+        old_key = self._durable_key(entry.old_durable, passphrase)
+        first = self._first_encrypted_payload()
+        if first is None:
+            self._restore_durable_bytes(entry.old_durable)
+            journal_path.unlink()
+            self._fsync_directory(journal_path.parent)
+            return
+        version = first.get("crypto_version") or CRYPTO_VERSION
+        aad_metadata = credential_aad_metadata(
+            first.get("id", ""),
+            first.get("service", ""),
+            first.get("alias", "default"),
+            first.get("credential_type", ""),
+            json.loads(first.get("scopes") or "[]"),
+        )
+        if self._payload_decrypts_with_key(
+            old_key,
+            first["encrypted_payload"],
+            version=version,
+            aad_metadata=aad_metadata,
+        ):
+            self._restore_durable_bytes(entry.old_durable)
+            journal_path.unlink()
+            self._fsync_directory(journal_path.parent)
+            return
+        new_key = self._durable_key(entry.new_durable, passphrase)
+        if self._payload_decrypts_with_key(
+            new_key,
+            first["encrypted_payload"],
+            version=version,
+            aad_metadata=aad_metadata,
+        ):
+            raise RotationRecoveryError(
+                "Master-key rotation journal is 'started' but the credential DB is already "
+                "encrypted under the new key (ambiguous state); journal retained for operator review."
+            )
+        raise RotationRecoveryError(
+            "Interrupted master-key rotation could not be recovered with the provided "
+            "passphrase (neither journaled key decrypts the vault); journal retained."
+        )
+
+    def _durable_key(self, durable: DurableMaterial, passphrase: str) -> bytes:
+        """Derive/unwrap the master key for a typed durable material."""
+        if durable.kind == DurableKind.pbkdf_salt:
+            assert durable.salt is not None
+            return derive_key(passphrase, durable.salt)
+        from hermes_vault import dpapi  # deferred: keeps win32crypt off the cold path
+
+        assert durable.envelope is not None
+        return dpapi.unprotect_master_key(durable.envelope)
+
+    def _restore_durable_bytes(self, durable: DurableMaterial) -> None:
+        """Write the exact durable bytes back to the salt file (rollback)."""
+        if durable.kind == DurableKind.pbkdf_salt:
+            assert durable.salt is not None
+            self._replace_salt_durable(durable.salt)
+        else:
+            assert durable.envelope is not None
+            self._replace_salt_durable(durable.envelope)
+
+    def _write_new_durable(self, durable: DurableMaterial, new_key: bytes) -> None:
+        """Persist the new durable form (DPAPI-aware for PBKDF salts)."""
+        if durable.kind == DurableKind.pbkdf_salt:
+            assert durable.salt is not None
+            self._write_master_key_durable(durable.salt, new_key)
+        else:
+            assert durable.envelope is not None
+            self._replace_salt_durable(durable.envelope)
+
+    def _payload_decrypts_with_key(
+        self,
+        key: bytes,
+        payload: str,
+        *,
+        version: str,
+        aad_metadata: dict[str, Any] | None,
+    ) -> bool:
+        try:
+            decrypt_secret_versioned(payload, key, version, aad_metadata)
+            return True
+        except Exception:
+            return False
 
     def _secure_storage_files(self) -> None:
         _platform.secure_file(self.db_path)
@@ -1930,21 +2074,30 @@ class Vault:
 
         new_salt = os.urandom(SALT_SIZE)
         new_key = derive_key(new_passphrase, new_salt)
-        journal = {
-            "version": "rotation-journal-v1",
-            "status": "started",
-            "old_salt": new_salt.hex(),  # placeholder; replaced below
-            "new_salt": new_salt.hex(),
-            "created_at": utc_now().isoformat(),
-        }
-        # The journal records the existing durable form (16-byte salt
-        # for legacy vaults, DPAPI envelope bytes for DPAPI vaults)
-        # under "old_salt" and the new derivation salt under "new_salt".
-        # DPAPI wrapping happens at the durable write, not in the
-        # journal (per spec §2.3 / §5.3 test 20).
+
+        # Typed v2 journal (issue #66 / Slice C): persist the old/new
+        # durable material plus the encrypted old audit/master key under
+        # the new key BEFORE the credential DB commit. The journal never
+        # stores a passphrase or a plaintext key; the recovery envelope
+        # is AES-GCM-wrapped under the new key with AAD bound to the
+        # journal id.
         existing_durable = self.salt_path.read_bytes() if self.salt_path.exists() else b""
-        journal["old_salt"] = existing_durable.hex() if existing_durable else new_salt.hex()
-        self._write_rotation_journal(journal)
+        old_durable = _durable_from_bytes(existing_durable, new_salt)
+        new_durable = DurableMaterial(kind=DurableKind.pbkdf_salt, salt=new_salt)
+        journal_id = str(uuid4())
+        recovery = encrypt_old_key_recovery(old_key, new_key, journal_id)
+        entry = RotationJournalEntry.start(
+            old_durable=old_durable,
+            new_durable=new_durable,
+            old_key_recovery=recovery,
+            journal_id=journal_id,
+        )
+        self._write_rotation_journal(entry.to_dict())
+
+        # Record the exact old audit segment BEFORE the DB commit so a
+        # crash between the commit and the db_committed journal write can
+        # still be reconciled on reopen.
+        old_segment_id = audit_result.active_segment_id or ""
 
         re_encrypted = 0
         all_records = self.list_credentials()
@@ -1974,14 +2127,29 @@ class Vault:
                 conn.rollback()
                 raise
 
-        journal["status"] = "db_committed"
-        journal["committed_at"] = utc_now().isoformat()
-        journal["audit_transition_state"] = "pending"
-        journal["old_segment_id"] = audit_result.active_segment_id or ""
-        self._write_rotation_journal(journal)
+        # After the DB commit persist db_committed/pending with the exact
+        # old audit segment captured before the commit.
+        committed = entry.mark_db_committed(
+            old_segment_id=old_segment_id,
+            old_key_recovery=recovery,
+        )
+        self._write_rotation_journal(committed.to_dict())
+
         audit_integrity.rotate_segment(new_key)
-        journal["audit_transition_state"] = "checkpoint_committed"
-        self._write_rotation_journal(journal)
+
+        final = committed.mark_audit_checkpoint_committed()
+        self._write_rotation_journal(final.to_dict())
+
+        # Verify the audit chain is healthy under the new key before
+        # finalizing the durable material and deleting the journal (issue
+        # #66: deletion only after all checks pass).
+        post_result = audit_integrity.verify()
+        if post_result.status.value != "healthy":
+            raise AuditIntegrityError(
+                f"Master-key rotation completed but audit verification is not healthy "
+                f"({post_result.sanitized_reason}); rotation journal retained for recovery."
+            )
+
         # DPAPI-aware write: when HERMES_VAULT_DPAPI=1 is set, the
         # new master key is wrapped with DPAPI on write. Otherwise the
         # legacy 16-byte derivation salt is written verbatim. No
