@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.24.0 -- Feature: Hermes Desktop Integration (2026-08-06)
+
+### Added
+
+- **Desktop bridge (`desktop-bridge`)**: Vault-owned versioned NDJSON bridge with a `--no-banner desktop-bridge` CLI entry point. Strict protocol/request validation, UTF-8 byte-based request limits, recursion-safe JSON parsing, rejection of `NaN`/`Infinity`, bounded output with attacker-controlled IDs nulled on overflow, error redaction for paths/JWTs/bearer/hex tokens, read-only SQLite access, and no Hermes Agent imports or shell execution.
+- **Backend adapter (`plugins/hermes-vault-desktop/dashboard`)**: thin FastAPI plugin exposing only fixed GET routes (`hello`, `health`, `overview`, `credentials`, `leases`, `policy`, `requests`, `audit`, `integrity`). One short-lived bridge child per request, allowlisted child environment (`PYTHONPATH` and provider keys excluded), bounded request/response framing, timeouts, and sanitized error envelopes. Fails closed on timeout, EOF, malformed JSON, protocol mismatch, and output overflow.
+- **Desktop runtime (`plugins/hermes-vault-desktop/desktop/plugin.js`)**: native Hermes Desktop plugin page — vault overview cards, credential/lease/request metadata, audit trail, integrity verification, and 30s auto-refresh. Read-only by construction; no Vault mutation surface.
+- **Plugin tests**: `test_plugin_api.py` (route surface, query bounds, env allowlist, bridge error mapping) and `test_runtime_plugin.py` (structure, route registration, id consistency) run without a live Vault or Hermes process.
+
+### Changed
+
+- **Canonical-launcher requirement**: the adapter spawns `hermes-vault-canonical` (resolved from PATH) so the bridge unlocks from the 0600 passphrase file and runs with a cleared `PYTHONPATH`. The raw `hermes-vault` binary returns HTTP 423 `MISSING_PASSPHRASE` in the scrubbed child environment (the child env deliberately contains no passphrase).
+
+### Upgrade notes
+
+- No upgrade or migration steps required. The desktop integration is additive. Operators enabling the desktop plugin must have the canonical launcher (`hermes-vault-canonical`) on the Hermes service PATH.
+
 ## 0.23.2 -- Patch: audit chain wedge + export fail-closed (2026-08-01)
 
 ### Fixed

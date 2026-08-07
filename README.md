@@ -4,7 +4,16 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.23.2 is the current release — a patch on the **Vault Intelligence** (v0.22.0) line that fixes an audit-integrity chain wedge (six CLI write paths now protect their audit rows) and makes `export --with-secrets` fail closed on a wrong passphrase. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
+v0.24.0 is the current release — the **Desktop Integration** release on the **Vault Intelligence** line. It ships the read-only Hermes Desktop plugin (`hermes-vault-desktop`): a versioned NDJSON `desktop-bridge` plus a dashboard backend adapter and a native Desktop runtime page that surface credential/lease/request/policy metadata, audit, and integrity status without ever exposing secret values. v0.23.2 previously fixed an audit-integrity chain wedge and made `export --with-secrets` fail closed. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
+
+## What's New in 0.24.0
+
+v0.24.0 is a feature release shipping the **Hermes Desktop integration**.
+
+- **Desktop bridge (`desktop-bridge`)**: Vault-owned versioned NDJSON bridge with a `--no-banner desktop-bridge` CLI entry point. Strict request validation, UTF-8 byte limits, recursion-safe JSON parsing, rejection of `NaN`/`Infinity`, bounded output, error redaction for paths/JWTs/bearer/hex tokens, read-only SQLite access, and no Hermes Agent imports
+- **Backend adapter (`plugins/hermes-vault-desktop/dashboard`)**: thin FastAPI plugin exposing only fixed GET routes (`hello`, `health`, `overview`, `credentials`, `leases`, `policy`, `requests`, `audit`, `integrity`); one short-lived bridge child per request with an allowlisted environment; fails closed on timeout, EOF, malformed JSON, protocol mismatch, and output overflow
+- **Desktop runtime (`plugins/hermes-vault-desktop/desktop/plugin.js`)**: native Hermes Desktop page for vault overview cards, credential/lease/request metadata, audit trail, and integrity verification, with 30s auto-refresh
+- **Canonical-launcher requirement**: the adapter spawns `hermes-vault-canonical` (PATH-resolved) so the bridge unlocks from the 0600 passphrase file; the raw `hermes-vault` binary returns HTTP 423 `MISSING_PASSPHRASE` in the scrubbed child environment
 
 ## What's New in 0.23.2
 
@@ -71,10 +80,10 @@ Hermes Vault runs natively on Windows -- no WSL required.
 
 ```powershell
 # Install with uv (recommended)
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.23.2
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.24.0
 
 # Or with pipx
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.23.2
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.24.0
 
 # Or with pip (editable dev install)
 python -m venv .venv
@@ -221,7 +230,7 @@ When `--redact-source` is used, only successfully imported env lines are comment
 
 ## Hermes Vault Console
 
-Hermes Vault Console, introduced in v0.8.0 and expanded through v0.23.2, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
+Hermes Vault Console, introduced in v0.8.0 and expanded through v0.24.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
 
 Launch it from the same machine that owns the vault:
 

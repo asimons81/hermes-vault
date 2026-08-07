@@ -11,6 +11,14 @@ bounded request/response framing, timeouts, and sanitized error envelopes.
 Successful responses expose the bridge's ``result`` object directly.  Errors
 use ``{"ok": false, "error": ...}`` with an HTTP status appropriate to the
 failure.
+
+The child binary MUST be the canonical launcher (``hermes-vault-canonical``),
+not the raw uv-tool binary: the launcher self-sources the vault passphrase
+from the 0600 file inside the vault dir and clears PYTHONPATH before exec.
+Spawning the raw binary yields HTTP 423 ``MISSING_PASSPHRASE`` on every
+request because the sanitized child environment deliberately contains no
+passphrase.  The launcher also makes the bridge immune to hermes-agent venv
+PYTHONPATH pollution.
 """
 
 from __future__ import annotations
@@ -31,7 +39,12 @@ router = APIRouter()
 
 PROTOCOL_VERSION = 1
 REQUEST_ID = 1
-BRIDGE_BINARY = "hermes-vault"
+# Canonical launcher (self-sources passphrase from 0600 file + clears
+# PYTHONPATH). MUST NOT be the raw uv-tool 'hermes-vault' binary — the
+# sanitized child env has no passphrase, so the raw binary returns
+# MISSING_PASSPHRASE (423) on every request. Resolved from PATH so the
+# launcher can live anywhere on the service PATH.
+BRIDGE_BINARY = "hermes-vault-canonical"
 BRIDGE_TIMEOUT_SECONDS = 5.0
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 512 * 1024
