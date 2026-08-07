@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from hermes_vault import _platform
 from hermes_vault.audit_integrity.checkpoint import AuditLockError, audit_write_lock
+from hermes_vault.audit_integrity.detached import DETACHED_HEALTHY, verify_detached_evidence
 from hermes_vault.audit_integrity.models import AuditIntegrityStatus
 from hermes_vault.audit_integrity.service import AuditIntegrityError, AuditIntegrityService
 from hermes_vault.crypto import (
@@ -1381,35 +1382,58 @@ class Vault:
             backup["audit_integrity"] = audit_service.export_evidence()  # type: ignore[assignment]
         return backup
 
-    def import_backup(self, backup: dict, replace: bool = True) -> list[CredentialRecord]:
+    def import_backup(
+        self,
+        backup: dict,
+        replace: bool = True,
+        agent_id: str = "operator",  # matches OPERATOR_AGENT_ID in mutations.py
+    ) -> list[CredentialRecord]:
         """Import credentials from a backup dict. Existing records are replaced by default.
 
         Supports hvbackup-v1 and hvbackup-v2 (credential portion only).
         Rejects metadata-only backups (entries missing encrypted_payload).
 
+        *agent_id* names the acting principal for the protected restore audit
+        event. Operator/CLI callers keep the explicit safe default
+        (``operator``); broker-driven imports pass the real agent so the
+        tamper-evident trail attributes the restore correctly (issue #62A F4).
+
         Slice E1 (issue #62): the restore is validated by a preflight routine
         before any mutation — the evidence contract is confirmed (v2 backups
-        must carry audit integrity evidence), restored leases are rejected if
-        they would mint a forged active lease identity or reference a foreign
-        credential, and every lease's broker identity must match the
-        credential it references. The import then runs as a single
-        transaction together with a protected restore audit event through the
-        shared audit seam; if any row, validation, or audit append fails, the
-        whole restore rolls back atomically.
+        must carry audit integrity evidence that detached-verifies healthy,
+        matching backup-verify / restore --dry-run semantics), restored
+        leases are rejected if they would mint a forged active lease identity
+        or reference a foreign credential, and every lease's broker identity
+        must match the credential it references. The import then runs as a
+        single transaction together with a protected restore audit event
+        through the shared audit seam; if any row, validation, or audit
+        append fails, the whole restore rolls back atomically.
         """
         version = backup.get("version")
         if version not in ("hvbackup-v1", "hvbackup-v2"):
             raise ValueError(f"Unsupported backup version: {version}")
 
         # ── E1 preflight: validate before any mutation ──
-        # 1. Evidence contract: hvbackup-v2 backups must carry the detached
-        #    audit integrity evidence (slice D prerequisite).
+        # 1. Evidence contract: hvbackup-v2 backups must carry detached
+        #    audit integrity evidence that verifies healthy (slice D
+        #    prerequisite, issue #62A F3). The integrity_available marker
+        #    alone is not evidence: the full payload is detached-verified
+        #    against the current vault key with the same healthy/complete
+        #    semantics as backup-verify / restore --dry-run, so a marker-only
+        #    or forged payload fails closed before any write.
         if version == "hvbackup-v2":
             evidence = backup.get("audit_integrity")
             if not isinstance(evidence, dict) or evidence.get("integrity_available") is not True:
                 raise ValueError(
                     "Cannot restore an hvbackup-v2 backup without audit integrity evidence. "
                     "Use a full v2 backup (with audit evidence) for restore."
+                )
+            status, reason = verify_detached_evidence(evidence, self.key)
+            if status != DETACHED_HEALTHY:
+                raise ValueError(
+                    f"Cannot restore an hvbackup-v2 backup with invalid audit integrity "
+                    f"evidence ({status}: {reason}). Run backup-verify or restore "
+                    "--dry-run for a full report."
                 )
 
         # 2. Parse and validate every credential row before writing anything.
@@ -1575,7 +1599,7 @@ class Vault:
             raise AuditIntegrityError(current.sanitized_reason)
 
         restore_event = AccessLogRecord(
-            agent_id="operator",  # matches OPERATOR_AGENT_ID in mutations.py
+            agent_id=agent_id,  # real acting agent (operator default; broker passes the agent)
             service="*",
             action="restore",
             decision=Decision.allow,

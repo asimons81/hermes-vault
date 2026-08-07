@@ -2978,7 +2978,7 @@ def restore_vault(
             "force-revoked on restore (active lease identities are never restored).[/yellow]"
         )
     try:
-        imported = vault.import_backup(backup)
+        imported = vault.import_backup(backup, agent_id=OPERATOR_AGENT_ID)
     except (ValueError, AuditIntegrityError, sqlite3.Error) as exc:
         error_class = _restore_error_class(exc)
         console.print(f"[red]Restore blocked ({error_class}): {exc}[/red]")
@@ -3014,6 +3014,8 @@ def _restore_error_class(exc: Exception) -> str:
         return "foreign credential linkage"
     if "does not match" in lowered:
         return "broker mismatch"
+    if "invalid audit integrity evidence" in lowered:
+        return "invalid audit integrity evidence"
     if "audit integrity evidence" in lowered:
         return "missing audit integrity evidence"
     if "unsupported backup version" in lowered:
