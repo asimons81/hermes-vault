@@ -39,7 +39,7 @@ from hermes_vault.service_ids import normalize
 from hermes_vault.skillgen import SkillGenerator
 from hermes_vault.update import UpdateError, UpdatePlan, perform_update, resolve_update_plan
 from hermes_vault.verifier import Verifier
-from hermes_vault.vault import AmbiguousTargetError, Vault
+from hermes_vault.vault import AmbiguousTargetError, RestoreCommittedCheckpointError, Vault
 
 # â”€â”€ Banner helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -2979,6 +2979,18 @@ def restore_vault(
         )
     try:
         imported = vault.import_backup(backup, agent_id=OPERATOR_AGENT_ID)
+    except RestoreCommittedCheckpointError as exc:
+        # The restore data and its protected event committed; only the
+        # checkpoint publication failed. Never report this as a blocked /
+        # rolled-back restore (issue #62B / F6). Exit non-zero so automation
+        # notices the degraded audit state, with an accurate remediation hint.
+        console.print(f"[yellow]Restore committed, but the audit checkpoint could not be published: {exc}[/yellow]")
+        console.print(
+            "[yellow]The vault data was restored. Audit integrity will report checkpoint_stale until the "
+            "checkpoint is re-published; re-run the same restore (it is idempotent) or run "
+            "'hermes-vault audit checkpoint advance --yes'.[/yellow]"
+        )
+        raise typer.Exit(code=1)
     except (ValueError, AuditIntegrityError, sqlite3.Error) as exc:
         error_class = _restore_error_class(exc)
         console.print(f"[red]Restore blocked ({error_class}): {exc}[/red]")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -56,6 +57,36 @@ class AmbiguousTargetError(RuntimeError):
 
 class RotationRecoveryError(RuntimeError):
     """Raised when an interrupted master-key rotation cannot be recovered."""
+
+
+class RestoreCommittedCheckpointError(RuntimeError):
+    """The restore data committed, but the audit checkpoint could not be published.
+
+    Raised after the restore transaction has committed and its protected
+    restore event is durable; the failure is confined to the filesystem
+    checkpoint publication. The chain will verify as ``checkpoint_stale``
+    until the checkpoint is re-published (re-run the restore — it is
+    idempotent — or run ``hermes-vault audit checkpoint advance``).
+    """
+
+
+def _restore_event_id(backup: dict, version: str) -> str:
+    """Deterministic id for a restore's protected audit event (issue #62B / F6).
+
+    Derived from the backup's restore-relevant content so a retry of the
+    same restore reuses the same event id: the import transaction then skips
+    the append instead of creating duplicate protected restore events.
+    """
+    content = json.dumps(
+        {
+            "version": version,
+            "credentials": backup.get("credentials", []),
+            "leases": backup.get("leases", []),
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return f"restore-{hashlib.sha256(content.encode('utf-8')).hexdigest()[:32]}"
 
 
 def _record_aad_metadata(record: "CredentialRecord") -> dict[str, Any]:
@@ -1408,6 +1439,17 @@ class Vault:
         single transaction together with a protected restore audit event
         through the shared audit seam; if any row, validation, or audit
         append fails, the whole restore rolls back atomically.
+
+        Issue #62B (F5/F6): the audit write lock is held across the health
+        gate and the transaction, and lease/credential linkage plus broker
+        identity are re-verified inside ``BEGIN IMMEDIATE`` against fresh
+        state, closing the preflight-to-transaction TOCTOU. The protected
+        restore event uses a deterministic id derived from the backup content
+        so a retry is idempotent; the checkpoint is published after commit,
+        and a checkpoint publication failure raises
+        :class:`RestoreCommittedCheckpointError` — the restore data is
+        durable and the chain verifies ``checkpoint_stale`` until the
+        checkpoint is re-published, never a rolled-back restore.
         """
         version = backup.get("version")
         if version not in ("hvbackup-v1", "hvbackup-v2"):
@@ -1590,15 +1632,14 @@ class Vault:
                 })
             prepared_leases.append((lease, self.get_lease(lease_id)))
 
-        # 4. Confirm the vault's audit evidence contract is usable so the
-        #    protected restore event can be sealed in the same transaction.
+        # 4. Build the protected restore event. Its id is deterministic
+        #    (derived from the backup's restore-relevant content) so a retry
+        #    of the same restore reuses the event instead of appending a
+        #    duplicate protected event (issue #62B / F6).
         audit_service = AuditIntegrityService(self.db_path, self.key)
         audit_service.ensure_initialized()
-        current = audit_service.verify()
-        if current.status != AuditIntegrityStatus.healthy:
-            raise AuditIntegrityError(current.sanitized_reason)
-
         restore_event = AccessLogRecord(
+            id=_restore_event_id(backup, version),
             agent_id=agent_id,  # real acting agent (operator default; broker passes the agent)
             service="*",
             action="restore",
@@ -1615,13 +1656,71 @@ class Vault:
         )
 
         # ── E1 single transaction: credentials + leases + protected audit ──
+        # The audit write lock is held across the health gate AND the
+        # transaction, so the preflight audit verification cannot be
+        # invalidated by a concurrent audit writer before the append
+        # (issue #62B / F5).
         imported: list[CredentialRecord] = []
         try:
             with audit_write_lock(audit_service.lock_path):
+                current = audit_service.verify()
+                if current.status != AuditIntegrityStatus.healthy:
+                    # A retry of an already-committed restore is the one case
+                    # where the chain may be checkpoint_stale: the previous
+                    # attempt committed the protected event but failed to
+                    # publish the checkpoint (F6). checkpoint_stale is only
+                    # reported after the full chain walk passes, so the chain
+                    # itself is healthy and the retry may proceed to
+                    # re-publish the checkpoint instead of duplicating it.
+                    event_already_committed = audit_service.access_log_exists(restore_event.id)
+                    if not (event_already_committed and current.reason_code == "checkpoint_stale"):
+                        raise AuditIntegrityError(current.sanitized_reason)
                 with self._connection() as conn:
                     conn.row_factory = sqlite3.Row
                     conn.execute("BEGIN IMMEDIATE")
                     try:
+                        # ── F5: re-verify linkage/identity inside the write
+                        # transaction. The preflight validated against the
+                        # pre-lock snapshot; BEGIN IMMEDIATE now holds the
+                        # SQLite write lock, so re-checking against fresh
+                        # state closes the preflight-to-transaction TOCTOU:
+                        # a concurrent writer can no longer interleave once
+                        # we hold the write lock, and a dangling lease or
+                        # stale-identity import is rejected atomically.
+                        existing_ids = {row["id"] for row in conn.execute("SELECT id FROM credentials")}
+                        inserted_ids = {rec.id for rec, existing in prepared_creds if existing is None}
+                        for rec, existing in prepared_creds:
+                            if existing is not None and rec.id not in existing_ids:
+                                raise ValueError(
+                                    f"Credential {rec.service}/{rec.alias} was removed while the restore "
+                                    "was being prepared; the restore was aborted to preserve atomicity. "
+                                    "Retry the restore."
+                                )
+                        final_cred_ids = existing_ids | inserted_ids
+                        prepared_identity = {rec.id: rec for rec, _existing in prepared_creds}
+                        for lease, _existing_lease in prepared_leases:
+                            if lease.credential_id not in final_cred_ids:
+                                raise ValueError(
+                                    f"Lease {lease.id!r} references credential {lease.credential_id!r} "
+                                    "which is not part of the backup or the vault (foreign credential linkage)."
+                                )
+                            row = conn.execute(
+                                "SELECT service, alias, credential_type FROM credentials WHERE id = ?",
+                                (lease.credential_id,),
+                            ).fetchone()
+                            if row is None:
+                                referenced = prepared_identity[lease.credential_id]
+                                referenced_identity = (referenced.service, referenced.alias, referenced.credential_type)
+                            else:
+                                referenced_identity = (row["service"], row["alias"], row["credential_type"])
+                            lease_identity = (lease.service, lease.alias, lease.credential_type)
+                            if lease_identity != referenced_identity:
+                                raise ValueError(
+                                    f"Lease {lease.id!r} broker identity "
+                                    f"({lease.service}/{lease.alias}/{lease.credential_type}) does not match "
+                                    f"credential {lease.credential_id!r} "
+                                    f"({referenced_identity[0]}/{referenced_identity[1]}/{referenced_identity[2]})."
+                                )
                         for record, existing in prepared_creds:
                             if existing:
                                 conn.execute(
@@ -1734,12 +1833,40 @@ class Vault:
                                         json.dumps(lease.metadata, sort_keys=True),
                                     ),
                                 )
-                        append_result = audit_service.append_in_transaction(conn, restore_event)
+                        # ── F6: idempotent protected event. A retry of an
+                        # already-committed restore reuses the deterministic
+                        # event id and skips the append; the credential/lease
+                        # writes above are row-idempotent, so the replay only
+                        # re-publishes the checkpoint.
+                        existing_event = conn.execute(
+                            "SELECT id FROM access_logs WHERE id = ?", (restore_event.id,)
+                        ).fetchone()
+                        if existing_event is None:
+                            append_result = audit_service.append_in_transaction(conn, restore_event)
+                        else:
+                            append_result = None
                         conn.commit()
-                        audit_service.write_checkpoint_after_append(conn, append_result)
                     except Exception:
                         conn.rollback()
                         raise
+                    # Checkpoint publication runs after commit by design: the
+                    # SQLite commit is the durability boundary for the restore
+                    # data and its protected event. A failure here must not
+                    # report a rolled-back restore (F6) — the data is durable,
+                    # and the chain verifies checkpoint_stale until the
+                    # checkpoint is re-published.
+                    try:
+                        if append_result is not None:
+                            audit_service.write_checkpoint_after_append(conn, append_result)
+                        else:
+                            audit_service.refresh_checkpoint(conn)
+                    except Exception as exc:
+                        raise RestoreCommittedCheckpointError(
+                            "Restore data committed, but the audit checkpoint could not be published "
+                            f"after commit ({exc}). Audit integrity will report checkpoint_stale until "
+                            "the checkpoint is re-published; re-run this restore (it is idempotent) or "
+                            "run 'hermes-vault audit checkpoint advance'."
+                        ) from exc
         except AuditLockError as exc:
             raise AuditIntegrityError(str(exc)) from exc
         return imported
