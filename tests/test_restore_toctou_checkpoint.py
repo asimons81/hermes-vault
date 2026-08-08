@@ -16,9 +16,9 @@ F6 — checkpoint-after-commit atomicity:
   rolled back: the data is committed, so the failure surfaces as a
   distinct ``RestoreCommittedCheckpointError`` and the chain verifies as
   ``checkpoint_stale`` until the checkpoint is re-published.
-- A retry of the same restore must not append a duplicate protected
-  restore event: the event id is deterministic and the retry re-publishes
-  the checkpoint idempotently.
+- A retry of the same restore by the same acting agent must not append a duplicate protected
+  restore event: the event id is deterministic and the retry re-publishes the
+  checkpoint idempotently.
 """
 
 from __future__ import annotations
@@ -230,6 +230,33 @@ def test_restore_retry_after_checkpoint_failure_is_idempotent(tmp_path: Path, mo
     assert result.status == AuditIntegrityStatus.healthy, (
         f"expected healthy, got {result.status} ({result.reason_code})"
     )
+
+
+def test_identical_backup_restores_keep_distinct_protected_actor_attribution(tmp_path: Path) -> None:
+    """Different actors restoring identical content get distinct protected restore events.
+
+    F6 retries remain idempotent for the same acting agent, but the event identity
+    must not collapse a real second actor into the first actor's restore record
+    (F4/F6 interaction).
+    """
+    source = _make_vault(tmp_path, name="src.db", salt="src_salt.bin")
+    source.add_credential("openai", "sk-secret", "api_key", alias="primary")
+    backup = source.export_backup()
+
+    target = _target_with_shared_key(tmp_path, source)
+    _seed_healthy_chain(target)
+
+    target.import_backup(backup, agent_id="pam")
+    target.import_backup(backup, agent_id="bob")
+
+    with sqlite3.connect(target.db_path) as conn:
+        rows = conn.execute(
+            "SELECT agent_id FROM access_logs WHERE action = 'restore' ORDER BY timestamp"
+        ).fetchall()
+    assert [row[0] for row in rows] == ["pam", "bob"]
+    assert _restore_event_count(target) == 2
+    assert AuditIntegrityService(target.db_path, target.key).verify().status == AuditIntegrityStatus.healthy
+
 
 
 def test_cli_restore_checkpoint_failure_reports_committed_not_blocked(monkeypatch, tmp_path: Path) -> None:

@@ -81,18 +81,20 @@ class RestoreCommittedCheckpointError(RuntimeError):
     """
 
 
-def _restore_event_id(backup: dict, version: str) -> str:
+def _restore_event_id(backup: dict, version: str, agent_id: str = "operator") -> str:
     """Deterministic id for a restore's protected audit event (issue #62B / F6).
 
-    Derived from the backup's restore-relevant content so a retry of the
-    same restore reuses the same event id: the import transaction then skips
-    the append instead of creating duplicate protected restore events.
+    Derived from the backup's restore-relevant content *and acting agent* so a
+    retry of the same restore by the same principal reuses the same event id,
+    while a distinct actor restoring identical content gets its own protected
+    restore attribution.
     """
     content = json.dumps(
         {
             "version": version,
             "credentials": backup.get("credentials", []),
             "leases": backup.get("leases", []),
+            "agent_id": agent_id,
         },
         sort_keys=True,
         default=str,
@@ -1777,13 +1779,13 @@ class Vault:
             prepared_leases.append((lease, self.get_lease(lease_id)))
 
         # 4. Build the protected restore event. Its id is deterministic
-        #    (derived from the backup's restore-relevant content) so a retry
-        #    of the same restore reuses the event instead of appending a
-        #    duplicate protected event (issue #62B / F6).
+        #    (derived from the backup's restore-relevant content and acting
+        #    agent) so a retry of the same restore reuses the event instead
+        #    of appending a duplicate protected event (issue #62B / F6).
         audit_service = AuditIntegrityService(self.db_path, self.key)
         audit_service.ensure_initialized()
         restore_event = AccessLogRecord(
-            id=_restore_event_id(backup, version),
+            id=_restore_event_id(backup, version, agent_id),
             agent_id=agent_id,  # real acting agent (operator default; broker passes the agent)
             service="*",
             action="restore",
