@@ -151,6 +151,72 @@ def test_restore_forged_active_lease_never_active(tmp_path: Path) -> None:
         assert restored.status is not LeaseStatus.active, "restored lease is still active"
 
 
+# ── 2b. Forged v2 evidence (review F3) ────────────────────────────────
+
+
+def test_restore_v2_marker_only_evidence_blocked(tmp_path: Path) -> None:
+    """A marker-only integrity payload must fail closed before any write.
+
+    Review F3 (SECURITY_REVIEW_62_66.md): the live restore path accepted a
+    v2 backup whose audit_integrity carried only ``integrity_available:
+    true`` (no state/segments/records). The live gate must detached-verify
+    the evidence and reject anything less than healthy — a forged marker is
+    not evidence.
+    """
+    source = _make_vault(tmp_path, name="src.db", salt="src_salt.bin")
+    source.add_credential("openai", "sk-secret", "api_key", alias="primary")
+    backup = source.export_backup(include_audit=True)
+    backup["audit_integrity"] = {
+        "integrity_available": True,
+        "state": [],
+        "segments": [],
+        "records": [],
+    }
+    backup_path = _write_backup(tmp_path / "backup.json", backup)
+
+    import shutil
+
+    shutil.copy(tmp_path / "src_salt.bin", tmp_path / "tgt_salt.bin")
+    vault = _make_vault(tmp_path, name="target.db", salt="tgt_salt.bin")
+
+    with pytest.raises(ValueError):
+        vault.import_backup(json.loads(backup_path.read_text(encoding="utf-8")))
+
+    # Nothing may be committed when the evidence contract is forged.
+    services = sorted(c.service for c in vault.list_credentials())
+    assert services == [], f"marker-only evidence restore left rows behind: {services}"
+
+
+def test_restore_v2_forged_garbage_evidence_blocked(tmp_path: Path) -> None:
+    """Structurally-present but forged evidence must fail closed (review F3).
+
+    The marker is present AND state/segments exist, but the payload cannot
+    detached-verify against the vault key. The live gate must treat this the
+    same as backup-verify: failed/incomplete evidence blocks the restore.
+    """
+    source = _make_vault(tmp_path, name="src.db", salt="src_salt.bin")
+    source.add_credential("openai", "sk-secret", "api_key", alias="primary")
+    backup = source.export_backup(include_audit=True)
+    backup["audit_integrity"] = {
+        "integrity_available": True,
+        "state": [{"migration_state": "active", "active_segment_id": "forged-seg"}],
+        "segments": [{"segment_id": "forged-seg", "chain_version": "sha256-chain-v1"}],
+        "records": [],
+    }
+    backup_path = _write_backup(tmp_path / "backup.json", backup)
+
+    import shutil
+
+    shutil.copy(tmp_path / "src_salt.bin", tmp_path / "tgt_salt.bin")
+    vault = _make_vault(tmp_path, name="target.db", salt="tgt_salt.bin")
+
+    with pytest.raises(ValueError):
+        vault.import_backup(json.loads(backup_path.read_text(encoding="utf-8")))
+
+    services = sorted(c.service for c in vault.list_credentials())
+    assert services == [], f"forged evidence restore left rows behind: {services}"
+
+
 # ── 3. Foreign linkage (restore path) ──────────────────────────────────
 
 

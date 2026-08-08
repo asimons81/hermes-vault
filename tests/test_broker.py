@@ -859,6 +859,47 @@ def test_broker_import_allowed_legacy_agent(tmp_path: Path) -> None:
     assert decision.metadata["imported_count"] == 1
 
 
+def test_broker_import_protected_event_attributes_real_agent(tmp_path: Path) -> None:
+    """F4: broker-driven imports must attribute the protected restore event.
+
+    Review F4 (SECURITY_REVIEW_62_66.md): the tamper-evident restore event
+    hardcoded ``agent_id="operator"`` even for broker-driven imports. The
+    protected chain must record the real acting agent so agent-driven
+    imports are accountable in the protected trail.
+    """
+    import sqlite3
+
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("openai", "sk-test", "api_key")
+    backup = vault.export_backup()
+
+    vault2 = Vault(tmp_path / "vault2.db", tmp_path / "salt2.bin", "test-passphrase")
+    policy = PolicyEngine(
+        PolicyConfig(
+            agents={
+                "pam": AgentPolicy(
+                    services=["openai"],
+                    capabilities=[AgentCapability.import_credentials],
+                    max_ttl_seconds=900,
+                )
+            }
+        )
+    )
+    broker = Broker(vault2, policy, StubVerifier(), AuditLogger(tmp_path / "vault2.db"))
+    decision = broker.import_credentials("pam", backup)
+    assert decision.allowed is True
+    assert decision.metadata["imported_count"] == 1
+
+    with sqlite3.connect(vault2.db_path) as conn:
+        rows = conn.execute(
+            "SELECT action, agent_id FROM access_logs WHERE action = 'restore'"
+        ).fetchall()
+    assert rows, "no protected restore audit event written"
+    assert all(agent_id == "pam" for _, agent_id in rows), (
+        f"protected restore event misattributes actor: {rows}"
+    )
+
+
 # ── OAuth freshness helpers (inlined for test independence) ─────────────
 
 

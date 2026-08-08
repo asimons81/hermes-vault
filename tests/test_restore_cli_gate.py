@@ -211,6 +211,34 @@ def test_cli_restore_v2_missing_evidence_blocked(monkeypatch, tmp_path: Path) ->
     assert target.list_credentials() == []
 
 
+def test_cli_restore_v2_marker_only_evidence_blocked(monkeypatch, tmp_path: Path) -> None:
+    """F3: marker-only v2 evidence fails closed at the CLI (no write, exit 1).
+
+    Review F3: the live restore path accepted a v2 backup whose
+    audit_integrity carried only ``integrity_available: true``. The CLI must
+    reject it with a non-zero exit exactly like backup-verify does, and the
+    target vault must remain unchanged.
+    """
+    runner = CliRunner()
+    source = _make_vault(tmp_path, name="src.db", salt="src_salt.bin")
+    source.add_credential("openai", "sk-secret", "api_key", alias="primary")
+    backup = source.export_backup(include_audit=True)
+    backup["audit_integrity"] = {
+        "integrity_available": True,
+        "state": [],
+        "segments": [],
+        "records": [],
+    }
+    backup_path = _write_backup(tmp_path / "backup.json", backup)
+
+    target = _target_with_shared_key(tmp_path, source)
+    result = _restore(runner, backup_path, target, monkeypatch)
+
+    assert result.exit_code == 1, result.output
+    assert "audit integrity evidence" in result.output.lower(), result.output
+    assert target.list_credentials() == []
+
+
 def test_cli_restore_transaction_failure_surface(monkeypatch, tmp_path: Path) -> None:
     """Transaction failure (sqlite3.Error) is surfaced as a distinct class."""
     runner = CliRunner()
@@ -220,7 +248,7 @@ def test_cli_restore_transaction_failure_surface(monkeypatch, tmp_path: Path) ->
 
     target = _target_with_shared_key(tmp_path, source)
 
-    def boom(_backup, _replace: bool = True):
+    def boom(_backup, _replace: bool = True, agent_id: str = "operator"):
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(target, "import_backup", boom)

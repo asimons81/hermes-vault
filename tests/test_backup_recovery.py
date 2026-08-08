@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 
 from hermes_vault.backup import restore_dry_run, verify_backup_file
 from hermes_vault.vault import Vault
@@ -222,7 +223,26 @@ def test_import_backup_accepts_v2(tmp_path: Path) -> None:
     vault.add_credential("openai", "sk-fake1234567890", "api_key")
     backup = vault.export_backup(include_audit=True)
 
+    # A valid v2 restore targets a vault sharing the source master key (the
+    # realistic recovery path: the same passphrase/salt material). With a
+    # mismatched key the evidence fails closed (key_mismatch), mirroring
+    # backup-verify/restore --dry-run semantics (#62A F3).
+    import shutil
+
+    shutil.copy(tmp_path / "salt.bin", tmp_path / "restored-salt.bin")
     restore_vault = Vault(tmp_path / "restored.db", tmp_path / "restored-salt.bin", "test-passphrase")
     imported = restore_vault.import_backup(backup)
     assert len(imported) == 1
     assert imported[0].service == "openai"
+
+
+def test_import_backup_v2_rejects_key_mismatch(tmp_path: Path) -> None:
+    """A v2 backup restored into a different-key vault fails closed (F3)."""
+    vault = _make_vault(tmp_path)
+    vault.add_credential("openai", "sk-fake1234567890", "api_key")
+    backup = vault.export_backup(include_audit=True)
+
+    restore_vault = Vault(tmp_path / "restored.db", tmp_path / "restored-salt.bin", "test-passphrase")
+    with pytest.raises(ValueError, match="key_mismatch"):
+        restore_vault.import_backup(backup)
+    assert restore_vault.list_credentials() == []

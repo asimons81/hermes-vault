@@ -254,6 +254,29 @@ class AuditIntegrityService:
             latest_digest=str(result["digest"]),
         )
 
+    def refresh_checkpoint(self, conn: sqlite3.Connection) -> None:
+        """Persist the authenticated checkpoint covering the current database tip.
+
+        Used after a transaction that committed no new protected record (an
+        idempotent restore replay): the checkpoint must still cover the tip
+        so the chain remains verifiable.
+        """
+        sequence, tip = self._tip(conn)
+        active = self._active(conn)
+        self._write_current_checkpoint(conn, active, latest_sequence=sequence, latest_digest=tip)
+
+    def access_log_exists(self, record_id: str) -> bool:
+        """Return whether an access-log row with *record_id* already exists.
+
+        Used by restore to detect an already-committed protected event so a
+        retry never appends a duplicate (issue #62B / F6).
+        """
+        try:
+            with self._connection() as conn:
+                return conn.execute("SELECT 1 FROM access_logs WHERE id = ?", (record_id,)).fetchone() is not None
+        except sqlite3.Error:
+            return False
+
     def _verify_checkpoint(self, conn: sqlite3.Connection, active: sqlite3.Row, sequence: int, tip: str) -> tuple[AuditCheckpointStatus, str | None]:
         checkpoint = read_checkpoint(self.checkpoint_path)
         if checkpoint is None:

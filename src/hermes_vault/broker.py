@@ -611,11 +611,16 @@ class Broker:
         )
 
     def import_credentials(self, agent_id: str, backup: dict, replace: bool = True) -> BrokerDecision:
-        """Import credentials from a backup dict.  Gated on ``import_credentials`` capability."""
+        """Import credentials from a backup dict.  Gated on ``import_credentials`` capability.
+
+        The real *agent_id* is passed through to the vault so the protected
+        (tamper-evident) restore audit event records the acting agent, not
+        the operator default (issue #62A F4).
+        """
         cap_ok, cap_reason = self.policy.can_capability(agent_id, AgentCapability.import_credentials)
         if not cap_ok:
             return self._deny(agent_id, "n/a", "import_credentials", cap_reason)
-        imported = self.vault.import_backup(backup, replace=replace)
+        imported = self.vault.import_backup(backup, replace=replace, agent_id=agent_id)
         self.audit.record(
             AccessLogRecord(
                 agent_id=agent_id,

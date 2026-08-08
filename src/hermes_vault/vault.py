@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -13,6 +14,7 @@ from uuid import uuid4
 
 from hermes_vault import _platform
 from hermes_vault.audit_integrity.checkpoint import AuditLockError, audit_write_lock
+from hermes_vault.audit_integrity.detached import DETACHED_HEALTHY, verify_detached_evidence
 from hermes_vault.audit_integrity.models import AuditIntegrityStatus
 from hermes_vault.audit_integrity.service import AuditIntegrityError, AuditIntegrityService
 from hermes_vault.crypto import (
@@ -41,6 +43,17 @@ from hermes_vault.models import (
     LeaseStatus,
     utc_now,
 )
+from hermes_vault.rotation_journal import (
+    DurableKind,
+    DurableMaterial,
+    JournalPhase,
+    RotationJournalEntry,
+    RotationJournalError,
+    decrypt_old_key_recovery,
+    encrypt_old_key_recovery,
+    looks_like_dpapi_envelope,
+    retain_contradiction_marker,
+)
 from hermes_vault.service_ids import normalize
 
 
@@ -57,6 +70,38 @@ class RotationRecoveryError(RuntimeError):
     """Raised when an interrupted master-key rotation cannot be recovered."""
 
 
+class RestoreCommittedCheckpointError(RuntimeError):
+    """The restore data committed, but the audit checkpoint could not be published.
+
+    Raised after the restore transaction has committed and its protected
+    restore event is durable; the failure is confined to the filesystem
+    checkpoint publication. The chain will verify as ``checkpoint_stale``
+    until the checkpoint is re-published (re-run the restore — it is
+    idempotent — or run ``hermes-vault audit checkpoint advance``).
+    """
+
+
+def _restore_event_id(backup: dict, version: str, agent_id: str = "operator") -> str:
+    """Deterministic id for a restore's protected audit event (issue #62B / F6).
+
+    Derived from the backup's restore-relevant content *and acting agent* so a
+    retry of the same restore by the same principal reuses the same event id,
+    while a distinct actor restoring identical content gets its own protected
+    restore attribution.
+    """
+    content = json.dumps(
+        {
+            "version": version,
+            "credentials": backup.get("credentials", []),
+            "leases": backup.get("leases", []),
+            "agent_id": agent_id,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return f"restore-{hashlib.sha256(content.encode('utf-8')).hexdigest()[:32]}"
+
+
 def _record_aad_metadata(record: "CredentialRecord") -> dict[str, Any]:
     """Authorization metadata bound into a credential row's v2 AAD."""
     return credential_aad_metadata(
@@ -66,6 +111,21 @@ def _record_aad_metadata(record: "CredentialRecord") -> dict[str, Any]:
         record.credential_type,
         record.scopes,
     )
+
+
+def _durable_from_bytes(raw: bytes, fallback_salt: bytes) -> DurableMaterial:
+    """Typed durable material from the on-disk salt bytes.
+
+    The existing salt file is either a 16-byte PBKDF derivation salt or a
+    DPAPI envelope (``HVDP`` magic + payload).  A missing/empty file falls
+    back to the new derivation salt (mirrors the legacy journal behavior of
+    recording ``old_salt = new_salt`` for a fresh vault).
+    """
+    if not raw:
+        return DurableMaterial(kind=DurableKind.pbkdf_salt, salt=fallback_salt)
+    if looks_like_dpapi_envelope(raw):
+        return DurableMaterial(kind=DurableKind.dpapi_envelope, envelope=raw)
+    return DurableMaterial(kind=DurableKind.pbkdf_salt, salt=raw)
 
 
 class Vault:
@@ -359,64 +419,182 @@ class Vault:
             ).fetchone()
         return dict(row) if row else None
 
-    def _payload_decrypts_with_salt(
-        self,
-        passphrase: str,
-        salt: bytes,
-        payload: str,
-        *,
-        version: str = CRYPTO_VERSION,
-        aad_metadata: dict[str, Any] | None = None,
-    ) -> bool:
-        try:
-            decrypt_secret_versioned(payload, derive_key(passphrase, salt), version, aad_metadata)
-            return True
-        except Exception:
-            return False
-
     def _recover_rotation_journal(self, passphrase: str) -> None:
         journal_path = self.rotation_journal_path
         if not journal_path.exists():
             return
         try:
-            journal = json.loads(journal_path.read_text(encoding="utf-8"))
-            old_salt = bytes.fromhex(journal["old_salt"])
-            new_salt = bytes.fromhex(journal["new_salt"])
+            entry = RotationJournalEntry.from_json(journal_path.read_text(encoding="utf-8"))
+        except RotationJournalError as exc:
+            # Contradiction-class failure (v1/v2 version/kind/state conflicts):
+            # retain the original journal, record the marker when available,
+            # and surface a clear recovery error (Slice C retention rule).
+            if exc.marker is not None:
+                try:
+                    retain_contradiction_marker(journal_path, exc.marker)
+                except Exception:
+                    pass
+            raise RotationRecoveryError(
+                f"Master-key rotation journal at {journal_path} is malformed or contradictory "
+                f"and was retained for operator review: {exc}"
+            ) from exc
         except Exception as exc:
             raise RotationRecoveryError(
                 f"Master-key rotation journal at {journal_path} is unreadable."
             ) from exc
 
-        first = self._first_encrypted_payload()
-        if first is None:
-            recovered_salt = new_salt if journal.get("status") == "db_committed" else old_salt
-        else:
-            version = first.get("crypto_version") or CRYPTO_VERSION
-            aad_metadata = credential_aad_metadata(
-                first.get("id", ""),
-                first.get("service", ""),
-                first.get("alias", "default"),
-                first.get("credential_type", ""),
-                json.loads(first.get("scopes") or "[]"),
-            )
-            if self._payload_decrypts_with_salt(
-                passphrase, new_salt, first["encrypted_payload"],
-                version=version, aad_metadata=aad_metadata,
-            ):
-                recovered_salt = new_salt
-            elif self._payload_decrypts_with_salt(
-                passphrase, old_salt, first["encrypted_payload"],
-                version=version, aad_metadata=aad_metadata,
-            ):
-                recovered_salt = old_salt
-            else:
-                raise RotationRecoveryError(
-                    "Interrupted master-key rotation could not be recovered with either journaled salt."
-                )
+        phase = entry.phase()
 
-        self._replace_salt_durable(recovered_salt)
+        if phase == JournalPhase.started:
+            self._recover_started_journal(entry, passphrase, journal_path)
+            return
+
+        # db_committed (pending or checkpoint_committed): the credential DB is
+        # already encrypted under the new key. Derive the new key from the
+        # journaled new durable material, unwrap the old audit/master key from
+        # the recovery envelope, reconcile the audit transition idempotently,
+        # verify a healthy audit state, and only then finalize the new durable
+        # material and delete the journal.
+        new_key = self._durable_key(entry.new_durable, passphrase)
+        if entry.old_key_recovery is None:
+            if phase == JournalPhase.db_committed_pending:
+                # Legacy v1 pending journal predates protected old-key
+                # recovery: cannot reconcile without the old audit key. Retain
+                # and surface a clear recovery error (issue #66 requirement).
+                raise RotationRecoveryError(
+                    "Legacy rotation journal is pending but lacks protected old-key "
+                    "recovery material; journal retained for operator review. Manual "
+                    "recovery is required before this vault can reopen."
+                )
+            # checkpoint_committed: the audit transition already completed, so
+            # the old key is not needed by the reconciliation seam.
+            old_key = new_key
+        else:
+            try:
+                old_key = decrypt_old_key_recovery(
+                    entry.old_key_recovery, new_key, entry.journal_id
+                )
+            except Exception as exc:
+                raise RotationRecoveryError(
+                    "Master-key rotation journal old-key recovery could not be decrypted "
+                    f"(wrong passphrase or tampered journal); journal retained: {exc}"
+                ) from exc
+
+        service = AuditIntegrityService(self.db_path, new_key)
+        try:
+            result = service.recover_pending_rotation(entry, old_master_key=old_key)
+        except AuditIntegrityError as exc:
+            raise RotationRecoveryError(
+                f"Master-key rotation journal audit reconciliation failed; journal retained: {exc}"
+            ) from exc
+        if result.status != AuditIntegrityStatus.healthy:
+            raise RotationRecoveryError(
+                "Master-key rotation journal audit verification is not healthy after recovery "
+                f"({result.sanitized_reason}); journal retained for operator review."
+            )
+
+        # All checks passed: finalize the new durable material, then delete.
+        self._write_new_durable(entry.new_durable, new_key)
         journal_path.unlink()
         self._fsync_directory(journal_path.parent)
+
+    def _recover_started_journal(
+        self,
+        entry: RotationJournalEntry,
+        passphrase: str,
+        journal_path: Path,
+    ) -> None:
+        """Recover a pre-commit ``started`` journal (safe rollback).
+
+        A started journal means the credential DB was never committed under
+        the new key, so the old durable form is still correct.  Restore it
+        and delete the journal.  If the old key does not decrypt the DB but
+        the journaled new key does, the DB was committed without the journal
+        being updated — an ambiguous state that fails closed and retains the
+        journal (issue #66: never silently delete a pending journal).
+        """
+        old_key = self._durable_key(entry.old_durable, passphrase)
+        first = self._first_encrypted_payload()
+        if first is None:
+            self._restore_durable_bytes(entry.old_durable)
+            journal_path.unlink()
+            self._fsync_directory(journal_path.parent)
+            return
+        version = first.get("crypto_version") or CRYPTO_VERSION
+        aad_metadata = credential_aad_metadata(
+            first.get("id", ""),
+            first.get("service", ""),
+            first.get("alias", "default"),
+            first.get("credential_type", ""),
+            json.loads(first.get("scopes") or "[]"),
+        )
+        if self._payload_decrypts_with_key(
+            old_key,
+            first["encrypted_payload"],
+            version=version,
+            aad_metadata=aad_metadata,
+        ):
+            self._restore_durable_bytes(entry.old_durable)
+            journal_path.unlink()
+            self._fsync_directory(journal_path.parent)
+            return
+        new_key = self._durable_key(entry.new_durable, passphrase)
+        if self._payload_decrypts_with_key(
+            new_key,
+            first["encrypted_payload"],
+            version=version,
+            aad_metadata=aad_metadata,
+        ):
+            raise RotationRecoveryError(
+                "Master-key rotation journal is 'started' but the credential DB is already "
+                "encrypted under the new key (ambiguous state); journal retained for operator review."
+            )
+        raise RotationRecoveryError(
+            "Interrupted master-key rotation could not be recovered with the provided "
+            "passphrase (neither journaled key decrypts the vault); journal retained."
+        )
+
+    def _durable_key(self, durable: DurableMaterial, passphrase: str) -> bytes:
+        """Derive/unwrap the master key for a typed durable material."""
+        if durable.kind == DurableKind.pbkdf_salt:
+            assert durable.salt is not None
+            return derive_key(passphrase, durable.salt)
+        from hermes_vault import dpapi  # deferred: keeps win32crypt off the cold path
+
+        assert durable.envelope is not None
+        return dpapi.unprotect_master_key(durable.envelope)
+
+    def _restore_durable_bytes(self, durable: DurableMaterial) -> None:
+        """Write the exact durable bytes back to the salt file (rollback)."""
+        if durable.kind == DurableKind.pbkdf_salt:
+            assert durable.salt is not None
+            self._replace_salt_durable(durable.salt)
+        else:
+            assert durable.envelope is not None
+            self._replace_salt_durable(durable.envelope)
+
+    def _write_new_durable(self, durable: DurableMaterial, new_key: bytes) -> None:
+        """Persist the new durable form (DPAPI-aware for PBKDF salts)."""
+        if durable.kind == DurableKind.pbkdf_salt:
+            assert durable.salt is not None
+            self._write_master_key_durable(durable.salt, new_key)
+        else:
+            assert durable.envelope is not None
+            self._replace_salt_durable(durable.envelope)
+
+    def _payload_decrypts_with_key(
+        self,
+        key: bytes,
+        payload: str,
+        *,
+        version: str,
+        aad_metadata: dict[str, Any] | None,
+    ) -> bool:
+        try:
+            decrypt_secret_versioned(payload, key, version, aad_metadata)
+            return True
+        except Exception:
+            return False
 
     def _secure_storage_files(self) -> None:
         _platform.secure_file(self.db_path)
@@ -1381,35 +1559,69 @@ class Vault:
             backup["audit_integrity"] = audit_service.export_evidence()  # type: ignore[assignment]
         return backup
 
-    def import_backup(self, backup: dict, replace: bool = True) -> list[CredentialRecord]:
+    def import_backup(
+        self,
+        backup: dict,
+        replace: bool = True,
+        agent_id: str = "operator",  # matches OPERATOR_AGENT_ID in mutations.py
+    ) -> list[CredentialRecord]:
         """Import credentials from a backup dict. Existing records are replaced by default.
 
         Supports hvbackup-v1 and hvbackup-v2 (credential portion only).
         Rejects metadata-only backups (entries missing encrypted_payload).
 
+        *agent_id* names the acting principal for the protected restore audit
+        event. Operator/CLI callers keep the explicit safe default
+        (``operator``); broker-driven imports pass the real agent so the
+        tamper-evident trail attributes the restore correctly (issue #62A F4).
+
         Slice E1 (issue #62): the restore is validated by a preflight routine
         before any mutation — the evidence contract is confirmed (v2 backups
-        must carry audit integrity evidence), restored leases are rejected if
-        they would mint a forged active lease identity or reference a foreign
-        credential, and every lease's broker identity must match the
-        credential it references. The import then runs as a single
-        transaction together with a protected restore audit event through the
-        shared audit seam; if any row, validation, or audit append fails, the
-        whole restore rolls back atomically.
+        must carry audit integrity evidence that detached-verifies healthy,
+        matching backup-verify / restore --dry-run semantics), restored
+        leases are rejected if they would mint a forged active lease identity
+        or reference a foreign credential, and every lease's broker identity
+        must match the credential it references. The import then runs as a
+        single transaction together with a protected restore audit event
+        through the shared audit seam; if any row, validation, or audit
+        append fails, the whole restore rolls back atomically.
+
+        Issue #62B (F5/F6): the audit write lock is held across the health
+        gate and the transaction, and lease/credential linkage plus broker
+        identity are re-verified inside ``BEGIN IMMEDIATE`` against fresh
+        state, closing the preflight-to-transaction TOCTOU. The protected
+        restore event uses a deterministic id derived from the backup content
+        so a retry is idempotent; the checkpoint is published after commit,
+        and a checkpoint publication failure raises
+        :class:`RestoreCommittedCheckpointError` — the restore data is
+        durable and the chain verifies ``checkpoint_stale`` until the
+        checkpoint is re-published, never a rolled-back restore.
         """
         version = backup.get("version")
         if version not in ("hvbackup-v1", "hvbackup-v2"):
             raise ValueError(f"Unsupported backup version: {version}")
 
         # ── E1 preflight: validate before any mutation ──
-        # 1. Evidence contract: hvbackup-v2 backups must carry the detached
-        #    audit integrity evidence (slice D prerequisite).
+        # 1. Evidence contract: hvbackup-v2 backups must carry detached
+        #    audit integrity evidence that verifies healthy (slice D
+        #    prerequisite, issue #62A F3). The integrity_available marker
+        #    alone is not evidence: the full payload is detached-verified
+        #    against the current vault key with the same healthy/complete
+        #    semantics as backup-verify / restore --dry-run, so a marker-only
+        #    or forged payload fails closed before any write.
         if version == "hvbackup-v2":
             evidence = backup.get("audit_integrity")
             if not isinstance(evidence, dict) or evidence.get("integrity_available") is not True:
                 raise ValueError(
                     "Cannot restore an hvbackup-v2 backup without audit integrity evidence. "
                     "Use a full v2 backup (with audit evidence) for restore."
+                )
+            status, reason = verify_detached_evidence(evidence, self.key)
+            if status != DETACHED_HEALTHY:
+                raise ValueError(
+                    f"Cannot restore an hvbackup-v2 backup with invalid audit integrity "
+                    f"evidence ({status}: {reason}). Run backup-verify or restore "
+                    "--dry-run for a full report."
                 )
 
         # 2. Parse and validate every credential row before writing anything.
@@ -1566,16 +1778,15 @@ class Vault:
                 })
             prepared_leases.append((lease, self.get_lease(lease_id)))
 
-        # 4. Confirm the vault's audit evidence contract is usable so the
-        #    protected restore event can be sealed in the same transaction.
+        # 4. Build the protected restore event. Its id is deterministic
+        #    (derived from the backup's restore-relevant content and acting
+        #    agent) so a retry of the same restore reuses the event instead
+        #    of appending a duplicate protected event (issue #62B / F6).
         audit_service = AuditIntegrityService(self.db_path, self.key)
         audit_service.ensure_initialized()
-        current = audit_service.verify()
-        if current.status != AuditIntegrityStatus.healthy:
-            raise AuditIntegrityError(current.sanitized_reason)
-
         restore_event = AccessLogRecord(
-            agent_id="operator",  # matches OPERATOR_AGENT_ID in mutations.py
+            id=_restore_event_id(backup, version, agent_id),
+            agent_id=agent_id,  # real acting agent (operator default; broker passes the agent)
             service="*",
             action="restore",
             decision=Decision.allow,
@@ -1591,13 +1802,71 @@ class Vault:
         )
 
         # ── E1 single transaction: credentials + leases + protected audit ──
+        # The audit write lock is held across the health gate AND the
+        # transaction, so the preflight audit verification cannot be
+        # invalidated by a concurrent audit writer before the append
+        # (issue #62B / F5).
         imported: list[CredentialRecord] = []
         try:
             with audit_write_lock(audit_service.lock_path):
+                current = audit_service.verify()
+                if current.status != AuditIntegrityStatus.healthy:
+                    # A retry of an already-committed restore is the one case
+                    # where the chain may be checkpoint_stale: the previous
+                    # attempt committed the protected event but failed to
+                    # publish the checkpoint (F6). checkpoint_stale is only
+                    # reported after the full chain walk passes, so the chain
+                    # itself is healthy and the retry may proceed to
+                    # re-publish the checkpoint instead of duplicating it.
+                    event_already_committed = audit_service.access_log_exists(restore_event.id)
+                    if not (event_already_committed and current.reason_code == "checkpoint_stale"):
+                        raise AuditIntegrityError(current.sanitized_reason)
                 with self._connection() as conn:
                     conn.row_factory = sqlite3.Row
                     conn.execute("BEGIN IMMEDIATE")
                     try:
+                        # ── F5: re-verify linkage/identity inside the write
+                        # transaction. The preflight validated against the
+                        # pre-lock snapshot; BEGIN IMMEDIATE now holds the
+                        # SQLite write lock, so re-checking against fresh
+                        # state closes the preflight-to-transaction TOCTOU:
+                        # a concurrent writer can no longer interleave once
+                        # we hold the write lock, and a dangling lease or
+                        # stale-identity import is rejected atomically.
+                        existing_ids = {row["id"] for row in conn.execute("SELECT id FROM credentials")}
+                        inserted_ids = {rec.id for rec, existing in prepared_creds if existing is None}
+                        for rec, existing in prepared_creds:
+                            if existing is not None and rec.id not in existing_ids:
+                                raise ValueError(
+                                    f"Credential {rec.service}/{rec.alias} was removed while the restore "
+                                    "was being prepared; the restore was aborted to preserve atomicity. "
+                                    "Retry the restore."
+                                )
+                        final_cred_ids = existing_ids | inserted_ids
+                        prepared_identity = {rec.id: rec for rec, _existing in prepared_creds}
+                        for lease, _existing_lease in prepared_leases:
+                            if lease.credential_id not in final_cred_ids:
+                                raise ValueError(
+                                    f"Lease {lease.id!r} references credential {lease.credential_id!r} "
+                                    "which is not part of the backup or the vault (foreign credential linkage)."
+                                )
+                            row = conn.execute(
+                                "SELECT service, alias, credential_type FROM credentials WHERE id = ?",
+                                (lease.credential_id,),
+                            ).fetchone()
+                            if row is None:
+                                referenced = prepared_identity[lease.credential_id]
+                                referenced_identity = (referenced.service, referenced.alias, referenced.credential_type)
+                            else:
+                                referenced_identity = (row["service"], row["alias"], row["credential_type"])
+                            lease_identity = (lease.service, lease.alias, lease.credential_type)
+                            if lease_identity != referenced_identity:
+                                raise ValueError(
+                                    f"Lease {lease.id!r} broker identity "
+                                    f"({lease.service}/{lease.alias}/{lease.credential_type}) does not match "
+                                    f"credential {lease.credential_id!r} "
+                                    f"({referenced_identity[0]}/{referenced_identity[1]}/{referenced_identity[2]})."
+                                )
                         for record, existing in prepared_creds:
                             if existing:
                                 conn.execute(
@@ -1710,12 +1979,40 @@ class Vault:
                                         json.dumps(lease.metadata, sort_keys=True),
                                     ),
                                 )
-                        append_result = audit_service.append_in_transaction(conn, restore_event)
+                        # ── F6: idempotent protected event. A retry of an
+                        # already-committed restore reuses the deterministic
+                        # event id and skips the append; the credential/lease
+                        # writes above are row-idempotent, so the replay only
+                        # re-publishes the checkpoint.
+                        existing_event = conn.execute(
+                            "SELECT id FROM access_logs WHERE id = ?", (restore_event.id,)
+                        ).fetchone()
+                        if existing_event is None:
+                            append_result = audit_service.append_in_transaction(conn, restore_event)
+                        else:
+                            append_result = None
                         conn.commit()
-                        audit_service.write_checkpoint_after_append(conn, append_result)
                     except Exception:
                         conn.rollback()
                         raise
+                    # Checkpoint publication runs after commit by design: the
+                    # SQLite commit is the durability boundary for the restore
+                    # data and its protected event. A failure here must not
+                    # report a rolled-back restore (F6) — the data is durable,
+                    # and the chain verifies checkpoint_stale until the
+                    # checkpoint is re-published.
+                    try:
+                        if append_result is not None:
+                            audit_service.write_checkpoint_after_append(conn, append_result)
+                        else:
+                            audit_service.refresh_checkpoint(conn)
+                    except Exception as exc:
+                        raise RestoreCommittedCheckpointError(
+                            "Restore data committed, but the audit checkpoint could not be published "
+                            f"after commit ({exc}). Audit integrity will report checkpoint_stale until "
+                            "the checkpoint is re-published; re-run this restore (it is idempotent) or "
+                            "run 'hermes-vault audit checkpoint advance'."
+                        ) from exc
         except AuditLockError as exc:
             raise AuditIntegrityError(str(exc)) from exc
         return imported
@@ -1779,21 +2076,30 @@ class Vault:
 
         new_salt = os.urandom(SALT_SIZE)
         new_key = derive_key(new_passphrase, new_salt)
-        journal = {
-            "version": "rotation-journal-v1",
-            "status": "started",
-            "old_salt": new_salt.hex(),  # placeholder; replaced below
-            "new_salt": new_salt.hex(),
-            "created_at": utc_now().isoformat(),
-        }
-        # The journal records the existing durable form (16-byte salt
-        # for legacy vaults, DPAPI envelope bytes for DPAPI vaults)
-        # under "old_salt" and the new derivation salt under "new_salt".
-        # DPAPI wrapping happens at the durable write, not in the
-        # journal (per spec §2.3 / §5.3 test 20).
+
+        # Typed v2 journal (issue #66 / Slice C): persist the old/new
+        # durable material plus the encrypted old audit/master key under
+        # the new key BEFORE the credential DB commit. The journal never
+        # stores a passphrase or a plaintext key; the recovery envelope
+        # is AES-GCM-wrapped under the new key with AAD bound to the
+        # journal id.
         existing_durable = self.salt_path.read_bytes() if self.salt_path.exists() else b""
-        journal["old_salt"] = existing_durable.hex() if existing_durable else new_salt.hex()
-        self._write_rotation_journal(journal)
+        old_durable = _durable_from_bytes(existing_durable, new_salt)
+        new_durable = DurableMaterial(kind=DurableKind.pbkdf_salt, salt=new_salt)
+        journal_id = str(uuid4())
+        recovery = encrypt_old_key_recovery(old_key, new_key, journal_id)
+        entry = RotationJournalEntry.start(
+            old_durable=old_durable,
+            new_durable=new_durable,
+            old_key_recovery=recovery,
+            journal_id=journal_id,
+        )
+        self._write_rotation_journal(entry.to_dict())
+
+        # Record the exact old audit segment BEFORE the DB commit so a
+        # crash between the commit and the db_committed journal write can
+        # still be reconciled on reopen.
+        old_segment_id = audit_result.active_segment_id or ""
 
         re_encrypted = 0
         all_records = self.list_credentials()
@@ -1823,14 +2129,29 @@ class Vault:
                 conn.rollback()
                 raise
 
-        journal["status"] = "db_committed"
-        journal["committed_at"] = utc_now().isoformat()
-        journal["audit_transition_state"] = "pending"
-        journal["old_segment_id"] = audit_result.active_segment_id or ""
-        self._write_rotation_journal(journal)
+        # After the DB commit persist db_committed/pending with the exact
+        # old audit segment captured before the commit.
+        committed = entry.mark_db_committed(
+            old_segment_id=old_segment_id,
+            old_key_recovery=recovery,
+        )
+        self._write_rotation_journal(committed.to_dict())
+
         audit_integrity.rotate_segment(new_key)
-        journal["audit_transition_state"] = "checkpoint_committed"
-        self._write_rotation_journal(journal)
+
+        final = committed.mark_audit_checkpoint_committed()
+        self._write_rotation_journal(final.to_dict())
+
+        # Verify the audit chain is healthy under the new key before
+        # finalizing the durable material and deleting the journal (issue
+        # #66: deletion only after all checks pass).
+        post_result = audit_integrity.verify()
+        if post_result.status.value != "healthy":
+            raise AuditIntegrityError(
+                f"Master-key rotation completed but audit verification is not healthy "
+                f"({post_result.sanitized_reason}); rotation journal retained for recovery."
+            )
+
         # DPAPI-aware write: when HERMES_VAULT_DPAPI=1 is set, the
         # new master key is wrapped with DPAPI on write. Otherwise the
         # legacy 16-byte derivation salt is written verbatim. No
