@@ -561,15 +561,17 @@ def _require_mutations_enabled() -> None:
 
 
 @router.get("/hello")
-def hello(_: None = Depends(_no_query)) -> dict[str, Any]:
+def hello(params: dict[str, Any] = Depends(_bounded_query)) -> dict[str, Any]:
     """Bridge hello — name, versions, and capability list.
 
+    Accepts the same bounded query params as the other read routes
+    (release/v0.24.0 behavior — the renderer version-gates via hello).
     When the mutation surface is enabled the adapter advertises the mutation
     methods and ``mutations: true`` so the renderer can version-gate. The
     child is still launched WITHOUT ``--allow-mutations`` on this GET route;
     the advertisement is an adapter-level overlay only.
     """
-    result = _call("hello", {})
+    result = _call("hello", params)
     if _mutations_enabled():
         capabilities = set(result.get("capabilities") or [])
         capabilities.update(MUTATION_METHODS)
@@ -580,9 +582,9 @@ def hello(_: None = Depends(_no_query)) -> dict[str, Any]:
 
 
 @router.get("/health")
-def health(_: None = Depends(_no_query)) -> dict[str, Any]:
+def health(params: dict[str, Any] = Depends(_bounded_query)) -> dict[str, Any]:
     """Liveness check; delegates to the bridge hello method."""
-    return _call("hello", {})
+    return _call("hello", params)
 
 
 @router.get("/overview")

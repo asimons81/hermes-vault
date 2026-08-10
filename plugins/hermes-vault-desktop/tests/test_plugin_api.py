@@ -280,10 +280,15 @@ def test_unknown_query_params_rejected(client, fake_popen, clean_env):
     assert "unknown query parameter" in resp.json()["detail"]
 
 
-def test_hello_rejects_any_query_param(client, fake_popen, clean_env):
+def test_hello_accepts_bounded_query_rejects_unknown(client, fake_popen, clean_env):
     fake_popen.stdout = _ok_result({})
-    assert client.get("/hello?profile=x").status_code == 400
-    assert client.get("/health?limit=5").status_code == 400
+    # hello/health accept the same bounded query params as other read routes
+    # (release/v0.24.0 behavior; the renderer version-gates via hello).
+    assert client.get("/hello?profile=x").status_code == 200
+    assert client.get("/health?limit=5").status_code == 200
+    # Unknown or oversized params are still rejected.
+    assert client.get("/hello?foo=1").status_code == 400
+    assert client.get(f"/hello?profile={'p' * 129}").status_code == 400
 
 
 @pytest.mark.parametrize(

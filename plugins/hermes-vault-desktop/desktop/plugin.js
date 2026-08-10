@@ -588,9 +588,12 @@ function DeleteCredentialDialog(_a) {
 
   var service = target ? target.service : ''
   var alias = target ? target.alias : ''
-  var idPrefix = target && target.id ? String(target.id).slice(0, 6) : ''
   var label = service + (alias ? ' / ' + alias : '')
-  var requiredConfirm = alias || idPrefix
+  // The bridge's deny-by-default contract (security-arch §3.3/I2) accepts ONLY
+  // the exact credential id or "service:alias" as confirmation. Deriving the
+  // token from the record keeps the type-to-confirm value identical to what
+  // the API will accept (a bare alias or id prefix would 403 every time).
+  var requiredConfirm = alias ? (service + ':' + alias) : String(target ? target.id : '')
   var typeStr = target ? String(target.credential_type || 'api_key') : ''
 
   // compute impact from leases
@@ -1067,8 +1070,12 @@ function VaultPage(_a) {
   }, [ctx, profile])
 
   var mutateCall = useCallback(function (path, body) {
-    return ctx.rest(profilePath(path, profile), { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' }, timeoutMs: MUTATION_TIMEOUT_MS })
-  }, [ctx, profile])
+    // Mutation routes reject ALL query params (security-arch I6 / §3.3):
+    // the adapter's _no_query dependency 400s any ?profile= suffix. Mutations
+    // run against the adapter's configured vault profile, so the bare path is
+    // the correct call; GET reads still carry the profile query via call().
+    return ctx.rest(path, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' }, timeoutMs: MUTATION_TIMEOUT_MS })
+  }, [ctx])
 
   var overviewQ = useQuery({ queryKey: [ID, 'overview', profile], queryFn: function () { return call('/overview') }, refetchInterval: REFRESH_INTERVAL_MS })
   var credentialsQ = useQuery({ queryKey: [ID, 'credentials', profile], queryFn: function () { return call('/credentials') }, refetchInterval: REFRESH_INTERVAL_MS })
