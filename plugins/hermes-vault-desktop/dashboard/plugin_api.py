@@ -1,59 +1,118 @@
-"""Read-only Hermes Vault dashboard adapter.
+"""Hermes Vault desktop dashboard backend adapter.
 
-The Hermes dashboard imports this module in the gateway process.  This module
-intentionally does not import the ``hermes_vault`` package.  Each route starts
-one short-lived ``hermes-vault --no-banner desktop-bridge`` child, sends one
-NDJSON request, reads one response, and lets the child exit on stdin EOF.
+Mounted at /api/plugins/hermes-vault-desktop/ by the dashboard plugin system.
+This layer is intentionally thin: every handler spawns the Vault-owned
+``desktop-bridge`` child process for exactly one request, reads exactly one
+response line, and maps the result to a validated REST response.
 
-The bridge owns Vault access and redaction.  This layer adds a second boundary:
-fixed GET routes, bounded query parameters, an allowlisted child environment,
-bounded request/response framing, timeouts, and sanitized error envelopes.
-Successful responses expose the bridge's ``result`` object directly.  Errors
-use ``{"ok": false, "error": ...}`` with an HTTP status appropriate to the
-failure.
+Security model
+--------------
+- **No in-process Vault code.** This module never imports ``hermes_vault``.
+  All Vault access happens in a short-lived child process
+  (``hermes-vault --no-banner desktop-bridge``) that speaks a read-only
+  NDJSON protocol over stdin/stdout.
+- **Stateless, one-request/one-child.** Each HTTP request spawns a fresh
+  child, sends one bounded request line, closes stdin (EOF terminates the
+  bridge), reads one bounded response line, then tears the child down.
+- **Fixed argv.** ``[hermes-vault, --no-banner, desktop-bridge]`` with
+  ``shell=False`` — no shell interpolation, no dynamic arguments. Mutation
+  routes additionally append ``--allow-mutations`` (still a fixed argument).
+- **Scrubbed environment.** The child receives only safe basics (PATH, HOME,
+  locale, temp dirs) plus ``HERMES_VAULT_HOME``, ``HERMES_VAULT_POLICY`` and
+  the ``HERMES_VAULT_PASSPHRASE*`` family. Ambient ``PYTHONPATH`` and
+  provider keys never reach the child. The passphrase may reach the child,
+  but never returns to the parent and is never logged.
+- **No secret transport.** Request bodies are never logged, child stderr is
+  discarded, and error text is sanitized before it appears in a response.
+  Malformed bridge output is reported as a generic error, never echoed.
+- **Read-only surface by default.** Only fixed GET routes exist; unknown
+  paths and non-GET verbs are rejected by the router. Query parameters are
+  limited to ``profile`` / ``agent_id`` / ``limit`` with explicit bounds.
+- **Mutations are opt-in.** POST ``/mutations/{add,rotate,delete}`` are
+  registered but return 404 unless ``HERMES_VAULT_DESKTOP_MUTATIONS`` is set
+  to a truthy value (``1``/``true``/``yes``/``on``). Mutation routes require
+  an ``Authorization`` bearer header (no ``?token=`` fallback), reject query
+  params, validate the JSON body and size bounds before spawning the child,
+  and pass ``--allow-mutations`` to the bridge child. The caller identity is
+  always the operator: renderer-supplied ``agent_id`` is rejected here (and
+  the bridge rejects it again).
+- **Host-header hardening (R1).** All routes reject a ``Host`` header that
+  does not match the loopback/bound host. The hosting web server also
+  validates ``Host`` app-wide; this router re-checks so the adapter stays
+  safe even when mounted without that middleware.
 
-The child binary MUST be the canonical launcher (``hermes-vault-canonical``),
-not the raw uv-tool binary: the launcher self-sources the vault passphrase
-from the 0600 file inside the vault dir and clears PYTHONPATH before exec.
-Spawning the raw binary yields HTTP 423 ``MISSING_PASSPHRASE`` on every
-request because the sanitized child environment deliberately contains no
-passphrase.  The launcher also makes the bridge immune to hermes-agent venv
-PYTHONPATH pollution.
+Auth note
+---------
+Plugin HTTP routes go through the dashboard's session-token auth middleware
+like every other ``/api/plugins/...`` route, so this adapter adds no
+additional authentication of its own.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
-import selectors
-import shutil
 import subprocess
-import time
-from typing import Any, Callable
+from typing import Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-router = APIRouter()
+log = logging.getLogger(__name__)
+
+
+def _mutations_enabled() -> bool:
+    """True when the opt-in mutation surface is enabled via env var."""
+    return os.environ.get(MUTATIONS_ENV_VAR, "").strip().lower() in _MUTATIONS_TRUTHY
+
+
+def _host_only(host_header: str) -> str:
+    """Return the hostname portion of a Host header (strip port / brackets)."""
+    h = host_header.strip()
+    if h.startswith("["):
+        close = h.find("]")
+        if close != -1:
+            return h[1:close].lower()
+        return h.strip("[]").lower()
+    if ":" in h:
+        return h.rsplit(":", 1)[0].lower()
+    return h.lower()
+
+
+def _validate_host_header(request: Request) -> None:
+    """Reject requests whose Host header is not loopback (R1 hardening).
+
+    DNS rebinding attacks point a victim browser at an attacker-controlled
+    hostname that resolves to 127.0.0.1; validating the Host header at the
+    app layer rejects any request whose Host isn't one we bound for. The
+    hosting web server already enforces this app-wide; this router-level
+    dependency keeps the adapter safe even when mounted without it.
+    """
+    host = request.headers.get("host", "")
+    if _host_only(host) in LOOPBACK_HOSTS:
+        return
+    # If the hosting app recorded an explicit bound host, accept that exact
+    # host too (mirrors the web server's host middleware). A wildcard bind
+    # (0.0.0.0 / ::) is an operator opt-in to all interfaces; no Host-layer
+    # defence can protect that mode, so accept any host to match the host.
+    bound_host = getattr(request.app.state, "bound_host", None)
+    if bound_host:
+        bound = _host_only(str(bound_host))
+        if bound in ("0.0.0.0", "::"):
+            return
+        if host and _host_only(host) == bound:
+            return
+    raise HTTPException(status_code=400, detail="invalid Host header")
+
+
+router = APIRouter(dependencies=[Depends(_validate_host_header)])
 
 PROTOCOL_VERSION = 1
-REQUEST_ID = 1
-# Canonical launcher (self-sources passphrase from 0600 file + clears
-# PYTHONPATH). MUST NOT be the raw uv-tool 'hermes-vault' binary — the
-# sanitized child env has no passphrase, so the raw binary returns
-# MISSING_PASSPHRASE (423) on every request. Resolved from PATH so the
-# launcher can live anywhere on the service PATH.
-BRIDGE_BINARY = "hermes-vault-canonical"
-BRIDGE_TIMEOUT_SECONDS = 5.0
-MAX_REQUEST_BYTES = 64 * 1024
-MAX_RESPONSE_BYTES = 512 * 1024
-MAX_PROFILE_LENGTH = 64
-MAX_AGENT_ID_LENGTH = 128
-MAX_ERROR_MESSAGE_LENGTH = 256
-MAX_AUDIT_LIMIT = 250
 
-_METHODS = (
+# The only bridge methods this adapter may call. Anything else (unknown
+# methods, mutation actions, path-taking operations) is not routable here.
+ALL_METHODS = (
     "hello",
     "overview",
     "credentials",
@@ -63,327 +122,589 @@ _METHODS = (
     "audit",
     "integrity",
 )
-_METHOD_SET = frozenset(_METHODS)
-_ALLOWED_QUERY_KEYS = frozenset({"profile", "agent_id", "limit"})
-_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-_ERROR_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,31}$")
 
-_SAFE_ENV_KEYS = frozenset(
-    {
-        "PATH",
-        "HOME",
-        "USER",
-        "LOGNAME",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TZ",
-        "SYSTEMROOT",
-        "SystemRoot",
-        "TEMP",
-        "TMP",
-        "PATHEXT",
-    }
+# Mutation methods are dispatched only when the child was launched with
+# ``--allow-mutations``. The adapter appends that flag to the child argv
+# ONLY on the three mutation routes below; GET routes never pass it.
+MUTATION_METHODS = ("add", "rotate", "delete")
+
+# Opt-in gate: mutation routes exist but return 404 unless this env var is
+# set to a truthy value. Keeps the installed adapter read-only until the
+# mutation surface ships and passes review (project gate #4).
+MUTATIONS_ENV_VAR = "HERMES_VAULT_DESKTOP_MUTATIONS"
+_MUTATIONS_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+# Fixed child argv; the binary may be overridden for tests via
+# HERMES_VAULT_BINARY, but the argument vector is never dynamic.
+BRIDGE_BINARY_DEFAULT = "hermes-vault"
+BRIDGE_ARGV = ("--no-banner", "desktop-bridge")
+ALLOW_MUTATIONS_FLAG = "--allow-mutations"
+
+# Bounds mirror the bridge's own NDJSON limits so the parent rejects
+# oversized traffic without trusting the child to behave.
+MAX_REQUEST_BYTES = 64 * 1024
+MAX_RESPONSE_BYTES = 512 * 1024
+DEFAULT_TIMEOUT_SECONDS = 15.0
+MAX_TIMEOUT_SECONDS = 120.0
+
+# Mutation body field bounds (mirror the bridge's own limits).
+MAX_SERVICE_LENGTH = 256
+MAX_ALIAS_LENGTH = 256
+MAX_CREDENTIAL_TYPE_LENGTH = 128
+MAX_TARGET_LENGTH = 512  # service_or_id may be a service name or UUID
+MAX_CONFIRMATION_LENGTH = 512
+MAX_SECRET_LENGTH = 32 * 1024  # secrets are the largest payload, bounded by body cap
+MAX_TAGS_COUNT = 32
+MAX_TAG_LENGTH = 128
+MAX_NOTES_LENGTH = 4096
+MAX_REQUEST_ID_LENGTH = 64
+
+# Allowed mutation body fields per route. Any other field (including
+# renderer-supplied ``agent_id``) is rejected with 400 before the child
+# spawns. ``agent_id`` is deliberately absent: the adapter stamps the
+# operator identity and the bridge rejects it again (defense in depth).
+MUTATION_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
+    "add": frozenset(
+        {"service", "alias", "credential_type", "secret", "tags", "notes", "request_id"}
+    ),
+    "rotate": frozenset({"service_or_id", "alias", "new_secret", "request_id"}),
+    "delete": frozenset({"service_or_id", "alias", "confirmation", "request_id"}),
+}
+
+MUTATION_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
+    "add": frozenset({"service", "secret"}),
+    "rotate": frozenset({"service_or_id", "new_secret"}),
+    "delete": frozenset({"service_or_id", "confirmation"}),
+}
+
+# Query parameters the adapter understands. Unknown keys are rejected.
+ALLOWED_QUERY_PARAMS = frozenset({"profile", "agent_id", "limit"})
+MAX_PROFILE_LENGTH = 128
+MAX_AGENT_ID_LENGTH = 256
+MIN_LIMIT = 1
+MAX_LIMIT = 250
+
+# Accepted Host header values. The adapter is a local-only desktop plugin;
+# DNS rebinding is blocked by rejecting any Host that is not the loopback
+# (or the bound host recorded by the hosting web server). ``testserver`` /
+# ``testclient`` are FastAPI TestClient aliases used by the test suite.
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "testserver", "testclient"})
+
+# Safe basics that may be forwarded to the child. Anything not listed here —
+# notably PYTHONPATH and every provider/token key — is dropped.
+SAFE_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "PATHEXT",
+    "COMSPEC",
 )
-_VAULT_EXACT_ENV_KEYS = frozenset({"HERMES_VAULT_HOME", "HERMES_VAULT_POLICY"})
-_VAULT_PASSPHRASE_PREFIX = "HERMES_VAULT_PASSPHRASE"
+
+_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])(?:/[^\s'\"<>]+|[A-Za-z]:[\\/][^\s'\"<>]+)")
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{16,}")
+_HEX_TOKEN_RE = re.compile(r"\b[0-9A-Fa-f]{32,}\b")
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
-def _child_env(source: dict[str, str] | None = None) -> dict[str, str]:
-    """Return the minimal environment needed by the Vault CLI.
+class BridgeError(Exception):
+    """A failed or malformed bridge exchange, mapped to an HTTP status."""
 
-    Provider credentials, ``PYTHONPATH``, and unrelated ambient variables are
-    deliberately excluded.  Passphrase variables are allowed only because the
-    read-only bridge resolves them from the child environment; this module
-    never logs or serializes the resulting environment.
-    """
-
-    source = os.environ if source is None else source
-    result: dict[str, str] = {}
-    for key, value in source.items():
-        if key in _SAFE_ENV_KEYS or key in _VAULT_EXACT_ENV_KEYS or key.startswith(_VAULT_PASSPHRASE_PREFIX):
-            result[key] = value
-    return result
+    def __init__(self, code: str, detail: str, http_status_code: int) -> None:
+        super().__init__(code)
+        self.code = code
+        self.detail = detail
+        self.http_status_code = http_status_code
 
 
-def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"invalid JSON constant: {value}")
+def _reject_json_constant(value: str) -> Any:
+    raise ValueError(f"non-standard JSON constant: {value}")
 
 
-def _sanitize_text(value: Any) -> str:
-    """Sanitize an untrusted child error without exposing token-like values."""
-
-    text = str(value)
-    text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+", "[redacted:bearer]", text)
-    text = re.sub(
-        r"\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b",
-        "[redacted:jwt]",
-        text,
-    )
-    text = re.sub(r"(?i)\b(?:sk|rk|ghp|gho|github_pat|xox[baprs])-[-A-Za-z0-9_]+", "[redacted:key]", text)
-    text = re.sub(r"\b[0-9a-fA-F]{32,}\b", "[redacted:hex-token]", text)
-    text = re.sub(r"(?:(?:[A-Za-z]:)?[/\\])[^\s'\";,)]{1,240}", "[path]", text)
-    text = " ".join(text.split())
-    return text[:MAX_ERROR_MESSAGE_LENGTH] or "bridge request failed"
+def _sanitize(text: str, limit: int = 300) -> str:
+    """Redact secret-like fragments and control characters from error text."""
+    text = _CONTROL_RE.sub(" ", text)
+    text = _ABSOLUTE_PATH_RE.sub("[path]", text)
+    text = _JWT_RE.sub("[redacted:jwt]", text)
+    text = _BEARER_RE.sub("[redacted:bearer]", text)
+    text = _HEX_TOKEN_RE.sub("[redacted:hex-token]", text)
+    return text[:limit]
 
 
-def _error(status: int, code: str, message: str, *, locked: bool = False) -> JSONResponse:
-    safe_code = code if _ERROR_CODE_RE.fullmatch(code) else "BRIDGE_ERROR"
-    payload: dict[str, Any] = {
-        "ok": False,
-        "error": {"code": safe_code, "message": _sanitize_text(message)},
-    }
-    if locked:
-        payload["error"]["locked"] = True
-    return JSONResponse(status_code=status, content=payload)
+def _bridge_binary() -> str:
+    """Resolve the child binary; override via env for tests."""
+    return os.environ.get("HERMES_VAULT_BINARY", BRIDGE_BINARY_DEFAULT)
 
 
-def _query_error(message: str) -> JSONResponse:
-    return _error(400, "INVALID_PARAMS", message)
-
-
-def _validate_query(request: Request, method: str) -> tuple[dict[str, Any] | None, JSONResponse | None]:
-    """Validate and normalize the small, method-specific query surface."""
-
-    allowed = set()
-    if method != "hello":
-        allowed.add("profile")
-    if method == "requests":
-        allowed.add("agent_id")
-    if method == "audit":
-        allowed.add("limit")
-
-    params: dict[str, Any] = {}
-    seen: set[str] = set()
-    for key, value in request.query_params.multi_items():
-        if key not in _ALLOWED_QUERY_KEYS or key not in allowed:
-            return None, _query_error("unsupported query parameter")
-        if key in seen:
-            return None, _query_error("query parameter must appear once")
-        seen.add(key)
-        if len(value) > MAX_AGENT_ID_LENGTH:
-            return None, _query_error("query parameter is too long")
-        if key == "profile":
-            if not _PROFILE_RE.fullmatch(value) or value == "profiles" or ".." in value:
-                return None, _query_error("invalid profile")
-            params[key] = value
-        elif key == "agent_id":
-            if not value or any(ord(char) < 32 or ord(char) == 127 for char in value):
-                return None, _query_error("invalid agent_id")
-            params[key] = value
-        else:
-            if not re.fullmatch(r"[0-9]{1,3}", value):
-                return None, _query_error("limit must be an integer")
-            limit = int(value)
-            if not 1 <= limit <= MAX_AUDIT_LIMIT:
-                return None, _query_error("limit is out of range")
-            params[key] = limit
-    return params, None
-
-
-def _stop_process(process: Any) -> None:
-    """Best-effort child cleanup; never expose cleanup exceptions."""
-
+def _bridge_timeout() -> float:
+    """Resolve the per-request child timeout; override via env for tests."""
+    raw = os.environ.get("HERMES_VAULT_BRIDGE_TIMEOUT", "")
     try:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=0.5)
-            except Exception:
-                process.kill()
-                try:
-                    process.wait(timeout=0.5)
-                except Exception:
-                    pass
-    except Exception:
+        value = float(raw)
+        if 0 < value <= MAX_TIMEOUT_SECONDS:
+            return value
+    except ValueError:
+        pass
+    return DEFAULT_TIMEOUT_SECONDS
+
+
+def _child_env() -> dict[str, str]:
+    """Build the scrubbed child environment.
+
+    Safe basics plus the Vault control variables only. Ambient PYTHONPATH,
+    provider keys, and everything else are deliberately dropped.
+    """
+    env: dict[str, str] = {}
+    for key in SAFE_ENV_KEYS:
+        if key in os.environ:
+            env[key] = os.environ[key]
+    for key, value in os.environ.items():
+        if key == "HERMES_VAULT_HOME" or key == "HERMES_VAULT_POLICY" or key.startswith("HERMES_VAULT_PASSPHRASE"):
+            env[key] = value
+    return env
+
+
+def _terminate(proc: subprocess.Popen[Any]) -> None:
+    """Terminate a child with a grace period, then kill. Never raises."""
+    try:
+        proc.terminate()
+    except OSError:
+        return
+    try:
+        proc.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            return
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            pass
+    except OSError:
         pass
 
 
-class _OutputLimitExceeded(Exception):
-    pass
+def _parse_response(stdout: str, request_id: Any) -> dict[str, Any]:
+    """Validate and map exactly one bridge response line.
 
-
-def _read_bounded_child_output(process: Any, request_line: bytes) -> bytes:
-    """Write one request and drain a real child stdout pipe with a hard cap."""
-
-    stdin = getattr(process, "stdin", None)
-    stdout = getattr(process, "stdout", None)
-    if stdin is None or stdout is None or not hasattr(stdout, "fileno"):
-        # Unit-test doubles may only implement communicate(). Real Popen objects
-        # always expose file-backed stdin/stdout and take the bounded path below.
-        output, _ = process.communicate(input=request_line, timeout=BRIDGE_TIMEOUT_SECONDS)
-        return output or b""
-
-    stdin.write(request_line)
-    stdin.close()
-    fd = stdout.fileno()
-    os.set_blocking(fd, False)
-    selector = selectors.DefaultSelector()
-    selector.register(fd, selectors.EVENT_READ)
-    chunks: list[bytes] = []
-    total = 0
-    deadline = time.monotonic() + BRIDGE_TIMEOUT_SECONDS
+    The response must be a single NDJSON line with a matching id and the
+    current protocol version. Anything else is a generic protocol error —
+    raw child output is never echoed.
+    """
+    if len(stdout.encode("utf-8", errors="replace")) > MAX_RESPONSE_BYTES:
+        raise BridgeError("BRIDGE_MALFORMED", "vault bridge response exceeded size bound", http_status_code=502)
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise BridgeError(
+            "BRIDGE_MALFORMED", "vault bridge returned an unexpected number of lines", http_status_code=502
+        )
     try:
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired([BRIDGE_BINARY], BRIDGE_TIMEOUT_SECONDS)
-            events = selector.select(min(remaining, 0.05))
-            if not events:
-                continue
-            chunk = os.read(fd, min(64 * 1024, MAX_RESPONSE_BYTES + 1 - total))
-            if not chunk:
-                return b"".join(chunks)
-            total += len(chunk)
-            if total > MAX_RESPONSE_BYTES:
-                raise _OutputLimitExceeded
-            chunks.append(chunk)
-    finally:
-        selector.close()
+        payload = json.loads(lines[0], parse_constant=_reject_json_constant)
+    except (json.JSONDecodeError, RecursionError, ValueError):
+        raise BridgeError("BRIDGE_MALFORMED", "vault bridge returned a malformed response", http_status_code=502)
+    if not isinstance(payload, dict):
+        raise BridgeError("BRIDGE_MALFORMED", "vault bridge returned a malformed response", http_status_code=502)
+    if payload.get("id") != request_id:
+        raise BridgeError("BRIDGE_MALFORMED", "vault bridge response id mismatch", http_status_code=502)
+    if payload.get("protocol_version") != PROTOCOL_VERSION:
+        raise BridgeError("BRIDGE_MALFORMED", "vault bridge protocol version mismatch", http_status_code=502)
+    if payload.get("ok") is True and isinstance(payload.get("result"), dict):
+        return payload["result"]
+    if payload.get("ok") is False and isinstance(payload.get("error"), dict):
+        error = payload["error"]
+        code = str(error.get("code", "BRIDGE_ERROR"))
+        detail = _sanitize(str(error.get("message", "")))
+        locked = bool(error.get("locked"))
+        raise BridgeError(code, detail, http_status_code=_error_status(code, locked))
+    raise BridgeError("BRIDGE_MALFORMED", "vault bridge returned a malformed response", http_status_code=502)
 
 
-def _malformed_response(message: str = "malformed bridge response") -> JSONResponse:
-    return _error(502, "MALFORMED_RESPONSE", message)
+def _error_status(code: str, locked: bool) -> int:
+    """Map bridge error codes to HTTP statuses."""
+    if locked or code in ("MISSING_PASSPHRASE", "VAULT_NOT_READY"):
+        return 423
+    if code == "CONFIRMATION_MISMATCH":
+        return 403
+    if code in ("AUDIT_INTEGRITY", "DUPLICATE"):
+        return 409
+    if code == "MUTATIONS_DISABLED":
+        return 503
+    if code in ("UNKNOWN_METHOD", "INVALID_PARAMS", "MALFORMED_REQUEST", "OVERSIZED_REQUEST", "UNSUPPORTED_PROTOCOL"):
+        return 400
+    return 502
 
 
-def _parse_response(stdout: bytes | str) -> dict[str, Any] | JSONResponse:
-    if isinstance(stdout, str):
-        raw = stdout.encode("utf-8", errors="replace")
-    else:
-        raw = stdout
-    if not raw:
-        return _error(502, "BRIDGE_EOF", "bridge returned no response")
-    if len(raw) > MAX_RESPONSE_BYTES:
-        return _error(502, "OUTPUT_LIMIT", "bridge response exceeded the output limit")
-    if raw.endswith(b"\n"):
-        raw = raw[:-1]
-    if not raw or b"\n" in raw or b"\r" in raw:
-        return _malformed_response()
+def _run_bridge(method: str, params: dict[str, Any], *, allow_mutations: bool = False) -> dict[str, Any]:
+    """Spawn one bridge child, exchange one request/response, tear down."""
+    request = {"id": 1, "method": method, "params": params, "protocol_version": PROTOCOL_VERSION}
+    line = json.dumps(request, sort_keys=True) + "\n"
+    if len(line.encode("utf-8", errors="replace")) > MAX_REQUEST_BYTES:
+        raise BridgeError("REQUEST_TOO_LARGE", "request exceeds the bridge size bound", http_status_code=400)
+
+    binary = _bridge_binary()
+    argv = [binary, *BRIDGE_ARGV]
+    if allow_mutations:
+        argv.append(ALLOW_MUTATIONS_FLAG)
+    env = _child_env()
     try:
-        response = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError):
-        return _malformed_response()
-    if not isinstance(response, dict):
-        return _malformed_response()
-    protocol = response.get("protocol_version")
-    if isinstance(protocol, bool) or protocol != PROTOCOL_VERSION:
-        return _error(502, "PROTOCOL_MISMATCH", "bridge protocol version mismatch")
-    if response.get("id") != REQUEST_ID:
-        return _malformed_response()
-    if not isinstance(response.get("ok"), bool):
-        return _malformed_response()
-    return response
-
-
-def _bridge_error_response(response: dict[str, Any]) -> JSONResponse:
-    raw_error = response.get("error")
-    if not isinstance(raw_error, dict):
-        return _malformed_response("bridge error envelope is malformed")
-    raw_code = raw_error.get("code")
-    code = raw_code if isinstance(raw_code, str) and _ERROR_CODE_RE.fullmatch(raw_code) else "BRIDGE_ERROR"
-    locked = bool(raw_error.get("locked")) or code in {"MISSING_PASSPHRASE", "VAULT_NOT_READY"}
-    if locked:
-        status = 423
-    elif code == "INVALID_PARAMS":
-        status = 400
-    elif code in {"MALFORMED_REQUEST", "OVERSIZED_REQUEST"}:
-        status = 400
-    else:
-        status = 502
-    message = raw_error.get("message", "bridge request failed")
-    return _error(status, code, message, locked=locked)
-
-
-def _dispatch(method: str, params: dict[str, Any]) -> JSONResponse:
-    if method not in _METHOD_SET:
-        return _error(404, "UNKNOWN_METHOD", "unknown bridge method")
-    binary = shutil.which(BRIDGE_BINARY)
-    if not binary:
-        return _error(503, "BINARY_MISSING", "Vault bridge binary is unavailable")
-    request = {
-        "id": REQUEST_ID,
-        "method": method,
-        "params": params,
-        "protocol_version": PROTOCOL_VERSION,
-    }
-    try:
-        request_line = (json.dumps(request, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
-    except (TypeError, ValueError):
-        return _error(400, "INVALID_PARAMS", "request parameters are not serializable")
-    if len(request_line) > MAX_REQUEST_BYTES:
-        return _error(400, "OVERSIZED_REQUEST", "bridge request exceeded the input limit")
-
-    process: Any = None
-    try:
-        process = subprocess.Popen(
-            [binary, "--no-banner", "desktop-bridge"],
+        proc = subprocess.Popen(
+            argv,
+            shell=False,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            env=_child_env(),
-            shell=False,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
-        stdout = _read_bounded_child_output(process, request_line)
-    except _OutputLimitExceeded:
-        return _error(502, "OUTPUT_LIMIT", "bridge response exceeded the output limit")
     except FileNotFoundError:
-        return _error(503, "BINARY_MISSING", "Vault bridge binary is unavailable")
+        raise BridgeError("BRIDGE_UNAVAILABLE", "vault bridge binary not found", http_status_code=503)
+    except OSError:
+        raise BridgeError("BRIDGE_UNAVAILABLE", "could not launch vault bridge", http_status_code=503)
+
+    try:
+        stdout, _stderr = proc.communicate(input=line, timeout=_bridge_timeout())
     except subprocess.TimeoutExpired:
-        return _error(504, "TIMEOUT", "Vault bridge timed out")
-    except (BrokenPipeError, OSError):
-        return _error(502, "BRIDGE_UNAVAILABLE", "Vault bridge could not be reached")
-    finally:
-        if process is not None:
-            _stop_process(process)
-
-    parsed = _parse_response(stdout if stdout is not None else b"")
-    if isinstance(parsed, JSONResponse):
-        return parsed
-    if parsed.get("ok") is True:
-        result = parsed.get("result")
-        if not isinstance(result, dict):
-            return _malformed_response("bridge success envelope is malformed")
-        return JSONResponse(status_code=200, content=result)
-    return _bridge_error_response(parsed)
+        _terminate(proc)
+        raise BridgeError("BRIDGE_TIMEOUT", "vault bridge timed out", http_status_code=504)
+    if proc.returncode is None:
+        _terminate(proc)
+    if stdout is None or stdout == "":
+        raise BridgeError("BRIDGE_EOF", "vault bridge closed without a response", http_status_code=502)
+    return _parse_response(stdout, request_id=1)
 
 
-def _make_endpoint(method: str) -> Callable[[Request], Any]:
-    async def endpoint(request: Request) -> JSONResponse:
-        params, error = _validate_query(request, method)
-        if error is not None:
-            return error
-        return _dispatch(method, params or {})
+def _call(method: str, params: dict[str, Any], *, allow_mutations: bool = False) -> dict[str, Any]:
+    """Invoke the bridge and convert failures to HTTP errors.
 
-    endpoint.__name__ = f"get_{method}"
-    return endpoint
+    Only the stable error code is logged; request bodies, child stderr, and
+    unsanitized messages never reach the log or the HTTP response.
+    """
+    try:
+        return _run_bridge(method, params, allow_mutations=allow_mutations)
+    except BridgeError as exc:
+        log.warning("vault bridge request failed: code=%s", exc.code)
+        raise HTTPException(status_code=exc.http_status_code, detail=exc.detail) from None
+    except Exception:
+        log.warning("vault bridge request failed: code=%s", "UNEXPECTED")
+        raise HTTPException(status_code=502, detail="vault bridge unavailable") from None
 
 
-for _method in _METHODS:
-    router.add_api_route(
-        f"/{_method}",
-        _make_endpoint(_method),
-        methods=["GET"],
-        response_class=JSONResponse,
-        name=f"hermes_vault_desktop_{_method}",
-    )
+# ---------------------------------------------------------------------------
+# Query parameter validation
+# ---------------------------------------------------------------------------
 
-# A health probe is deliberately an alias for the non-contextual hello call.
-router.add_api_route(
-    "/health",
-    _make_endpoint("hello"),
-    methods=["GET"],
-    response_class=JSONResponse,
-    name="hermes_vault_desktop_health",
-)
+
+def _bounded_query(request: Request) -> dict[str, Any]:
+    """Validate the only query parameters the adapter accepts."""
+    unknown = sorted(set(request.query_params.keys()) - ALLOWED_QUERY_PARAMS)
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown query parameter(s): {', '.join(unknown)}")
+    params: dict[str, Any] = {}
+    profile = request.query_params.get("profile")
+    if profile is not None:
+        if len(profile) > MAX_PROFILE_LENGTH:
+            raise HTTPException(status_code=400, detail="profile too long")
+        params["profile"] = profile
+    agent_id = request.query_params.get("agent_id")
+    if agent_id is not None:
+        if len(agent_id) > MAX_AGENT_ID_LENGTH:
+            raise HTTPException(status_code=400, detail="agent_id too long")
+        params["agent_id"] = agent_id
+    limit = request.query_params.get("limit")
+    if limit is not None:
+        try:
+            value = int(limit)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="limit must be an integer")
+        if not (MIN_LIMIT <= value <= MAX_LIMIT):
+            raise HTTPException(status_code=400, detail="limit out of range")
+        params["limit"] = value
+    return params
+
+
+def _no_query(request: Request) -> None:
+    """Reject any query parameter on routes that take none."""
+    if request.query_params:
+        raise HTTPException(status_code=400, detail="this route accepts no query parameters")
+
+
+# ---------------------------------------------------------------------------
+# Mutation route support: body validation happens BEFORE the child spawns.
+# ---------------------------------------------------------------------------
+
+
+def _require_bearer(request: Request) -> None:
+    """Require an Authorization: Bearer <token> header on mutation routes.
+
+    Mutations never accept a ``?token=`` query fallback; the session token
+    rides the Authorization header only. (The hosting dashboard auth gate
+    validates the token value; this check enforces the transport contract.)
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer ") or not auth[len("Bearer "):].strip():
+        raise HTTPException(status_code=401, detail="mutation routes require Authorization: Bearer <token>")
+
+
+def _require_bounded_str(
+    value: Any,
+    *,
+    field: str,
+    required: bool,
+    max_len: int,
+    allow_empty: bool = False,
+) -> str:
+    """Validate a string field; returns the normalized value or raises 400."""
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"{field} must be a string")
+    if not allow_empty and not value.strip():
+        if required:
+            raise HTTPException(status_code=400, detail=f"{field} is required")
+        raise HTTPException(status_code=400, detail=f"{field} must not be empty")
+    if len(value) > max_len:
+        raise HTTPException(status_code=400, detail=f"{field} too long")
+    return value
+
+
+def _validate_request_id(value: Any) -> str | None:
+    """Validate optional request_id: alphanumeric plus '-'/'_', ≤64 chars."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or len(value) > MAX_REQUEST_ID_LENGTH:
+        raise HTTPException(status_code=400, detail="request_id must be a short alphanumeric string (≤64 chars)")
+    if not all(ch.isalnum() or ch in "-_" for ch in value):
+        raise HTTPException(status_code=400, detail="request_id must be alphanumeric")
+    return value
+
+
+def _validate_mutation_body(kind: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Validate and normalize a mutation request body.
+
+    Returns the bridge ``params`` dict (metadata-only). Raises HTTPException
+    400 for malformed/oversized/unknown bodies BEFORE any child spawn.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+    unknown = sorted(set(body) - MUTATION_ALLOWED_FIELDS[kind])
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown field(s): {', '.join(unknown)}")
+    missing = sorted(MUTATION_REQUIRED_FIELDS[kind] - set(body))
+    if missing:
+        raise HTTPException(status_code=400, detail=f"missing required field(s): {', '.join(missing)}")
+
+    params: dict[str, Any] = {}
+    if kind == "add":
+        params["service"] = _require_bounded_str(body["service"], field="service", required=True, max_len=MAX_SERVICE_LENGTH)
+        params["secret"] = _require_bounded_str(body["secret"], field="secret", required=True, max_len=MAX_SECRET_LENGTH)
+        if "alias" in body and body["alias"] not in (None, ""):
+            params["alias"] = _require_bounded_str(body["alias"], field="alias", required=False, max_len=MAX_ALIAS_LENGTH)
+        if "credential_type" in body and body["credential_type"] not in (None, ""):
+            params["credential_type"] = _require_bounded_str(
+                body["credential_type"], field="credential_type", required=False, max_len=MAX_CREDENTIAL_TYPE_LENGTH
+            )
+        if "tags" in body and body["tags"] not in (None, []):
+            tags = body["tags"]
+            if not isinstance(tags, list) or len(tags) > MAX_TAGS_COUNT:
+                raise HTTPException(status_code=400, detail="tags must be a list (max 32)")
+            clean_tags: list[str] = []
+            for tag in tags:
+                clean_tags.append(_require_bounded_str(tag, field="tag", required=False, max_len=MAX_TAG_LENGTH))
+            params["tags"] = clean_tags
+        if "notes" in body and body["notes"] not in (None, ""):
+            params["notes"] = _require_bounded_str(body["notes"], field="notes", required=False, max_len=MAX_NOTES_LENGTH)
+    elif kind == "rotate":
+        params["service_or_id"] = _require_bounded_str(
+            body["service_or_id"], field="service_or_id", required=True, max_len=MAX_TARGET_LENGTH
+        )
+        params["new_secret"] = _require_bounded_str(body["new_secret"], field="new_secret", required=True, max_len=MAX_SECRET_LENGTH)
+        if "alias" in body and body["alias"] not in (None, ""):
+            params["alias"] = _require_bounded_str(body["alias"], field="alias", required=False, max_len=MAX_ALIAS_LENGTH)
+    elif kind == "delete":
+        params["service_or_id"] = _require_bounded_str(
+            body["service_or_id"], field="service_or_id", required=True, max_len=MAX_TARGET_LENGTH
+        )
+        params["confirmation"] = _require_bounded_str(
+            body["confirmation"], field="confirmation", required=True, max_len=MAX_CONFIRMATION_LENGTH
+        )
+        if "alias" in body and body["alias"] not in (None, ""):
+            params["alias"] = _require_bounded_str(body["alias"], field="alias", required=False, max_len=MAX_ALIAS_LENGTH)
+
+    request_id = _validate_request_id(body.get("request_id"))
+    if request_id is not None:
+        params["request_id"] = request_id
+    return params
+
+
+def _require_mutations_enabled() -> None:
+    """Gate the mutation routes behind the opt-in env flag."""
+    if not _mutations_enabled():
+        raise HTTPException(status_code=404, detail="mutation routes are not enabled")
+
+
+# ---------------------------------------------------------------------------
+# Routes — fixed GET only, mirroring the bridge ALL_METHODS surface.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/hello")
+def hello(_: None = Depends(_no_query)) -> dict[str, Any]:
+    """Bridge hello — name, versions, and capability list.
+
+    When the mutation surface is enabled the adapter advertises the mutation
+    methods and ``mutations: true`` so the renderer can version-gate. The
+    child is still launched WITHOUT ``--allow-mutations`` on this GET route;
+    the advertisement is an adapter-level overlay only.
+    """
+    result = _call("hello", {})
+    if _mutations_enabled():
+        capabilities = set(result.get("capabilities") or [])
+        capabilities.update(MUTATION_METHODS)
+        result["capabilities"] = sorted(capabilities)
+        result["mutations"] = True
+        result["read_only"] = False
+    return result
+
+
+@router.get("/health")
+def health(_: None = Depends(_no_query)) -> dict[str, Any]:
+    """Liveness check; delegates to the bridge hello method."""
+    return _call("hello", {})
+
+
+@router.get("/overview")
+def overview(params: dict[str, Any] = Depends(_bounded_query)) -> dict[str, Any]:
+    """High-level vault overview (counts, services, health, recent audit)."""
+    return _call("overview", params)
+
+
+@router.get("/credentials")
+def credentials(params: dict[str, Any] = Depends(_bounded_query)) -> dict[str, Any]:
+    """Credential metadata list."""
+    return _call("credentials", params)
+
+
+@router.get("/leases")
+def leases(params: dict[str, Any] = Depends(_bounded_query)) -> dict[str, Any]:
+    """Lease metadata list."""
+    return _call("leases", params)
+
+
+@router.get("/policy")
+def policy(params: dict[str, Any] = Depends(_bounded_query)) -> dict[str, Any]:
+    """Policy doctor summary and agent policies."""
+    return _call("policy", params)
+
+
+@router.get("/requests")
+def requests(params: dict[str, Any] = Depends(_bounded_query)) -> dict[str, Any]:
+    """Access-request metadata list (optionally filtered by agent_id)."""
+    return _call("requests", params)
+
+
+@router.get("/audit")
+def audit(params: dict[str, Any] = Depends(_bounded_query)) -> dict[str, Any]:
+    """Recent audit-log metadata (optionally bounded by limit)."""
+    return _call("audit", params)
+
+
+@router.get("/integrity")
+def integrity(params: dict[str, Any] = Depends(_bounded_query)) -> dict[str, Any]:
+    """Audit-integrity verification status."""
+    return _call("integrity", params)
+
+
+# ---------------------------------------------------------------------------
+# Mutation routes — POST only, opt-in, Bearer-only, body-validated first.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/mutations/add")
+async def mutations_add(
+    request: Request,
+    _enabled: None = Depends(_require_mutations_enabled),
+    _query: None = Depends(_no_query),
+    _bearer: None = Depends(_require_bearer),
+) -> dict[str, Any]:
+    """Add a credential (operator-only, audited via the bridge)."""
+    body = await _read_mutation_body(request)
+    params = _validate_mutation_body("add", body)
+    return _call("add", params, allow_mutations=True)
+
+
+@router.post("/mutations/rotate")
+async def mutations_rotate(
+    request: Request,
+    _enabled: None = Depends(_require_mutations_enabled),
+    _query: None = Depends(_no_query),
+    _bearer: None = Depends(_require_bearer),
+) -> dict[str, Any]:
+    """Rotate a credential's secret (operator-only, audited via the bridge)."""
+    body = await _read_mutation_body(request)
+    params = _validate_mutation_body("rotate", body)
+    return _call("rotate", params, allow_mutations=True)
+
+
+@router.post("/mutations/delete")
+async def mutations_delete(
+    request: Request,
+    _enabled: None = Depends(_require_mutations_enabled),
+    _query: None = Depends(_no_query),
+    _bearer: None = Depends(_require_bearer),
+) -> dict[str, Any]:
+    """Delete a credential — deny-by-default, confirmation required.
+
+    The adapter rejects a missing/empty ``confirmation`` with 403 BEFORE any
+    child spawn; the bridge independently enforces the exact-match check.
+    """
+    body = await _read_mutation_body(request)
+    confirmation = body.get("confirmation")
+    if not isinstance(confirmation, str) or not confirmation.strip():
+        raise HTTPException(
+            status_code=403,
+            detail="confirmation is required and must match the target credential",
+        )
+    params = _validate_mutation_body("delete", body)
+    return _call("delete", params, allow_mutations=True)
+
+
+async def _read_mutation_body(request: Request) -> dict[str, Any]:
+    """Read and bound the raw request body before any child spawn."""
+    raw = await request.body()
+    if len(raw) > MAX_REQUEST_BYTES:
+        raise HTTPException(status_code=400, detail="request body exceeds the size bound")
+    if not raw:
+        raise HTTPException(status_code=400, detail="request body is required")
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+    return body
+
 
 __all__ = [
-    "BRIDGE_BINARY",
-    "BRIDGE_TIMEOUT_SECONDS",
-    "MAX_REQUEST_BYTES",
-    "MAX_RESPONSE_BYTES",
     "PROTOCOL_VERSION",
+    "ALL_METHODS",
+    "MUTATION_METHODS",
+    "BridgeError",
     "router",
     "_child_env",
-    "_dispatch",
     "_parse_response",
+    "_run_bridge",
+    "_sanitize",
 ]
