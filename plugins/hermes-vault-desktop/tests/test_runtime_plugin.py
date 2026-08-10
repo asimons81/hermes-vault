@@ -139,6 +139,8 @@ def test_runtime_plugin_contract_and_render(tmp_path: Path) -> None:
         env={**__import__("os").environ, **env},
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
         check=False,
     )
@@ -697,6 +699,8 @@ def _run_render(tmp_path: Path, phase: str) -> dict:
         env={**__import__("os").environ, **env},
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
         check=False,
     )
@@ -815,6 +819,8 @@ def test_runtime_plugin_vaultpage_hooks_stable_across_loading_to_success(tmp_pat
         env={**__import__("os").environ, **env},
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
         check=False,
     )
@@ -882,6 +888,8 @@ def test_runtime_plugin_delete_dialog_hooks_stable_across_impact_to_typeconfirm(
         env={**__import__("os").environ, **env},
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
         check=False,
     )
