@@ -1119,7 +1119,7 @@ function VaultPage(_a) {
     needsAttention: needsAttention,
     leaseCount: overview.lease_count,
     activeLeaseCount: overview.active_lease_count,
-    integrityOk: overview.health && overview.health.integrity_status === 'healthy'
+    integrityOk: integrityQ.data && integrityQ.data.status === 'healthy'
   }
 
   // open row actions
