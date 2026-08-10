@@ -1,264 +1,461 @@
+"""Tests for the hermes-vault-desktop dashboard backend adapter.
+
+The adapter spawns the Vault-owned ``desktop-bridge`` child process for each
+request. Most tests inject a fake ``subprocess.Popen`` to exercise response
+mapping and lifecycle deterministically; the env-scrub test runs a real
+fake-bridge subprocess to prove what actually reaches the child.
+"""
+
 from __future__ import annotations
 
 import importlib.util
 import json
-import logging
-import sys
+import subprocess
 from pathlib import Path
-from typing import Any
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+
+_PLUGIN_API = Path(__file__).resolve().parents[1] / "dashboard" / "plugin_api.py"
+_spec = importlib.util.spec_from_file_location("hv_plugin_api", _PLUGIN_API)
+assert _spec is not None and _spec.loader is not None
+plugin_api = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(plugin_api)
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+POISON_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+POISON_HEX = "a" * 40
+POISON_PATH = "/home/tony/.hermes/hermes-vault-data/vault.db"
+POISON_TEXT = "SUPER_SECRET_POISON_MARKER_XYZ"
 
 
-PLUGIN_PATH = Path(__file__).parents[1] / "dashboard" / "plugin_api.py"
+def _ok_result(result: dict) -> str:
+    return json.dumps({"id": 1, "ok": True, "protocol_version": 1, "result": result}, sort_keys=True) + "\n"
 
 
-def load_plugin():
-    spec = importlib.util.spec_from_file_location("test_hermes_vault_desktop_plugin_api", PLUGIN_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _err_envelope(code: str, message: str, *, locked: bool = False) -> str:
+    error: dict = {"code": code, "message": message}
+    if locked:
+        error["locked"] = True
+    return json.dumps({"id": 1, "ok": False, "protocol_version": 1, "error": error}, sort_keys=True) + "\n"
 
 
 @pytest.fixture
-def plugin():
-    return load_plugin()
+def fake_popen(monkeypatch):
+    """Replace subprocess.Popen with a scriptable spy.
 
+    Set ``FakePopen.stdout`` / ``FakePopen.stderr`` for the canned
+    communicate result, ``FakePopen.exc`` to raise from communicate, or
+    ``FakePopen.init_exc`` to raise at construction (e.g. FileNotFoundError).
+    """
 
-@pytest.fixture
-def client(plugin):
-    app = FastAPI()
-    app.include_router(plugin.router, prefix="/api/plugins/hermes-vault-desktop")
-    return TestClient(app)
+    class FakePopen:
+        instances: list["FakePopen"] = []
+        stdout = ""
+        stderr = ""
+        exc: BaseException | None = None
+        init_exc: BaseException | None = None
+        wait_exc: BaseException | None = None
 
-
-def envelope(plugin, *, result: dict[str, Any] | None = None, error: dict[str, Any] | None = None) -> bytes:
-    body: dict[str, Any] = {
-        "id": plugin.REQUEST_ID,
-        "protocol_version": plugin.PROTOCOL_VERSION,
-        "ok": error is None,
-    }
-    if error is None:
-        body["result"] = result or {"profile": "default", "read_only": True}
-    else:
-        body["error"] = error
-    return (json.dumps(body) + "\n").encode()
-
-
-def fake_process(stdout: bytes, *, returncode: int = 0, timeout: bool = False):
-    class FakeProcess:
-        def __init__(self):
-            self.returncode = None
+        def __init__(self, args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            self.returncode = 0
             self.terminated = False
             self.killed = False
-            self.input = None
+            self.wait_calls = 0
+            if FakePopen.init_exc is not None:
+                raise FakePopen.init_exc
+            FakePopen.instances.append(self)
 
         def communicate(self, input=None, timeout=None):
             self.input = input
-            if timeout:
-                assert timeout > 0
-            if timeout is not None and timeout is False:
-                raise AssertionError("timeout was not bounded")
-            if timeout is not None and timeout > 0 and timeout_flag:
-                raise plugin_subprocess.TimeoutExpired(["fake"], timeout)
-            self.returncode = returncode
-            return stdout, b""
-
-        def poll(self):
-            return self.returncode
+            self.timeout = timeout
+            if FakePopen.exc is not None:
+                raise FakePopen.exc
+            return FakePopen.stdout, FakePopen.stderr
 
         def terminate(self):
             self.terminated = True
-            self.returncode = -15
 
         def kill(self):
             self.killed = True
-            self.returncode = -9
 
         def wait(self, timeout=None):
-            return self.returncode
+            self.wait_calls += 1
+            if FakePopen.wait_exc is not None:
+                raise FakePopen.wait_exc
+            return 0
 
-    timeout_flag = timeout
-    plugin_subprocess = __import__("subprocess")
-    return FakeProcess
-
-
-def install_fake_process(monkeypatch, plugin, stdout: bytes, *, timeout: bool = False):
-    monkeypatch.setattr(plugin.shutil, "which", lambda name: "/usr/bin/hermes-vault")
-    fake_cls = fake_process(stdout, timeout=timeout)
-    seen: dict[str, Any] = {}
-
-    def popen(*args, **kwargs):
-        seen["args"] = args
-        seen["kwargs"] = kwargs
-        process = fake_cls()
-        seen["process"] = process
-        return process
-
-    monkeypatch.setattr(plugin.subprocess, "Popen", popen)
-    return seen
+    monkeypatch.setattr(plugin_api.subprocess, "Popen", FakePopen)
+    return FakePopen
 
 
-def test_success_response_mapping(plugin, client, monkeypatch):
-    monkeypatch.setenv("PATH", "/usr/bin")
-    monkeypatch.setenv("HERMES_VAULT_HOME", "/tmp/vault")
-    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "[REDACTED]")
-    monkeypatch.setenv("PYTHONPATH", "/poison")
-    monkeypatch.setenv("OPENAI_API_KEY", "[REDACTED]")
-    seen = install_fake_process(
-        monkeypatch,
-        plugin,
-        envelope(plugin, result={"profile": "default", "credential_count": 2}),
-    )
-    response = client.get("/api/plugins/hermes-vault-desktop/overview")
-    assert response.status_code == 200
-    assert response.json() == {"profile": "default", "credential_count": 2}
-    assert seen["args"] == (["/usr/bin/hermes-vault", "--no-banner", "desktop-bridge"],)
-    request = json.loads(seen["process"].input)
-    assert request == {
-        "id": plugin.REQUEST_ID,
-        "method": "overview",
-        "params": {},
-        "protocol_version": plugin.PROTOCOL_VERSION,
-    }
-    assert seen["kwargs"]["shell"] is False
-    assert seen["kwargs"]["stderr"] is plugin.subprocess.DEVNULL
-    assert seen["kwargs"]["stdin"] is plugin.subprocess.PIPE
-    assert seen["kwargs"]["stdout"] is plugin.subprocess.PIPE
-    assert seen["kwargs"]["env"]["HERMES_VAULT_HOME"] == "/tmp/vault"
-    assert seen["kwargs"]["env"]["HERMES_VAULT_PASSPHRASE"] == "[REDACTED]"
-    assert "PYTHONPATH" not in seen["kwargs"]["env"]
-    assert "OPENAI_API_KEY" not in seen["kwargs"]["env"]
+@pytest.fixture
+def client():
+    app = FastAPI()
+    app.include_router(plugin_api.router)
+    return TestClient(app)
 
 
-def test_routes_are_fixed_get_only(plugin, client, monkeypatch):
-    install_fake_process(monkeypatch, plugin, envelope(plugin))
-    for method in ("hello", "health", "overview", "credentials", "leases", "policy", "requests", "audit", "integrity"):
-        response = client.get(f"/api/plugins/hermes-vault-desktop/{method}")
-        assert response.status_code == 200, method
-    assert client.post("/api/plugins/hermes-vault-desktop/overview").status_code == 405
-    assert client.get("/api/plugins/hermes-vault-desktop/write").status_code == 404
-    assert client.get("/api/plugins/hermes-vault-desktop/credentials/delete").status_code == 404
+@pytest.fixture
+def clean_env(monkeypatch):
+    """Remove adapter-affecting env vars for a clean slate."""
+    for key in ("HERMES_VAULT_BINARY", "HERMES_VAULT_BRIDGE_TIMEOUT", "HERMES_VAULT_HOME"):
+        monkeypatch.delenv(key, raising=False)
+    return monkeypatch
 
 
-def test_query_allowlist_and_bounds(plugin, client, monkeypatch):
-    install_fake_process(monkeypatch, plugin, envelope(plugin))
-    assert client.get("/api/plugins/hermes-vault-desktop/overview?action=delete").status_code == 400
-    assert client.get("/api/plugins/hermes-vault-desktop/overview?profile=../../etc").status_code == 400
-    assert client.get("/api/plugins/hermes-vault-desktop/audit?limit=999").status_code == 400
-    assert client.get("/api/plugins/hermes-vault-desktop/audit?limit=nope").status_code == 400
-    assert client.get("/api/plugins/hermes-vault-desktop/overview?profile=default&profile=other").status_code == 400
-    assert client.get("/api/plugins/hermes-vault-desktop/overview?agent_id=worker").status_code == 400
+# ---------------------------------------------------------------------------
+# Success mapping
+# ---------------------------------------------------------------------------
 
 
-def test_missing_binary(plugin, client, monkeypatch):
-    monkeypatch.setattr(plugin.shutil, "which", lambda name: None)
-    response = client.get("/api/plugins/hermes-vault-desktop/overview")
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "BINARY_MISSING"
-
-
-def test_timeout_is_mapped_and_child_is_cleaned(plugin, client, monkeypatch):
-    install_fake_process(monkeypatch, plugin, b"", timeout=True)
-    response = client.get("/api/plugins/hermes-vault-desktop/overview")
-    assert response.status_code == 504
-    assert response.json()["error"]["code"] == "TIMEOUT"
-
-
-def test_eof_protocol_and_malformed_responses(plugin, client, monkeypatch):
-    install_fake_process(monkeypatch, plugin, b"")
-    assert client.get("/api/plugins/hermes-vault-desktop/overview").json()["error"]["code"] == "BRIDGE_EOF"
-
-    install_fake_process(
-        monkeypatch,
-        plugin,
-        envelope(plugin, result={"ok": True}).replace(b'"protocol_version": 1', b'"protocol_version": 99'),
-    )
-    response = client.get("/api/plugins/hermes-vault-desktop/overview")
-    assert response.status_code == 502
-    assert response.json()["error"]["code"] == "PROTOCOL_MISMATCH"
-
-    install_fake_process(monkeypatch, plugin, b"not-json\n")
-    response = client.get("/api/plugins/hermes-vault-desktop/overview")
-    assert response.status_code == 502
-    assert response.json()["error"]["code"] == "MALFORMED_RESPONSE"
-
-
-def test_locked_bridge_error(plugin, client, monkeypatch):
-    install_fake_process(
-        monkeypatch,
-        plugin,
-        envelope(
-            plugin,
-            error={
-                "code": "MISSING_PASSPHRASE",
-                "message": "Vault is locked",
-                "locked": True,
-            },
-        ),
-    )
-    response = client.get("/api/plugins/hermes-vault-desktop/overview")
-    assert response.status_code == 423
-    assert response.json()["error"] == {
-        "code": "MISSING_PASSPHRASE",
-        "message": "Vault is locked",
-        "locked": True,
-    }
-
-
-def test_child_environment_is_allowlisted(plugin, monkeypatch):
-    source = {
-        "PATH": "/usr/bin",
-        "HOME": "/home/tony",
-        "HERMES_VAULT_HOME": "/tmp/vault",
-        "HERMES_VAULT_POLICY": "/tmp/policy.yaml",
-        "HERMES_VAULT_HOME_EVIL": "[REDACTED]",
-        "HERMES_VAULT_PASSPHRASE": "[REDACTED]",
-        "HERMES_VAULT_PASSPHRASE_WORK": "[REDACTED]",
-        "PYTHONPATH": "/poison",
-        "OPENAI_API_KEY": "[REDACTED]",
-        "GITHUB_TOKEN": "[REDACTED]",
-        "UNRELATED": "nope",
-    }
-    env = plugin._child_env(source)
-    assert env == {
-        "PATH": "/usr/bin",
-        "HOME": "/home/tony",
-        "HERMES_VAULT_HOME": "/tmp/vault",
-        "HERMES_VAULT_POLICY": "/tmp/policy.yaml",
-        "HERMES_VAULT_PASSPHRASE": "[REDACTED]",
-        "HERMES_VAULT_PASSPHRASE_WORK": "[REDACTED]",
-    }
-
-
-def test_poison_strings_are_not_returned_or_logged(plugin, client, monkeypatch, caplog):
-    poison = "sk-live-ABC123 /home/tony/private 0123456789abcdef0123456789abcdef"
-    install_fake_process(
-        monkeypatch,
-        plugin,
-        envelope(plugin, error={"code": "INTERNAL", "message": poison}),
-    )
-    with caplog.at_level(logging.DEBUG):
-        response = client.get("/api/plugins/hermes-vault-desktop/overview")
-    body = response.text
-    assert "sk-live" not in body
-    assert "/home/tony" not in body
-    assert "0123456789abcdef0123456789abcdef" not in body
-    assert poison not in caplog.text
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="real-child spawn test relies on a POSIX shebang script; the bounded-reader logic is covered by the fake-process tests on all platforms",
+@pytest.mark.parametrize(
+    "route,method",
+    [
+        ("/hello", "hello"),
+        ("/overview", "overview"),
+        ("/credentials", "credentials"),
+        ("/leases", "leases"),
+        ("/policy", "policy"),
+        ("/requests", "requests"),
+        ("/audit", "audit"),
+        ("/integrity", "integrity"),
+        ("/health", "hello"),
+    ],
 )
-def test_real_child_output_is_bounded(plugin, client, monkeypatch, tmp_path):
-    script = tmp_path / "oversized-bridge"
-    script.write_text("#!/usr/bin/python3\nimport sys\nsys.stdout.write('x' * 600000)\n", encoding="utf-8")
-    script.chmod(0o755)
-    monkeypatch.setattr(plugin.shutil, "which", lambda name: str(script))
-    response = client.get("/api/plugins/hermes-vault-desktop/overview")
-    assert response.status_code == 502
-    assert response.json()["error"]["code"] == "OUTPUT_LIMIT"
+def test_success_response_mapping(client, fake_popen, clean_env, route, method):
+    fake_popen.stdout = _ok_result({"profile": "default", "ok_field": True})
+    resp = client.get(route)
+    assert resp.status_code == 200
+    assert resp.json() == {"profile": "default", "ok_field": True}
+    assert len(fake_popen.instances) == 1
+    proc = fake_popen.instances[0]
+    sent = json.loads(proc.input)
+    assert sent["method"] == method
+    assert sent["protocol_version"] == 1
+    assert sent["params"] == {}
+
+
+def test_success_maps_bounded_query_params(client, fake_popen, clean_env):
+    fake_popen.stdout = _ok_result({"profile": "alpha", "count": 3})
+    resp = client.get("/requests?profile=alpha&agent_id=agent-7")
+    assert resp.status_code == 200
+    sent = json.loads(fake_popen.instances[0].input)
+    assert sent["params"] == {"profile": "alpha", "agent_id": "agent-7"}
+
+    fake_popen.stdout = _ok_result({"limit": 12})
+    resp = client.get("/audit?limit=12")
+    assert resp.status_code == 200
+    sent = json.loads(fake_popen.instances[-1].input)
+    assert sent["params"] == {"limit": 12}
+
+
+# ---------------------------------------------------------------------------
+# Failure mapping
+# ---------------------------------------------------------------------------
+
+
+def test_missing_binary_maps_to_503(client, fake_popen, clean_env):
+    fake_popen.init_exc = FileNotFoundError()
+    resp = client.get("/overview")
+    assert resp.status_code == 503
+    assert "vault bridge binary not found" in resp.json()["detail"]
+
+
+def test_timeout_maps_to_504_and_terminates_child(client, fake_popen, clean_env, monkeypatch):
+    monkeypatch.setenv("HERMES_VAULT_BRIDGE_TIMEOUT", "0.1")
+    fake_popen.exc = subprocess.TimeoutExpired(cmd=["hermes-vault"], timeout=0.1)
+    resp = client.get("/credentials")
+    assert resp.status_code == 504
+    assert fake_popen.instances[0].terminated is True
+
+
+def test_timeout_escalates_to_kill_when_terminate_hangs(client, fake_popen, clean_env, monkeypatch):
+    monkeypatch.setenv("HERMES_VAULT_BRIDGE_TIMEOUT", "0.1")
+    fake_popen.exc = subprocess.TimeoutExpired(cmd=["hermes-vault"], timeout=0.1)
+    fake_popen.wait_exc = subprocess.TimeoutExpired(cmd=["hermes-vault"], timeout=2.0)
+    resp = client.get("/credentials")
+    assert resp.status_code == 504
+    proc = fake_popen.instances[0]
+    assert proc.terminated is True
+    assert proc.killed is True
+
+
+def test_eof_empty_stdout_maps_to_502(client, fake_popen, clean_env):
+    fake_popen.stdout = ""
+    resp = client.get("/credentials")
+    assert resp.status_code == 502
+    assert "closed without a response" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        json.dumps({"id": 1, "ok": True, "protocol_version": 99, "result": {}}) + "\n",
+        json.dumps({"id": 1, "ok": True, "result": {}}) + "\n",
+        json.dumps({"id": 2, "ok": True, "protocol_version": 1, "result": {}}) + "\n",
+        json.dumps([1, 2, 3]) + "\n",
+        json.dumps({}) + "\n",
+        "not json at all\n",
+        _ok_result({}) + _ok_result({}),
+    ],
+    ids=["version-99", "missing-version", "id-mismatch", "json-list", "empty-dict", "non-json", "multi-line"],
+)
+def test_protocol_mismatch_and_malformed_maps_to_502(client, fake_popen, clean_env, payload):
+    fake_popen.stdout = payload
+    resp = client.get("/hello")
+    assert resp.status_code == 502
+    detail = resp.json()["detail"]
+    assert detail.startswith("vault bridge"), detail
+
+
+def test_locked_vault_missing_passphrase_maps_to_423(client, fake_popen, clean_env):
+    fake_popen.stdout = _err_envelope("MISSING_PASSPHRASE", "No passphrase available for profile default", locked=True)
+    resp = client.get("/overview")
+    assert resp.status_code == 423
+    assert "No passphrase available" in resp.json()["detail"]
+
+
+def test_locked_vault_not_ready_maps_to_423(client, fake_popen, clean_env):
+    fake_popen.stdout = _err_envelope("VAULT_NOT_READY", "Vault key material is unavailable", locked=True)
+    resp = client.get("/integrity")
+    assert resp.status_code == 423
+
+
+def test_bridge_internal_error_maps_to_502(client, fake_popen, clean_env):
+    fake_popen.stdout = _err_envelope("INTERNAL", "child failure")
+    resp = client.get("/policy")
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "child failure"
+
+
+# ---------------------------------------------------------------------------
+# Route allowlist / rejection of unknown, live, and path-taking actions
+# ---------------------------------------------------------------------------
+
+
+def test_allowlisted_routes_only(client, fake_popen, clean_env):
+    fake_popen.stdout = _ok_result({})
+    for route in (
+        "/hello",
+        "/overview",
+        "/credentials",
+        "/leases",
+        "/policy",
+        "/requests",
+        "/audit",
+        "/integrity",
+        "/health",
+    ):
+        assert client.get(route).status_code == 200, route
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("post", "/hello"),
+        ("put", "/overview"),
+        ("delete", "/integrity"),
+        ("patch", "/requests"),
+        ("get", "/credentials/1"),
+        ("get", "/requests/approve"),
+        ("get", "/leases/revoke"),
+        ("get", "/wat"),
+        ("get", "/integrity/rebuild"),
+    ],
+)
+def test_rejects_unknown_live_and_path_taking_actions(client, fake_popen, clean_env, method, path):
+    fake_popen.stdout = _ok_result({})
+    resp = getattr(client, method)(path)
+    assert resp.status_code in (404, 405)
+
+
+def test_unknown_query_params_rejected(client, fake_popen, clean_env):
+    fake_popen.stdout = _ok_result({})
+    resp = client.get("/overview?foo=1")
+    assert resp.status_code == 400
+    assert "unknown query parameter" in resp.json()["detail"]
+
+
+def test_hello_rejects_any_query_param(client, fake_popen, clean_env):
+    fake_popen.stdout = _ok_result({})
+    assert client.get("/hello?profile=x").status_code == 400
+    assert client.get("/health?limit=5").status_code == 400
+
+
+@pytest.mark.parametrize(
+    "qs",
+    ["limit=abc", "limit=0", "limit=-1", "limit=999"],
+    ids=["non-int", "zero", "negative", "too-large"],
+)
+def test_audit_limit_bounds(client, fake_popen, clean_env, qs):
+    fake_popen.stdout = _ok_result({})
+    resp = client.get(f"/audit?{qs}")
+    assert resp.status_code == 400
+
+
+def test_oversized_profile_and_agent_id_rejected(client, fake_popen, clean_env):
+    fake_popen.stdout = _ok_result({})
+    assert client.get(f"/overview?profile={'p' * 129}").status_code == 400
+    assert client.get(f"/requests?agent_id={'a' * 257}").status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Subprocess construction: argv, env scrub, bounded IO
+# ---------------------------------------------------------------------------
+
+
+def test_argv_is_fixed_and_shell_disabled(client, fake_popen, clean_env):
+    fake_popen.stdout = _ok_result({})
+    client.get("/hello")
+    proc = fake_popen.instances[0]
+    assert proc.args == ["hermes-vault-canonical", "--no-banner", "desktop-bridge"]
+    assert proc.kwargs["shell"] is False
+    assert proc.kwargs["stdin"] == subprocess.PIPE
+    assert proc.kwargs["stdout"] == subprocess.PIPE
+    assert proc.kwargs["stderr"] == subprocess.DEVNULL
+    assert proc.kwargs["text"] is True
+
+
+def test_child_env_scrubs_pythonpath_and_provider_keys(monkeypatch, clean_env):
+    monkeypatch.setenv("PYTHONPATH", "/evil/path")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-evil")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-evil")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-evil")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-evil")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HOME", "/home/tony")
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "hunter2")
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE_work", "hunter3")
+    monkeypatch.setenv("HERMES_VAULT_POLICY", "/tmp/policy.yaml")
+
+    env = plugin_api._child_env()
+
+    assert "PYTHONPATH" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["HOME"] == "/home/tony"
+    assert env["HERMES_VAULT_PASSPHRASE"] == "hunter2"
+    assert env["HERMES_VAULT_PASSPHRASE_work"] == "hunter3"
+    assert env["HERMES_VAULT_POLICY"] == "/tmp/policy.yaml"
+
+
+def test_child_env_drops_hermes_vault_binary_seam(monkeypatch, clean_env):
+    monkeypatch.setenv("HERMES_VAULT_BINARY", "/fake/bridge")
+    env = plugin_api._child_env()
+    assert "HERMES_VAULT_BINARY" not in env
+
+
+def test_request_line_is_bounded_and_single(client, fake_popen, clean_env):
+    fake_popen.stdout = _ok_result({})
+    client.get("/overview")
+    proc = fake_popen.instances[0]
+    # communicate receives exactly one line (no trailing extra newline).
+    assert proc.input.endswith("\n")
+    assert proc.input.count("\n") == 1
+    assert len(proc.input.encode("utf-8")) <= plugin_api.MAX_REQUEST_BYTES
+
+
+def test_real_subprocess_env_scrub_and_passphrase_forwarding(client, clean_env, tmp_path, monkeypatch):
+    """End-to-end: a real fake-bridge child must see the scrubbed env."""
+    vault_home = tmp_path / "vault-home"
+    vault_home.mkdir()
+    dump_path = vault_home / "env_dump.json"
+
+    fake_script = tmp_path / "fake_bridge.py"
+    fake_script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "with open(os.path.join(os.environ['HERMES_VAULT_HOME'], 'env_dump.json'), 'w') as fh:\n"
+        "    json.dump(dict(os.environ), fh, sort_keys=True)\n"
+        "line = sys.stdin.readline()\n"
+        "req = json.loads(line)\n"
+        "resp = {'id': req['id'], 'ok': True, 'protocol_version': 1, 'result': {'method': req['method']}}\n"
+        "sys.stdout.write(json.dumps(resp) + '\\n')\n"
+        "sys.stdout.flush()\n",
+        encoding="utf-8",
+    )
+    fake_script.chmod(0o755)
+
+    monkeypatch.setenv("HERMES_VAULT_BINARY", str(fake_script))
+    monkeypatch.setenv("HERMES_VAULT_HOME", str(vault_home))
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "hunter2")
+    monkeypatch.setenv("PYTHONPATH", "/evil/path")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-evil")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-evil")
+
+    resp = client.get("/hello")
+    assert resp.status_code == 200
+    assert resp.json()["method"] == "hello"
+    assert dump_path.is_file()
+
+    child_env = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert child_env.get("HERMES_VAULT_PASSPHRASE") == "hunter2"
+    assert child_env.get("HERMES_VAULT_HOME") == str(vault_home)
+    assert "PYTHONPATH" not in child_env
+    assert "OPENAI_API_KEY" not in child_env
+    assert "AWS_SECRET_ACCESS_KEY" not in child_env
+    assert "HERMES_VAULT_BINARY" not in child_env
+    assert "PATH" in child_env
+    assert "HOME" in child_env
+
+
+# ---------------------------------------------------------------------------
+# Poison-string hygiene
+# ---------------------------------------------------------------------------
+
+
+def test_child_stderr_never_reaches_response_or_log(client, fake_popen, clean_env, caplog):
+    fake_popen.stdout = _ok_result({})
+    fake_popen.stderr = f"Traceback ... {POISON_TEXT} {POISON_HEX}\n"
+    with caplog.at_level("WARNING"):
+        resp = client.get("/hello")
+    assert resp.status_code == 200
+    assert POISON_TEXT not in resp.text
+    assert POISON_TEXT not in caplog.text
+
+
+def test_malformed_stdout_poison_never_echoed(client, fake_popen, clean_env, caplog):
+    fake_popen.stdout = f"{POISON_TEXT} {POISON_JWT} {POISON_PATH}\n"
+    with caplog.at_level("WARNING"):
+        resp = client.get("/hello")
+    assert resp.status_code == 502
+    assert POISON_TEXT not in resp.text
+    assert POISON_JWT not in resp.text
+    assert POISON_PATH not in resp.text
+    assert POISON_TEXT not in caplog.text
+    assert POISON_JWT not in caplog.text
+
+
+def test_bridge_error_message_is_sanitized(client, fake_popen, clean_env, caplog):
+    fake_popen.stdout = _err_envelope(
+        "INTERNAL",
+        f"failure near {POISON_JWT} at {POISON_PATH} token={POISON_HEX}",
+    )
+    with caplog.at_level("WARNING"):
+        resp = client.get("/overview")
+    assert resp.status_code == 502
+    detail = resp.json()["detail"]
+    assert POISON_JWT not in detail
+    assert POISON_PATH not in detail
+    assert POISON_HEX not in detail
+    assert "[redacted:jwt]" in detail
+    assert "[redacted:hex-token]" in detail
+    assert POISON_JWT not in caplog.text
+    assert POISON_PATH not in caplog.text
+
+
+def test_logs_never_contain_request_bodies(client, fake_popen, clean_env, caplog):
+    fake_popen.stdout = _err_envelope("INTERNAL", "child failure")
+    with caplog.at_level("WARNING"):
+        client.get("/requests?profile=alpha&agent_id=agent-7")
+    assert "profile" not in caplog.text
+    assert "agent-7" not in caplog.text
+    assert "agent_id" not in caplog.text
+    assert "method" not in caplog.text
