@@ -507,6 +507,10 @@ def _init_vault(home: Path, passphrase: str) -> None:
     audit.initialize()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="real-bridge lifecycle test relies on a POSIX shell wrapper; the mutation route logic is covered by the fake-process tests on all platforms and by the real-surface verification on Linux",
+)
 def test_full_mutation_lifecycle(client, clean_env, tmp_path, monkeypatch):
     """add -> rotate -> delete through the adapter against a real bridge.
 

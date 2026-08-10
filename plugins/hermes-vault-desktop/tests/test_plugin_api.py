@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,15 @@ POISON_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNH
 POISON_HEX = "a" * 40
 POISON_PATH = "/home/tony/.hermes/hermes-vault-data/vault.db"
 POISON_TEXT = "SUPER_SECRET_POISON_MARKER_XYZ"
+
+
+def _env_lookup(env: dict[str, str], key: str) -> str | None:
+    """Case-insensitive env lookup (Windows environment names are case-insensitive)."""
+    upper = key.upper()
+    for k, v in env.items():
+        if k.upper() == upper:
+            return v
+    return None
 
 
 def _ok_result(result: dict) -> str:
@@ -347,7 +357,9 @@ def test_child_env_scrubs_pythonpath_and_provider_keys(monkeypatch, clean_env):
     assert env["PATH"] == "/usr/bin:/bin"
     assert env["HOME"] == "/home/tony"
     assert env["HERMES_VAULT_PASSPHRASE"] == "hunter2"
-    assert env["HERMES_VAULT_PASSPHRASE_work"] == "hunter3"
+    # Windows environment names are case-insensitive; the passphrase alias var
+    # may be copied under the OS-normalized casing. Look up case-insensitively.
+    assert _env_lookup(env, "HERMES_VAULT_PASSPHRASE_work") == "hunter3"
     assert env["HERMES_VAULT_POLICY"] == "/tmp/policy.yaml"
 
 
@@ -367,6 +379,10 @@ def test_request_line_is_bounded_and_single(client, fake_popen, clean_env):
     assert len(proc.input.encode("utf-8")) <= plugin_api.MAX_REQUEST_BYTES
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="real-child spawn test relies on a POSIX shebang script; the env-scrub and passphrase-forwarding logic is covered by the fake-process and unit tests on all platforms",
+)
 def test_real_subprocess_env_scrub_and_passphrase_forwarding(client, clean_env, tmp_path, monkeypatch):
     """End-to-end: a real fake-bridge child must see the scrubbed env."""
     vault_home = tmp_path / "vault-home"
