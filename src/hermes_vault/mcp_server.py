@@ -20,12 +20,28 @@ import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Resource, ResourceTemplate, TextContent, TextResourceContents, Tool
-from pydantic import AnyUrl
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ContentBlock,
+    ListResourceTemplatesRequest,
+    ListResourceTemplatesResult,
+    ListResourcesRequest,
+    ListResourcesResult,
+    ListToolsRequest,
+    ListToolsResult,
+    ReadResourceRequestParams,
+    ReadResourceResult,
+    Resource,
+    ResourceTemplate,
+    TextContent,
+    TextResourceContents,
+    Tool,
+)
 from rich.console import Console
 
 from hermes_vault import __version__
@@ -465,8 +481,8 @@ def _resolve_resource_binding(settings: Any, uri: Any, resource_key: str) -> MCP
 
 def _json_resource(uri: Any, payload: dict[str, Any]) -> TextResourceContents:
     return TextResourceContents(
-        uri=AnyUrl(str(uri)),
-        mimeType="application/json",
+        uri=str(uri),
+        mime_type="application/json",
         text=_json_text(payload),
     )
 
@@ -871,98 +887,97 @@ _pending_oauth: dict[str, dict[str, Any]] = {}
 server = Server("hermes-vault", version=__version__)
 
 
-@server.list_tools()
 async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="list_services",
             description="List credentials visible to the agent, filtered by policy.",
-            inputSchema=_TOOL_SCHEMAS["list_services"],
+            input_schema=_TOOL_SCHEMAS["list_services"],
         ),
         Tool(
             name="get_credential_metadata",
             description="Fetch metadata for a credential. Raw secrets are never returned.",
-            inputSchema=_TOOL_SCHEMAS["get_credential_metadata"],
+            input_schema=_TOOL_SCHEMAS["get_credential_metadata"],
         ),
         Tool(
             name="get_ephemeral_env",
             description="Materialise ephemeral environment variables for a service. Primary access pattern.",
-            inputSchema=_TOOL_SCHEMAS["get_ephemeral_env"],
+            input_schema=_TOOL_SCHEMAS["get_ephemeral_env"],
         ),
         Tool(
             name="lease_issue",
             description="Issue a credential lease for a service. Returns metadata only.",
-            inputSchema=_TOOL_SCHEMAS["lease_issue"],
+            input_schema=_TOOL_SCHEMAS["lease_issue"],
         ),
         Tool(
             name="lease_list",
             description="List visible leases for the effective agent. Returns metadata only.",
-            inputSchema=_TOOL_SCHEMAS["lease_list"],
+            input_schema=_TOOL_SCHEMAS["lease_list"],
         ),
         Tool(
             name="lease_show",
             description="Show one lease by ID. Returns metadata only.",
-            inputSchema=_TOOL_SCHEMAS["lease_show"],
+            input_schema=_TOOL_SCHEMAS["lease_show"],
         ),
         Tool(
             name="lease_renew",
             description="Renew a lease by ID. Returns metadata only.",
-            inputSchema=_TOOL_SCHEMAS["lease_renew"],
+            input_schema=_TOOL_SCHEMAS["lease_renew"],
         ),
         Tool(
             name="lease_revoke",
             description="Revoke a lease by ID. Returns metadata only.",
-            inputSchema=_TOOL_SCHEMAS["lease_revoke"],
+            input_schema=_TOOL_SCHEMAS["lease_revoke"],
         ),
         Tool(
             name="verify_credential",
             description="Verify a credential against its provider.",
-            inputSchema=_TOOL_SCHEMAS["verify_credential"],
+            input_schema=_TOOL_SCHEMAS["verify_credential"],
         ),
         Tool(
             name="rotate_credential",
             description="Rotate a credential to a new secret value. Requires rotate permission.",
-            inputSchema=_TOOL_SCHEMAS["rotate_credential"],
+            input_schema=_TOOL_SCHEMAS["rotate_credential"],
         ),
         Tool(
             name="scan_for_secrets",
             description="Scan filesystem paths for plaintext secrets.",
-            inputSchema=_TOOL_SCHEMAS["scan_for_secrets"],
+            input_schema=_TOOL_SCHEMAS["scan_for_secrets"],
         ),
         Tool(
             name="oauth_login",
             description="Initiate PKCE OAuth login for a provider. Returns authorization URL.",
-            inputSchema=_TOOL_SCHEMAS["oauth_login"],
+            input_schema=_TOOL_SCHEMAS["oauth_login"],
         ),
         Tool(
             name="oauth_device_login",
             description="Initiate headless OAuth device-code login for a provider. Never returns raw tokens.",
-            inputSchema=_TOOL_SCHEMAS["oauth_device_login"],
+            input_schema=_TOOL_SCHEMAS["oauth_device_login"],
         ),
         Tool(
             name="oauth_provider_status",
             description="Report read-only OAuth provider readiness and safe next commands.",
-            inputSchema=_TOOL_SCHEMAS["oauth_provider_status"],
+            input_schema=_TOOL_SCHEMAS["oauth_provider_status"],
         ),
         Tool(
             name="oauth_refresh",
             description="Trigger token refresh for a service using stored refresh token.",
-            inputSchema=_TOOL_SCHEMAS["oauth_refresh"],
+            input_schema=_TOOL_SCHEMAS["oauth_refresh"],
         ),
         Tool(
             name="request_access",
             description="Create a pending metadata-only access request. Does not return credentials.",
-            inputSchema=_TOOL_SCHEMAS["request_access"],
+            input_schema=_TOOL_SCHEMAS["request_access"],
         ),
         Tool(
             name="policy_explain",
             description="Explain why the effective agent can or cannot perform a service action.",
-            inputSchema=_TOOL_SCHEMAS["policy_explain"],
+            input_schema=_TOOL_SCHEMAS["policy_explain"],
         ),
         Tool(
             name="lease_checkout",
             description="Issue or reuse a lease and perform brokered env handoff through the same policy path.",
-            inputSchema=_TOOL_SCHEMAS["lease_checkout"],
+            input_schema=_TOOL_SCHEMAS["lease_checkout"],
         ),
     ]
 
@@ -992,127 +1007,124 @@ async def _default_agent_service_resources() -> list[Resource]:
             Resource(
                 name=f"vault-service-{service_name}",
                 title=f"Hermes Vault service: {service_name}",
-                uri=AnyUrl(f"vault://services/{urllib.parse.quote(service_name, safe='')}"),
+                uri=f"vault://services/{urllib.parse.quote(service_name, safe='')}",
                 description=f"Metadata for policy-visible service '{service_name}'.",
-                mimeType="application/json",
+                mime_type="application/json",
             )
         )
     return resources
 
 
-@server.list_resources()
 async def list_resources() -> list[Resource]:
     resources = [
         Resource(
             name="vault-status",
             title="Hermes Vault status",
-            uri=AnyUrl("vault://status"),
+            uri="vault://status",
             description="Consolidated policy-scoped vault status and safe next steps.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-services",
             title="Hermes Vault services",
-            uri=AnyUrl("vault://services"),
+            uri="vault://services",
             description="Policy-scoped credential services visible to the effective agent.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-health",
             title="Hermes Vault health",
-            uri=AnyUrl("vault://health"),
+            uri="vault://health",
             description="Policy-scoped read-only vault health summary. Does not perform live provider verification.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-policy",
             title="Hermes Vault policy summary",
-            uri=AnyUrl("vault://policy"),
+            uri="vault://policy",
             description="Sanitized policy summary for the effective agent only.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-leases",
             title="Hermes Vault leases",
-            uri=AnyUrl("vault://leases"),
+            uri="vault://leases",
             description="Policy-scoped lease inventory for the effective agent.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-agent-context",
             title="Hermes Vault agent context",
-            uri=AnyUrl("vault://agent-context"),
+            uri="vault://agent-context",
             description="Redacted manifest of effective-agent access, leases, and pending requests.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-policy-explain",
             title="Hermes Vault policy explain",
-            uri=AnyUrl("vault://policy-explain"),
+            uri="vault://policy-explain",
             description="Policy explanation resource. Requires query parameters: service; optional action and ttl_seconds.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-requests",
             title="Hermes Vault access requests",
-            uri=AnyUrl("vault://requests"),
+            uri="vault://requests",
             description="Metadata-only access requests for the effective agent.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-recovery",
             title="Hermes Vault recovery drill",
-            uri=AnyUrl("vault://recovery"),
+            uri="vault://recovery",
             description="Redacted recovery drill resource. Requires query parameter: backup.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-audit-integrity",
             title="Hermes Vault audit integrity",
-            uri=AnyUrl("vault://audit-integrity"),
+            uri="vault://audit-integrity",
             description="Metadata-only audit integrity status: status, chain version, checkpoint state, verified count.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
     ]
     resources.extend(await _default_agent_service_resources())
     return resources
 
 
-@server.list_resource_templates()
 async def list_resource_templates() -> list[ResourceTemplate]:
     return [
         ResourceTemplate(
             name="vault-service-detail",
             title="Hermes Vault service metadata",
-            uriTemplate="vault://services/{name}",
+            uri_template="vault://services/{name}",
             description="Metadata for one policy-visible service. Optional query parameters: agent_id, alias.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         ResourceTemplate(
             name="vault-lease-detail",
             title="Hermes Vault lease metadata",
-            uriTemplate="vault://leases/{id}",
+            uri_template="vault://leases/{id}",
             description="Metadata for one policy-visible lease. Optional query parameter: agent_id.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         ResourceTemplate(
             name="vault-policy-explain-query",
             title="Hermes Vault policy explain query",
-            uriTemplate="vault://policy-explain?service={service}&action={action}",
+            uri_template="vault://policy-explain?service={service}&action={action}",
             description="Explain an effective-agent service action. Optional query parameters: agent_id, ttl_seconds.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         ResourceTemplate(
             name="vault-recovery-query",
             title="Hermes Vault recovery drill query",
-            uriTemplate="vault://recovery?backup={path}",
+            uri_template="vault://recovery?backup={path}",
             description="Run a redacted recovery drill for a local backup path. Optional query parameter: agent_id.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
     ]
 
 
-@server.read_resource()
 async def read_resource(uri: Any) -> Any:
     settings = get_settings()
     key = _resource_key(uri)
@@ -1157,7 +1169,6 @@ async def read_resource(uri: Any) -> Any:
     return [_json_resource(uri, payload)]
 
 
-@server.call_tool()
 async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     arguments = arguments or {}
     preflight_error = _preflight_tool_arguments(name, arguments)
@@ -1356,6 +1367,42 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     except Exception as exc:
         logger.exception("Unhandled error in tool %s", name)
         return [TextContent(type="text", text=f"Internal error: {sanitize_oauth_error_detail(exc)}")]
+
+
+# ── mcp 2.x request handlers ──────────────────────────────────────────────────
+# The mcp 2.x SDK removed the decorator API (list_tools/list_resources/call_tool)
+# from the low-level Server. Handlers are registered per JSON-RPC method with
+# explicit params/result wire types; the handler bodies remain the plain module
+# functions above so they stay directly testable.
+
+
+async def _handle_list_tools(ctx: Any, params: Any) -> ListToolsResult:
+    return ListToolsResult(tools=await list_tools())
+
+
+async def _handle_call_tool(ctx: Any, params: CallToolRequestParams) -> CallToolResult:
+    arguments = dict(params.arguments or {})
+    return CallToolResult(content=cast(list[ContentBlock], await call_tool(params.name, arguments)))
+
+
+async def _handle_list_resources(ctx: Any, params: Any) -> ListResourcesResult:
+    return ListResourcesResult(resources=await list_resources())
+
+
+async def _handle_list_resource_templates(ctx: Any, params: Any) -> ListResourceTemplatesResult:
+    return ListResourceTemplatesResult(resource_templates=await list_resource_templates())
+
+
+async def _handle_read_resource(ctx: Any, params: ReadResourceRequestParams) -> ReadResourceResult:
+    contents = await read_resource(str(params.uri))
+    return ReadResourceResult(contents=list(contents))
+
+
+server.add_request_handler("tools/list", ListToolsRequest, _handle_list_tools)
+server.add_request_handler("tools/call", CallToolRequestParams, _handle_call_tool)
+server.add_request_handler("resources/list", ListResourcesRequest, _handle_list_resources)
+server.add_request_handler("resources/templates/list", ListResourceTemplatesRequest, _handle_list_resource_templates)
+server.add_request_handler("resources/read", ReadResourceRequestParams, _handle_read_resource)
 
 
 # ── OAuth tool implementations ───────────────────────────────────────────────
