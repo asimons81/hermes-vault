@@ -188,11 +188,18 @@ class AuditIntegrityService:
 
     def append(self, record: object) -> None:
         self.ensure_initialized()
-        current = self.verify()
-        if current.status != AuditIntegrityStatus.healthy:
-            raise AuditIntegrityError(current.sanitized_reason)
         try:
+            # The pre-append verify MUST run under the audit write lock.
+            # verify() reads COUNT(access_logs) and COUNT(audit_integrity_records)
+            # in separate autocommit queries; a concurrent append committing
+            # between the two reads makes it see a torn view and raise a false
+            # missing_integrity_record (TOCTOU observed under concurrent
+            # refresh). Holding the lock across verify + append gives verify a
+            # single-writer view (same pattern as restore_backup).
             with audit_write_lock(self.lock_path):
+                current = self.verify()
+                if current.status != AuditIntegrityStatus.healthy:
+                    raise AuditIntegrityError(current.sanitized_reason)
                 with self._connection() as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     result = self.append_in_transaction(conn, record)
