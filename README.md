@@ -4,7 +4,17 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.24.0 is the current release — the **Desktop Integration** release on the **Vault Intelligence** line. It ships the read-only Hermes Desktop plugin (`hermes-vault-desktop`): a versioned NDJSON `desktop-bridge` plus a dashboard backend adapter and a native Desktop runtime page that surface credential/lease/request/policy metadata, audit, and integrity status without ever exposing secret values. v0.23.2 previously fixed an audit-integrity chain wedge and made `export --with-secrets` fail closed. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
+v0.25.0 is the current release — the **Desktop Mutation Surface** release on the **Vault Intelligence** line. It extends the Hermes Desktop plugin (`hermes-vault-desktop`) with operator-only add / rotate / delete credential workflows behind an explicit opt-in flag: a mutation-capable `desktop-bridge` plus adapter POST routes and native Desktop dialogs, all deny-by-default, Bearer-only, audited through the protected integrity chain, and metadata-only in every response. The read-only surface from v0.24.0 is unchanged when the mutation flag is off. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
+
+## What's New in 0.25.0
+
+v0.25.0 is a feature release shipping the **Desktop mutation surface** (opt-in).
+
+- **Bridge mutations**: `add` / `rotate` / `delete` NDJSON methods behind `--allow-mutations` (default off). Renderer-supplied `agent_id` rejected, `request_id` validated, every write routed through the single audited `VaultMutations` path; delete requires a typed confirmation token.
+- **Adapter mutation routes**: `POST /mutations/{add,rotate,delete}` gated by `HERMES_VAULT_DESKTOP_MUTATIONS=1` (404 when unset), Bearer-only auth, pre-spawn body allowlist, `--allow-mutations` passed to the bridge child only on mutation routes.
+- **Desktop mutation UI**: add / rotate / delete dialogs with masked secret fields, type-to-confirm delete, single-flight buttons, and audit result display; version-gated by the `/hello` `mutations` capability.
+- **Hardening**: R1 Host-header validation on the adapter router; `AuditIntegrityError` rolls back credential writes (HTTP 409); no raw secret ever serialized in bridge/adapter responses.
+- **Rollback docs**: `docs/mutation-surface-rollback.md` — per-surface rollback, recovery drill, lease impact, known limits.
 
 ## What's New in 0.24.0
 
@@ -80,10 +90,10 @@ Hermes Vault runs natively on Windows -- no WSL required.
 
 ```powershell
 # Install with uv (recommended)
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.24.0
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.25.0
 
 # Or with pipx
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.24.0
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.25.0
 
 # Or with pip (editable dev install)
 python -m venv .venv
