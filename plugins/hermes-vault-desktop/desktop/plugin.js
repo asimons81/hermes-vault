@@ -1117,6 +1117,18 @@ function VaultPage(_a) {
   var openAdd = useCallback(function () { setOpenDialog('add') }, [])
   var closeDialog = useCallback(function () { setOpenDialog(null); setRotateTarget(null); setDeleteTarget(null) }, [])
 
+  // current tab state — MUST be hoisted above the loading/error early returns
+  // below: hooks may not appear after a conditional return (React #310,
+  // "Rendered more hooks than during the previous render"). These five hooks
+  // do not depend on query data, so running them during the loading and error
+  // phases is safe and keeps the hook count identical across every render.
+  var _f = useState('credentials'), activeTab = _f[0], setActiveTab = _f[1]
+  var _g = useState('all'), statusFilter = _g[0], setStatusFilter = _g[1]
+  var _h = useState(''), searchQuery = _h[0], setSearchQuery = _h[1]
+
+  var onSearchChange = useCallback(function (v) { setSearchQuery(v) }, [])
+  var onFilterChange = useCallback(function (id) { setStatusFilter(id) }, [])
+
   // loading / error states
   if (overviewQ.isLoading) {
     return jsx('div', { className: 'h-full overflow-auto', children: jsx(LoadingState, {}) })
@@ -1128,14 +1140,6 @@ function VaultPage(_a) {
       jsx(StateCard, { details: details, onRefresh: refresh })
     ] })
   }
-
-  // current tab state
-  var _f = useState('credentials'), activeTab = _f[0], setActiveTab = _f[1]
-  var _g = useState('all'), statusFilter = _g[0], setStatusFilter = _g[1]
-  var _h = useState(''), searchQuery = _h[0], setSearchQuery = _h[1]
-
-  var onSearchChange = useCallback(function (v) { setSearchQuery(v) }, [])
-  var onFilterChange = useCallback(function (id) { setStatusFilter(id) }, [])
 
   var tabContent
   if (activeTab === 'credentials') {

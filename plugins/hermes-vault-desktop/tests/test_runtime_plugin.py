@@ -241,9 +241,12 @@ BUNDLE_THEME_VARS = frozenset(
 
 # Minimal SDK stub with a phase-controlled useQuery: 'loading' (async pending)
 # vs 'success' (data settled). SDK components render as element descriptors so
-# the whole page tree is walkable.
+# the whole page tree is walkable. The phase is mutable (__setVaultPhase) so a
+# single mounted component can be re-rendered across the loading->success
+# transition (React #310 regression guard).
 SDK_RENDER_STUB = r"""
-const PHASE = 'PHASE_PLACEHOLDER'
+let PHASE = 'PHASE_PLACEHOLDER'
+export function __setVaultPhase(phase) { PHASE = phase }
 const values = {
   overview: { profile: 'default', credential_count: 1, lease_count: 0, active_lease_count: 0, services: ['demo'], recent_audit: [], health: { status: 'healthy', integrity_status: 'healthy' } },
   credentials: { credential_count: 1, credentials: [{ id: 'cred-1', service: 'demo', alias: 'metadata', status: 'unknown', credential_type: 'api_key' }] },
@@ -308,6 +311,68 @@ export const jsx = (type, props) => (typeof type === 'function' ? type(props || 
 export const jsxs = (type, props) => (typeof type === 'function' ? type(props || {}) : { tag: type, props: props || {} })
 """
 
+# Hook-count-enforcing react stub. Real React throws "Rendered more hooks than
+# during the previous render" (error #310) when a component instance changes
+# its hook count between renders. These stubs reproduce exactly that check:
+# every function-component render opens a frame, every hook call increments
+# the frame's count, and closing a frame whose count differs from the same
+# component's previous render throws #310. beginRender/endRender are consumed
+# by JSX_HOOKCOUNT_STUB (same module, same render frames).
+REACT_HOOKCOUNT_STUB = r"""
+const hookCounts = new Map()
+const frameStack = []
+const countStack = []
+
+export function beginRender(fn) {
+  frameStack.push(fn)
+  countStack.push(0)
+}
+
+export function endRender() {
+  const fn = frameStack.pop()
+  const count = countStack.pop()
+  if (fn === undefined || count === undefined) throw new Error('render frame underflow')
+  const prev = hookCounts.get(fn)
+  if (prev !== undefined && prev !== count) {
+    throw new Error(
+      'Minified React error #310: rendered ' + count + ' hooks but the previous render of ' +
+      (fn.name || '(anonymous)') + ' used ' + prev + ' hooks'
+    )
+  }
+  hookCounts.set(fn, count)
+}
+
+function trackHook() {
+  if (countStack.length === 0) throw new Error('Hook called outside a component render')
+  countStack[countStack.length - 1] += 1
+}
+
+export const useEffect = () => { trackHook() }
+export const useState = (initial) => { trackHook(); return [initial, function () {}] }
+export const useCallback = (fn) => { trackHook(); return fn }
+export const useMemo = (fn) => { trackHook(); return fn() }
+export const useRef = (initial) => { trackHook(); return { current: initial } }
+"""
+
+# jsx/jsxs variant that wraps every function-component render in
+# beginRender/endRender so REACT_HOOKCOUNT_STUB can enforce React #310 across
+# renders of the same component instance. Imported relative to react.mjs so
+# both the plugin's 'react' and 'react/jsx-runtime' specifiers share one module
+# instance (loader maps them to the same two files in the tmp dir).
+JSX_HOOKCOUNT_STUB = r"""
+import { beginRender, endRender } from './react.mjs'
+function renderFn(type, props) {
+  beginRender(type)
+  try {
+    return type(props || {})
+  } finally {
+    endRender()
+  }
+}
+export const jsx = (type, props) => (typeof type === 'function' ? renderFn(type, props) : { tag: type, props: props || {} })
+export const jsxs = (type, props) => (typeof type === 'function' ? renderFn(type, props) : { tag: type, props: props || {} })
+"""
+
 RENDER_HARNESS = r"""
 import { pathToFileURL } from 'node:url'
 const mod = await import(pathToFileURL(process.env.PLUGIN).href)
@@ -361,6 +426,77 @@ const panes = els
     detail: v.parent && v.parent.children[2] ? v.parent.children[2].text.join('') : ''
   }))
 console.log('RESULT=' + JSON.stringify({ skeletonCards, panes, classes: [...classSet].sort(), stylesheet: STYLESHEET }))
+"""
+
+# Phase-flip harness (React #310 regression guard, t_cae27701): mounts the
+# plugin ONCE and renders the page component across the loading->success
+# transition within the SAME mount. The SDK stub's phase is flipped with
+# __setVaultPhase between renders, so the second render sees isLoading=false
+# while the component instance (and its hook history) is unchanged — exactly
+# the situation that produced "Rendered more hooks than during the previous
+# render" on the real desktop. With REACT_HOOKCOUNT_STUB active, a hook-count
+# jump throws #310 and the node subprocess exits non-zero.
+HARNESS_PHASEFLIP = r"""
+import { pathToFileURL } from 'node:url'
+const pluginMod = await import(pathToFileURL(process.env.PLUGIN).href)
+const sdk = await import(pathToFileURL(process.env.SDK_STUB).href)
+const plugin = pluginMod.default
+const contributions = []
+const ctx = {
+  registerMany(items) { contributions.push(...items); return () => {} },
+  rest: async () => ({}),
+  i18n: { register() {}, t(key) { return key } },
+  storage: { get(k, f) { return f }, set() {} }
+}
+plugin.register(ctx)
+const page = contributions.find(c => c.id === 'page')
+
+function flatten(node, parent) {
+  const out = []
+  if (node === null || node === undefined || typeof node === 'boolean') return out
+  if (Array.isArray(node)) {
+    for (const k of node) out.push(...flatten(k, parent))
+    return out
+  }
+  if (typeof node === 'string' || typeof node === 'number') {
+    if (parent) parent.text.push(String(node))
+    return out
+  }
+  if (typeof node === 'object' && node.tag && node.props) {
+    const rec = { tag: String(node.tag), className: String(node.props.className || ''), text: [], children: [], parent: parent || null }
+    out.push(rec)
+    if (parent) parent.children.push(rec)
+    const kids = node.props.children
+    const arr = Array.isArray(kids) ? kids : (kids === undefined || kids === null ? [] : [kids])
+    for (const k of arr) out.push(...flatten(k, rec))
+  }
+  return out
+}
+
+function subtreeText(el) {
+  return el.text.join('') + el.children.map(subtreeText).join('')
+}
+
+// Phase 1: loading — useQuery stub reports isLoading=true (async pending).
+const loadingTree = page.render()
+const loadingEls = flatten(loadingTree, null)
+const skeletonCards = loadingEls.filter(e => /animate-pulse/.test(e.className) && /h-24/.test(e.className)).length
+
+// Phase 2: success — flip the SAME stub's phase, then render the SAME
+// component instance again. React #310 fires exactly here if the component's
+// hook count changed between renders.
+sdk.__setVaultPhase('success')
+const successTree = page.render()
+const successEls = flatten(successTree, null)
+const tabLabels = successEls.filter(e => e.tag === 'TabsTrigger').map(subtreeText)
+const panes = successEls
+  .filter(e => /text-sm/.test(e.className) && /tabular-nums/.test(e.className) && e.parent && /HealthStat|grid/.test(e.parent.className || ''))
+  .map(v => ({
+    label: v.parent && v.parent.children[0] ? v.parent.children[0].text.join('') : '',
+    value: v.text.join(''),
+    detail: v.parent && v.parent.children[2] ? v.parent.children[2].text.join('') : ''
+  }))
+console.log('RESULT=' + JSON.stringify({ skeletonCards, tabLabels, panes }))
 """
 
 LOADER_RENDER = r"""
@@ -495,3 +631,64 @@ def test_runtime_plugin_stylesheet_uses_only_bundle_vars(tmp_path: Path) -> None
     # Skeleton fill rule must set an actual background-color (not transparent).
     assert re.search(r"\.bg-\\\(--ui-control-background\\\)\s*\{[^}]*background-color", stylesheet)
 
+
+def test_runtime_plugin_vaultpage_hooks_stable_across_loading_to_success(tmp_path: Path) -> None:
+    """Regression guard for React #310 (t_cae27701): VaultPage declared five
+    hooks (useState x3 + useCallback x2) AFTER the overviewQ.isLoading /
+    overviewQ.error early returns. On the real desktop the first render
+    executed ~23 hooks; once query data settled, the same component instance
+    executed ~28 -> "Rendered more hooks than during the previous render".
+
+    Unlike the blank-panes tests above (separate subprocess mounts per phase),
+    this mounts the plugin ONCE and flips the useQuery stub's phase from
+    loading to success between renders of the SAME component instance. The
+    hook-count-enforcing react stub (REACT_HOOKCOUNT_STUB) throws exactly like
+    React's rules-of-hooks check when a component's hook count changes between
+    renders, so the pre-fix plugin fails this test with #310 and the post-fix
+    plugin renders both phases cleanly. Note the stub counts only hooks routed
+    through the react module (14 -> 19 across the transition); SDK hooks
+    (useValue/useQuery/useQueryClient) are untracked, so the measured delta of
+    5 matches the real-desktop delta even though the absolute counts differ.
+    """
+    files = {
+        "sdk.mjs": SDK_RENDER_STUB.replace("PHASE_PLACEHOLDER", "loading"),
+        "jsx.mjs": JSX_HOOKCOUNT_STUB,
+        "react.mjs": REACT_HOOKCOUNT_STUB,
+        "loader.mjs": LOADER_RENDER,
+        "harness.mjs": HARNESS_PHASEFLIP,
+    }
+    paths = {}
+    for name, content in files.items():
+        path = tmp_path / name
+        path.write_text(content, encoding="utf-8")
+        paths[name] = path
+
+    env = {
+        "SDK_STUB": str(paths["sdk.mjs"]),
+        "JSX_STUB": str(paths["jsx.mjs"]),
+        "REACT_STUB": str(paths["react.mjs"]),
+        "PLUGIN": str(PLUGIN),
+    }
+    result = subprocess.run(
+        ["node", "--experimental-loader", paths["loader.mjs"].as_uri(), str(paths["harness.mjs"])],
+        cwd=ROOT,
+        env={**__import__("os").environ, **env},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    line = next(l for l in result.stdout.strip().splitlines() if l.startswith("RESULT="))
+    payload = json.loads(line[len("RESULT="):])
+
+    # Loading phase rendered the skeleton state (the four blank cards).
+    assert payload["skeletonCards"] == 4
+
+    # Success phase rendered the full page with all six tabs, in order.
+    assert payload["tabLabels"] == ["Credentials", "Access requests", "Leases", "Policy", "Audit", "Operations"]
+
+    # Health strip panes rendered with non-empty values.
+    assert [p["label"] for p in payload["panes"]] == ["Credentials", "Needs attention", "Leases", "Integrity"]
+    for pane in payload["panes"]:
+        assert pane["value"] and pane["value"] != "—", f"pane {pane['label']} rendered empty: {pane}"
