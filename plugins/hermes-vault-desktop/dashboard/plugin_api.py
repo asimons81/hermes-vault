@@ -210,6 +210,10 @@ SAFE_ENV_KEYS = (
     "WINDIR",
     "PATHEXT",
     "COMSPEC",
+    # Windows launcher env: cmd.exe itself is ComSpec; .cmd wrappers and
+    # user-profile path expansion need the drive/path pair. None carry secrets.
+    "HOMEDRIVE",
+    "HOMEPATH",
 )
 
 _ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])(?:/[^\s'\"<>]+|[A-Za-z]:[\\/][^\s'\"<>]+)")
