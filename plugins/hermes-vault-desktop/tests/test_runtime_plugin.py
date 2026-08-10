@@ -253,7 +253,8 @@ const values = {
   leases: { lease_count: 0, leases: [] },
   policy: { policy_exists: true, agents: {}, doctor: { status: 'healthy' } },
   requests: { request_count: 0, requests: [] },
-  integrity: { status: 'healthy', reason_code: 'ok', verified_count: 1, legacy_count: 0, recommended_next_step: 'none' }
+  integrity: { status: 'healthy', reason_code: 'ok', verified_count: 1, legacy_count: 0, recommended_next_step: 'none' },
+  hello: { status: 'ok', mutations: true }
 }
 export const ROUTES_AREA = 'routes'
 export const SIDEBAR_NAV_AREA = 'sidebar.nav'
@@ -349,6 +350,67 @@ function trackHook() {
 
 export const useEffect = () => { trackHook() }
 export const useState = (initial) => { trackHook(); return [initial, function () {}] }
+export const useCallback = (fn) => { trackHook(); return fn }
+export const useMemo = (fn) => { trackHook(); return fn() }
+export const useRef = (initial) => { trackHook(); return { current: initial } }
+"""
+
+# Stateful hook-count stub: same #310 enforcement as REACT_HOOKCOUNT_STUB plus
+# real useState persistence keyed by component fn + hook position. This lets a
+# harness drive DeleteCredentialDialog step transitions (impact -> typeConfirm)
+# through the ACTUAL onClick handlers, within ONE mount, the same way the real
+# desktop does — the impact->typeConfirm flip is what makes the pre-fix dialog
+# grow from 5 to 7 hooks.
+REACT_HOOKCOUNT_STATEFUL_STUB = r"""
+const hookCounts = new Map()
+const frameStack = []
+const countStack = []
+const stateByFn = new Map()
+
+export function beginRender(fn) {
+  frameStack.push(fn)
+  countStack.push(0)
+}
+
+export function endRender() {
+  const fn = frameStack.pop()
+  const count = countStack.pop()
+  if (fn === undefined || count === undefined) throw new Error('render frame underflow')
+  const prev = hookCounts.get(fn)
+  if (prev !== undefined && prev !== count) {
+    throw new Error(
+      'Minified React error #310: rendered ' + count + ' hooks but the previous render of ' +
+      (fn.name || '(anonymous)') + ' used ' + prev + ' hooks'
+    )
+  }
+  hookCounts.set(fn, count)
+}
+
+function trackHook() {
+  if (countStack.length === 0) throw new Error('Hook called outside a component render')
+  countStack[countStack.length - 1] += 1
+}
+
+function stateSlot(fn, idx) {
+  let slots = stateByFn.get(fn)
+  if (!slots) { slots = []; stateByFn.set(fn, slots) }
+  if (slots[idx] === undefined) {
+    let value = undefined
+    const setter = (v) => { value = typeof v === 'function' ? v(value) : v }
+    slots[idx] = { get: () => value, set: setter, init: (v) => { if (value === undefined) value = v } }
+  }
+  return slots[idx]
+}
+
+export const useState = (initial) => {
+  trackHook()
+  const fn = frameStack[frameStack.length - 1]
+  const idx = countStack[countStack.length - 1] - 1
+  const slot = stateSlot(fn, idx)
+  slot.init(initial)
+  return [slot.get(), slot.set]
+}
+export const useEffect = () => { trackHook() }
 export const useCallback = (fn) => { trackHook(); return fn }
 export const useMemo = (fn) => { trackHook(); return fn() }
 export const useRef = (initial) => { trackHook(); return { current: initial } }
@@ -497,6 +559,73 @@ const panes = successEls
     detail: v.parent && v.parent.children[2] ? v.parent.children[2].text.join('') : ''
   }))
 console.log('RESULT=' + JSON.stringify({ skeletonCards, tabLabels, panes }))
+"""
+
+# Delete-dialog step-flip harness (React #310 regression guard, t_3e8d525a):
+# mounts the plugin ONCE, renders the success page, then drives the REAL click
+# path into DeleteCredentialDialog: invoke the row's Delete menu item (opens
+# the dialog at the impact step), invoke "Continue to confirmation" (flips the
+# dialog's internal step to typeConfirm), and re-render the SAME component
+# instance. Uses REACT_HOOKCOUNT_STATEFUL_STUB so useState setters actually
+# persist across renders within the mount — pre-fix, the typeConfirm branch
+# runs useRef + useEffect AFTER the impact early return, so the dialog's hook
+# count jumps and the stub throws #310 exactly like real React.
+HARNESS_DIALOG_FLIP = r"""
+import { pathToFileURL } from 'node:url'
+const pluginMod = await import(pathToFileURL(process.env.PLUGIN).href)
+const sdk = await import(pathToFileURL(process.env.SDK_STUB).href)
+const plugin = pluginMod.default
+const contributions = []
+const ctx = {
+  registerMany(items) { contributions.push(...items); return () => {} },
+  rest: async () => ({}),
+  i18n: { register() {}, t(key) { return key } },
+  storage: { get(k, f) { return f }, set() {} }
+}
+plugin.register(ctx)
+const page = contributions.find(c => c.id === 'page')
+
+function nodeText(node) {
+  if (node === null || node === undefined || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(nodeText).join('')
+  if (typeof node === 'object' && node.props) return nodeText(node.props.children)
+  return ''
+}
+
+function findNodes(root, tag, needle) {
+  const out = []
+  function walk(node) {
+    if (node === null || node === undefined || typeof node === 'boolean') return
+    if (Array.isArray(node)) { for (const k of node) walk(k); return }
+    if (typeof node === 'object' && node.tag && node.props) {
+      if (String(node.tag) === tag && nodeText(node).includes(needle)) out.push(node)
+      walk(node.props.children)
+    }
+  }
+  walk(root)
+  return out
+}
+
+// Phase 1: success render — credentials tab shows one row with a Delete item.
+const tree0 = page.render()
+const deleteItems = findNodes(tree0, 'DropdownMenuItem', 'Delete')
+if (deleteItems.length === 0) throw new Error('Delete menu item not found in row actions')
+deleteItems[0].props.onClick()
+
+// Phase 2: re-render — the delete dialog mounts at the impact step.
+const tree1 = page.render()
+const continueButtons = findNodes(tree1, 'Button', 'Continue to confirmation')
+if (continueButtons.length === 0) throw new Error('Continue-to-confirmation button not found')
+continueButtons[0].props.onClick()
+
+// Phase 3: re-render — the SAME mounted dialog transitions impact -> typeConfirm.
+// Pre-fix this throws React #310 (4 -> 6 tracked hooks) and node exits non-zero.
+const tree2 = page.render()
+const confirmInputs = findNodes(tree2, 'Input', '')
+const hasConfirmInput = confirmInputs.some(n => n.props && n.props.id === 'confirm-delete-input')
+const confirmTitles = findNodes(tree2, 'DialogTitle', 'Confirm deletion')
+console.log('RESULT=' + JSON.stringify({ deleteItemFound: deleteItems.length > 0, continueFound: continueButtons.length > 0, hasConfirmInput, confirmTitleFound: confirmTitles.length > 0 }))
 """
 
 LOADER_RENDER = r"""
@@ -692,3 +821,67 @@ def test_runtime_plugin_vaultpage_hooks_stable_across_loading_to_success(tmp_pat
     assert [p["label"] for p in payload["panes"]] == ["Credentials", "Needs attention", "Leases", "Integrity"]
     for pane in payload["panes"]:
         assert pane["value"] and pane["value"] != "—", f"pane {pane['label']} rendered empty: {pane}"
+
+
+def test_runtime_plugin_delete_dialog_hooks_stable_across_impact_to_typeconfirm(tmp_path: Path) -> None:
+    """Regression guard for React #310 (t_3e8d525a): DeleteCredentialDialog
+    declared useRef + useEffect INSIDE the `step === 'typeConfirm'` branch, one
+    branch AFTER the `step === 'impact'` early return. On the real desktop a
+    mounted dialog instance transitioning impact -> typeConfirm executes 5
+    hooks on the impact render and 7 on the typeConfirm render ->
+    "Rendered more hooks than during the previous render".
+
+    Same-mount construction as the VaultPage guard (t_cae27701): mount the
+    plugin ONCE, render the success page, then drive the REAL click path —
+    invoke the row's Delete menu item (mounts the dialog at impact), invoke
+    "Continue to confirmation" (flips the dialog's internal step to
+    typeConfirm), and re-render the SAME component instance. Unlike the
+    VaultPage guard, this uses REACT_HOOKCOUNT_STATEFUL_STUB whose useState
+    persists across renders keyed by component fn, so the onClick handlers
+    actually change state the way real React does. Pre-fix, the typeConfirm
+    render runs useRef + useEffect after the impact early return, the stub
+    throws #310 and node exits non-zero; post-fix, both steps render cleanly
+    with a stable hook count. The stub counts only hooks routed through the
+    react module (4 -> 6 across the pre-fix transition); SDK hooks
+    (useQuery/useQueryClient/useValue) are untracked, so the measured delta of
+    2 matches the real-desktop 5 -> 7 delta.
+    """
+    files = {
+        "sdk.mjs": SDK_RENDER_STUB.replace("PHASE_PLACEHOLDER", "success"),
+        "jsx.mjs": JSX_HOOKCOUNT_STUB,
+        "react.mjs": REACT_HOOKCOUNT_STATEFUL_STUB,
+        "loader.mjs": LOADER_RENDER,
+        "harness.mjs": HARNESS_DIALOG_FLIP,
+    }
+    paths = {}
+    for name, content in files.items():
+        path = tmp_path / name
+        path.write_text(content, encoding="utf-8")
+        paths[name] = path
+
+    env = {
+        "SDK_STUB": str(paths["sdk.mjs"]),
+        "JSX_STUB": str(paths["jsx.mjs"]),
+        "REACT_STUB": str(paths["react.mjs"]),
+        "PLUGIN": str(PLUGIN),
+    }
+    result = subprocess.run(
+        ["node", "--experimental-loader", paths["loader.mjs"].as_uri(), str(paths["harness.mjs"])],
+        cwd=ROOT,
+        env={**__import__("os").environ, **env},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    line = next(l for l in result.stdout.strip().splitlines() if l.startswith("RESULT="))
+    payload = json.loads(line[len("RESULT="):])
+
+    # The row action menu rendered a Delete item and the dialog opened at impact.
+    assert payload["deleteItemFound"] is True
+    assert payload["continueFound"] is True
+
+    # The typeConfirm step rendered with the confirm input + title (no #310).
+    assert payload["hasConfirmInput"] is True
+    assert payload["confirmTitleFound"] is True

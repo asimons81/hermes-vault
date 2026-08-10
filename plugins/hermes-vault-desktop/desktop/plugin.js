@@ -586,6 +586,22 @@ function DeleteCredentialDialog(_a) {
   var _d = useState(false), acknowledged = _d[0], setAcknowledged = _d[1]
   var _e = useState(null), mutationError = _e[0], setMutationError = _e[1]
   var queryClient = useQueryClient()
+  // Type-to-confirm input ref + focus. MUST be hoisted above the step early
+  // returns below: hooks may not appear after a conditional return (React
+  // #310, "Rendered more hooks than during the previous render"). The dialog
+  // transitions impact -> typeConfirm within one mount, so a hook count jump
+  // here would crash the real desktop exactly like the VaultPage defect fixed
+  // in t_cae27701. The effect runs on every render; the inputRef.current guard
+  // keeps the focus call a no-op until the confirm input is actually mounted.
+  var inputRef = useRef(null)
+  // No deps array: the effect must fire after EVERY render so the input
+  // auto-focuses each time the dialog lands on the typeConfirm step (pre-fix
+  // behavior — the hooks mounted fresh on every typeConfirm entry because they
+  // sat behind the impact early return). The inputRef.current guard keeps it a
+  // no-op on every other step and on the very first mount (input not mounted).
+  useEffect(function () {
+    if (inputRef.current) inputRef.current.focus()
+  })
 
   var service = target ? target.service : ''
   var alias = target ? target.alias : ''
@@ -671,11 +687,6 @@ function DeleteCredentialDialog(_a) {
 
   // Step 2: Type-to-confirm
   if (step === 'typeConfirm') {
-    var inputRef = useRef(null)
-    useEffect(function () {
-      if (inputRef.current) inputRef.current.focus()
-    }, [])
-
     return jsx(Dialog, { open: true, onOpenChange: function (open) { if (!open) doClose() }, children: [
       jsx(DialogContent, { className: 'max-w-md', children: [
         jsx(DialogHeader, { children: [
