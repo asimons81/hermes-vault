@@ -67,9 +67,10 @@ const SCOPED_CSS = [
   '.max-w-5xl { max-width: 64rem; }',
   '.pb-5 { padding-bottom: 1.25rem; }',
   '.w-96 { width: 24rem; }',
-  '@media (min-width: 768px) { .md\\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }',
-  '@media (min-width: 1024px) { .lg\\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }',
-  '@media (min-width: 640px) { .sm\\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }',
+  '.justify-self-start { justify-self: start; }',
+  '@media (min-width: 768px) { .md\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }',
+  '@media (min-width: 1024px) { .lg\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }',
+  '@media (min-width: 640px) { .sm\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }',
   '.grid-cols-stat { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }',
   '.grid-cols-cred-row { grid-template-columns: auto 1fr minmax(0, 1fr) auto auto auto; }',
   '.gap-row { gap: 0.75rem; }'
@@ -552,7 +553,7 @@ function RotateCredentialDialog(_a) {
     jsx(DialogContent, { className: 'max-w-md', children: [
       jsx(DialogHeader, { children: [
         jsx(DialogTitle, { children: 'Rotate credential' }),
-        jsx(DialogDescription, { children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(ServiceIcon, { service: service }), jsxs('span', { children: [label, jsx('span', { className: 'text-(--ui-text-quaternary)', children: ' \u00b7 ' + typeStr })])] }) }) })
+        jsx(DialogDescription, { children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(ServiceIcon, { service: service }), jsxs('span', { children: [label, jsx('span', { className: 'text-(--ui-text-quaternary)', children: ' \u00b7 ' + typeStr })] })] }) })
       ] }),
       jsxs('div', { className: 'grid gap-4 py-4', children: [
         target.last_verified_at ? jsx('div', { className: 'text-xs text-(--ui-text-tertiary)', children: 'Last verified: ' + relativeTime(target.last_verified_at) + (target.expiry ? ' \u00b7 Expiry: ' + shortDate(target.expiry) : '') }) : null,
@@ -652,7 +653,7 @@ function DeleteCredentialDialog(_a) {
       jsx(DialogContent, { className: 'max-w-md', children: [
         jsx(DialogHeader, { children: [
           jsx(DialogTitle, { children: 'Delete credential' }),
-          jsx(DialogDescription, { children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(ServiceIcon, { service: service }), jsxs('span', { children: [label, jsx('span', { className: 'text-(--ui-text-quaternary)', children: ' \u00b7 ' + typeStr })])] }) }) })
+          jsx(DialogDescription, { children: jsxs('span', { className: 'flex items-center gap-1.5', children: [jsx(ServiceIcon, { service: service }), jsxs('span', { children: [label, jsx('span', { className: 'text-(--ui-text-quaternary)', children: ' \u00b7 ' + typeStr })] })] }) })
         ] }),
         jsxs('div', { className: 'grid gap-4 py-4', children: [
           jsxs('div', { className: 'rounded-lg border border-(--ui-stroke-secondary) p-3', children: [
