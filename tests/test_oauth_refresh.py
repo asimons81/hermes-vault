@@ -602,7 +602,10 @@ class TestConcurrentRefresh:
         engine = RefreshEngine(vault=tmp_vault, registry=registry)
         _seed_tokens(tmp_vault, "test")
 
-        barrier = threading.Barrier(2)
+        # A start latch (not a barrier): Event.wait can never break, so a
+        # worker delayed past the timeout just starts late instead of raising
+        # BrokenBarrierError in both workers (the 2026-08-10 Windows flake).
+        start_latch = threading.Event()
         results: list[RefreshAttempt | None] = [None, None]
         exceptions: list[Exception | None] = [None, None]
 
@@ -627,7 +630,9 @@ class TestConcurrentRefresh:
         with patch("hermes_vault.oauth.oauth_refresh.requests.post", side_effect=post_side_effect):
             def refresh_worker(idx: int):
                 try:
-                    barrier.wait(timeout=2)
+                    # Generous timeout; Event.wait never raises, so a slow
+                    # worker simply starts late instead of breaking the race.
+                    start_latch.wait(timeout=30)
                     results[idx] = engine.refresh("test")
                 except Exception as exc:
                     exceptions[idx] = exc
@@ -635,8 +640,13 @@ class TestConcurrentRefresh:
             threads = [threading.Thread(target=refresh_worker, args=(i,)) for i in range(2)]
             for t in threads:
                 t.start()
+            start_latch.set()
             for t in threads:
-                t.join(timeout=10)
+                t.join(timeout=60)
+
+        # Surface the real exception instead of a bare `assert 0 >= 1` if a
+        # worker fails (the 2026-08-10 Windows CI flake hid a broken barrier).
+        assert exceptions == [None, None], f"worker exception(s): {exceptions}"
 
         # SQLite serializes writers, so at least one succeeds
         success_count = sum(1 for r in results if r is not None and r.success)
