@@ -44,7 +44,7 @@ from urllib.parse import quote
 
 from hermes_vault import __version__
 from hermes_vault.audit import AuditLogger
-from hermes_vault.audit_integrity.service import AuditIntegrityService
+from hermes_vault.audit_integrity.service import AuditIntegrityError, AuditIntegrityService
 from hermes_vault.broker import Broker
 from hermes_vault.config import AppSettings, resolve_profile, validate_profile_name
 from hermes_vault.crypto import (
@@ -57,11 +57,12 @@ from hermes_vault.crypto import (
 from hermes_vault.dashboard import DashboardAPI, DashboardContext
 from hermes_vault.health import run_health
 from hermes_vault.logging_redaction import redact_text
-from hermes_vault.models import AccessRequestStatus, LeaseStatus, utc_now
+from hermes_vault.models import AccessRequestStatus, LeaseStatus, MutationResult, utc_now
+from hermes_vault.mutations import OPERATOR_AGENT_ID
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.policy_doctor import run_policy_doctor
 from hermes_vault.service_ids import normalize
-from hermes_vault.vault import Vault
+from hermes_vault.vault import AmbiguousTargetError, Vault
 from hermes_vault.verifier import Verifier
 
 PROTOCOL_VERSION = 1
@@ -88,6 +89,16 @@ ALL_METHODS = (
     "audit",
     "integrity",
 )
+
+# Mutation methods are dispatched only when the bridge is launched with
+# ``allow_mutations=True`` (the adapter passes ``--allow-mutations`` on the
+# three mutation routes only). Without the flag every mutation method returns
+# a ``MUTATIONS_DISABLED`` (503-style) error envelope.
+MUTATION_METHODS = ("add", "rotate", "delete")
+
+MAX_REQUEST_ID_LENGTH = 64
+# Alphanumeric plus '-'/'_' (spec example uses "r-1"); hard 64-char cap.
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,%d}$" % MAX_REQUEST_ID_LENGTH)
 
 # Canonical metadata-only field sets. Serializers below never include
 # encrypted payloads, env maps, raw token material, arbitrary operator-entered
@@ -208,6 +219,23 @@ def _error(
         "protocol_version": PROTOCOL_VERSION,
         "error": error,
     }
+
+
+class BridgeError(Exception):
+    """Typed bridge error that maps to a distinct protocol error envelope.
+
+    Raised by mutation methods for deny-by-default outcomes
+    (``MUTATIONS_DISABLED``, ``CONFIRMATION_MISMATCH``, ``AUDIT_INTEGRITY``,
+    ``DUPLICATE``, ``DENIED``). ``handle_request`` catches it and serializes
+    the envelope with the request id so the code/message pair survives
+    intact instead of becoming a generic ``INTERNAL`` error.
+    """
+
+    def __init__(self, code: str, message: str, *, locked: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.locked = locked
 
 
 def _pick(source: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
@@ -500,20 +528,72 @@ def _build_read_only_context(*, prompt: bool = False, profile: str | None = None
     )
 
 
+def _build_writable_context(*, prompt: bool = False, profile: str | None = None) -> DashboardContext:
+    """Build a context whose vault/audit/broker are the real writable stack.
+
+    Used ONLY by the mutation methods, which are dispatched only when the
+    bridge was launched with ``allow_mutations=True`` (risk R3). The wiring
+    mirrors ``build_dashboard_context`` (dashboard.py) — the policy is
+    parsed, never written; the vault is opened with the environment-derived
+    passphrase; the audit logger gets the vault master key so the integrity
+    chain can seal mutation rows. The passphrase never leaves the process
+    and the bridge still never prompts.
+    """
+    if prompt:
+        raise MissingPassphraseError("The desktop bridge never prompts for a passphrase")
+    settings = _read_only_settings(profile)
+    passphrase_result = resolve_passphrase_with_source(prompt=False, profile_name=settings.profile_name)
+    if not settings.db_path.is_file() or not settings.salt_path.is_file():
+        raise MissingKeyMaterialError("Vault key material is not initialized")
+    policy = PolicyEngine.from_yaml(settings.effective_policy_path)
+    vault = Vault(settings.db_path, settings.salt_path, passphrase_result.passphrase)
+    audit = AuditLogger(settings.db_path, master_key=vault.key)
+    broker = Broker(
+        vault=vault,
+        policy=policy,
+        verifier=Verifier(
+            plugin_dir=settings.verifier_plugin_dir,
+            load_file_plugins=False,
+            load_entry_points=False,
+        ),
+        audit=audit,
+    )
+    return DashboardContext(
+        settings=settings,
+        vault=vault,
+        policy=policy,
+        broker=broker,
+        audit=audit,
+        passphrase_source=passphrase_result.source,
+    )
+
+
 class DesktopBridge:
-    """Stateless, read-only NDJSON bridge dispatcher.
+    """Stateless NDJSON bridge dispatcher.
 
     The default context is a side-effect-free metadata reader: it uses
     environment-only passphrase resolution and read-only SQLite connections.
     Callers may inject a context factory for unit tests or a trusted embedding.
+
+    Mutation methods (``add``, ``rotate``, ``delete``) are dispatched ONLY
+    when ``allow_mutations=True``; they build a real writable context via
+    ``writable_context_factory`` (default :func:`_build_writable_context`)
+    and route every write through ``Broker`` -> ``VaultMutations`` (the only
+    audited write path). Without the flag the methods return a
+    ``MUTATIONS_DISABLED`` error envelope and no writable context is built.
     """
 
     def __init__(
         self,
         context_factory: Callable[..., DashboardContext] | None = None,
         api_factory: Callable[[DashboardContext], DashboardAPI] | None = None,
+        *,
+        allow_mutations: bool = False,
+        writable_context_factory: Callable[..., DashboardContext] | None = None,
     ) -> None:
         self._context_factory = context_factory or _build_read_only_context
+        self._writable_context_factory = writable_context_factory or _build_writable_context
+        self._allow_mutations = allow_mutations
         self._api_factory = api_factory
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -537,6 +617,8 @@ class DesktopBridge:
             return _error(request_id, "UNKNOWN_METHOD", f"unknown method: {method}")
         try:
             result = handler(params)
+        except BridgeError as exc:
+            return _error(request_id, exc.code, exc.message, locked=exc.locked)
         except MissingPassphraseError as exc:
             return _error(request_id, "MISSING_PASSPHRASE", str(exc), locked=True)
         except (MissingKeyMaterialError, CorruptKeyMaterialError):
@@ -571,18 +653,37 @@ class DesktopBridge:
                 raise ValueError("invalid profile name") from None
         return self._context_factory(prompt=False, profile=name)
 
+    def _wctx(self, profile: Any = None) -> DashboardContext:
+        """Build the real writable context for a mutation method.
+
+        Only reachable from the mutation methods, which first check
+        ``self._allow_mutations``; the writable factory is therefore never
+        invoked for a read-only bridge (verify by inspection + test 5).
+        """
+        name = str(profile).strip() if profile not in (None, "") else None
+        if name:
+            try:
+                validate_profile_name(name)
+            except ValueError:
+                raise ValueError("invalid profile name") from None
+        return self._writable_context_factory(prompt=False, profile=name)
+
     # ── methods ────────────────────────────────────────────────────────────
 
     def _method_hello(self, params: dict[str, Any]) -> dict[str, Any]:
+        capabilities = list(ALL_METHODS)
+        if self._allow_mutations:
+            capabilities += list(MUTATION_METHODS)
         return {
             "name": BRIDGE_NAME,
             "protocol_version": PROTOCOL_VERSION,
             "version": __version__,
             "min_hermes_version": MIN_HERMES_VERSION,
             "min_vault_version": MIN_VAULT_VERSION,
-            "read_only": True,
+            "read_only": not self._allow_mutations,
             "raw_values_returned": False,
-            "capabilities": list(ALL_METHODS),
+            "mutations": self._allow_mutations,
+            "capabilities": capabilities,
         }
 
     def _method_overview(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -711,6 +812,193 @@ class DesktopBridge:
         result["profile"] = ctx.settings.profile_name
         return result
 
+    # ── mutation methods (opt-in, deny-by-default) ─────────────────────────
+
+    def _require_mutations(self) -> None:
+        if not self._allow_mutations:
+            raise BridgeError(
+                "MUTATIONS_DISABLED",
+                "mutation methods are disabled; launch the bridge with --allow-mutations",
+            )
+
+    @staticmethod
+    def _validate_request_id(params: dict[str, Any]) -> str | None:
+        raw = params.get("request_id")
+        if raw is None or raw == "":
+            return None
+        if not isinstance(raw, str) or not _REQUEST_ID_RE.fullmatch(raw):
+            raise ValueError(
+                f"request_id must be alphanumeric and at most {MAX_REQUEST_ID_LENGTH} characters"
+            )
+        return raw
+
+    @staticmethod
+    def _reject_renderer_agent_id(params: dict[str, Any]) -> None:
+        agent_id = params.get("agent_id")
+        if agent_id not in (None, ""):
+            raise ValueError("agent_id is not accepted from the renderer")
+
+    @staticmethod
+    def _optional_alias(params: dict[str, Any]) -> str | None:
+        alias = params.get("alias")
+        if alias is None or alias == "":
+            return None
+        if not isinstance(alias, str):
+            raise ValueError("alias must be a string")
+        return alias
+
+    def _method_add(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._require_mutations()
+        self._reject_renderer_agent_id(params)
+        request_id = self._validate_request_id(params)
+
+        service = params.get("service")
+        if not isinstance(service, str) or not service.strip():
+            raise ValueError("service is required")
+        secret = params.get("secret")
+        if not isinstance(secret, str) or not secret:
+            raise ValueError("secret is required")
+        alias = params.get("alias") if params.get("alias") not in (None, "") else "default"
+        if not isinstance(alias, str):
+            raise ValueError("alias must be a string")
+        credential_type = params.get("credential_type") or "api_key"
+        if not isinstance(credential_type, str):
+            raise ValueError("credential_type must be a string")
+
+        ctx = self._wctx(params.get("profile"))
+        audit_metadata = {"request_id": request_id} if request_id is not None else None
+        try:
+            result = ctx.broker.add_credential(
+                agent_id=OPERATOR_AGENT_ID,
+                service=service,
+                secret=secret,
+                credential_type=credential_type,
+                alias=alias,
+                audit_metadata=audit_metadata,
+            )
+        except AuditIntegrityError as exc:
+            raise BridgeError("AUDIT_INTEGRITY", _safe_text(exc)) from None
+        if not result.allowed:
+            raise _mutation_denial(result)
+        return _mutation_result(request_id, result)
+
+    def _method_rotate(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._require_mutations()
+        self._reject_renderer_agent_id(params)
+        request_id = self._validate_request_id(params)
+
+        service_or_id = params.get("service_or_id")
+        if not isinstance(service_or_id, str) or not service_or_id.strip():
+            raise ValueError("service_or_id is required")
+        new_secret = params.get("new_secret")
+        if not isinstance(new_secret, str) or not new_secret:
+            raise ValueError("new_secret is required")
+        alias = self._optional_alias(params)
+
+        ctx = self._wctx(params.get("profile"))
+        audit_metadata = {"request_id": request_id} if request_id is not None else None
+        try:
+            result = ctx.broker.rotate_credential(
+                agent_id=OPERATOR_AGENT_ID,
+                service_or_id=service_or_id,
+                new_secret=new_secret,
+                alias=alias,
+                audit_metadata=audit_metadata,
+            )
+        except AuditIntegrityError as exc:
+            raise BridgeError("AUDIT_INTEGRITY", _safe_text(exc)) from None
+        if not result.allowed:
+            raise _mutation_denial(result)
+        return _mutation_result(request_id, result)
+
+    def _method_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._require_mutations()
+        self._reject_renderer_agent_id(params)
+        request_id = self._validate_request_id(params)
+
+        service_or_id = params.get("service_or_id")
+        if not isinstance(service_or_id, str) or not service_or_id.strip():
+            raise ValueError("service_or_id is required")
+        confirmation = params.get("confirmation")
+        if not isinstance(confirmation, str) or not confirmation.strip():
+            raise BridgeError(
+                "CONFIRMATION_MISMATCH",
+                "confirmation is required and must match the target credential",
+            )
+        alias = self._optional_alias(params)
+
+        ctx = self._wctx(params.get("profile"))
+
+        # Resolve the target BEFORE any write so the confirmation token can be
+        # compared against the canonical credential id (or service:alias).
+        # Resolution is a read; the destructive step still flows through
+        # Broker.delete_credential -> VaultMutations (the audited write path).
+        try:
+            target = ctx.vault.resolve_credential(service_or_id, alias=alias)
+        except KeyError:
+            raise BridgeError(
+                "DENIED", f"credential '{service_or_id}' not found"
+            ) from None
+        except AmbiguousTargetError as exc:
+            raise BridgeError("DENIED", _safe_text(exc)) from None
+
+        expected = {target.id, f"{target.service}:{target.alias}"}
+        if confirmation not in expected:
+            raise BridgeError(
+                "CONFIRMATION_MISMATCH",
+                "confirmation must match the target credential id or 'service:alias'",
+            )
+
+        audit_metadata = {"request_id": request_id} if request_id is not None else None
+        try:
+            result = ctx.broker.delete_credential(
+                agent_id=OPERATOR_AGENT_ID,
+                service_or_id=service_or_id,
+                alias=alias,
+                audit_metadata=audit_metadata,
+            )
+        except AuditIntegrityError as exc:
+            raise BridgeError("AUDIT_INTEGRITY", _safe_text(exc)) from None
+        if not result.allowed:
+            raise _mutation_denial(result)
+        return _mutation_result(request_id, result)
+
+
+def _mutation_denial(result: MutationResult) -> BridgeError:
+    """Map a denied MutationResult to a distinct denial envelope code."""
+    reason = result.reason or ""
+    lowered = reason.lower()
+    if "audit integrity" in lowered:
+        return BridgeError("AUDIT_INTEGRITY", _safe_text(reason))
+    if "already exists" in lowered:
+        return BridgeError("DUPLICATE", _safe_text(reason))
+    return BridgeError("DENIED", _safe_text(reason))
+
+
+def _mutation_result(request_id: str | None, result: MutationResult) -> dict[str, Any]:
+    """Metadata-only mutation result envelope; the secret never serializes."""
+    data: dict[str, Any] = {
+        "allowed": result.allowed,
+        "action": result.action,
+        "service": result.service,
+        "agent_id": result.agent_id,
+        "reason": _safe_text(result.reason),
+        "metadata_keys": sorted((result.metadata or {}).keys()),
+        "has_metadata": bool(result.metadata),
+    }
+    if result.record is not None:
+        data["record"] = _credential_metadata(result.record)
+    safe_metadata = {
+        key: value
+        for key, value in (result.metadata or {}).items()
+        if key in ("credential_id", "request_id")
+    }
+    if safe_metadata:
+        data["metadata"] = safe_metadata
+    if request_id is not None:
+        data["request_id"] = request_id
+    return data
+
 
 def _utf8_size(value: str) -> int:
     return len(value.encode("utf-8", errors="replace"))
@@ -770,13 +1058,14 @@ def run_desktop_bridge(
     bridge: DesktopBridge | None = None,
     *,
     max_request_bytes: int = MAX_REQUEST_BYTES,
+    allow_mutations: bool = False,
 ) -> int:
     """Serve the NDJSON bridge over the given streams (defaults to stdio)."""
     import sys
 
     input_stream = stream_in if stream_in is not None else sys.stdin
     output_stream = stream_out if stream_out is not None else sys.stdout
-    handler = bridge or DesktopBridge()
+    handler = bridge or DesktopBridge(allow_mutations=allow_mutations)
     for raw, oversized in _iter_request_lines(input_stream, max_request_bytes):
         if oversized:
             response = _error(None, "OVERSIZED_REQUEST", f"request line exceeds {max_request_bytes} bytes")
@@ -794,6 +1083,7 @@ __all__ = [
     "MAX_OUTPUT_BYTES",
     "MAX_AUDIT_LIMIT",
     "ALL_METHODS",
+    "MUTATION_METHODS",
     "DesktopBridge",
     "run_desktop_bridge",
 ]

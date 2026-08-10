@@ -2043,12 +2043,19 @@ def dashboard(
 @_typer_app.command("desktop-bridge")
 def desktop_bridge(
     ctx: typer.Context,
+    allow_mutations: bool = typer.Option(
+        False,
+        "--allow-mutations",
+        help="Enable mutation methods (add/rotate/delete). Read-only consumers must not pass this flag.",
+    ),
 ) -> None:
-    """Serve the read-only NDJSON desktop bridge on stdin/stdout.
+    """Serve the NDJSON desktop bridge on stdin/stdout.
 
     Each request is one JSON object per line; each response is one JSON
-    object per line. The bridge never prompts for a passphrase (env-only),
-    never returns raw credential material, and never mutates the vault.
+    object per line. The bridge never prompts for a passphrase (env-only)
+    and never returns raw credential material. By default the bridge is
+    read-only; pass ``--allow-mutations`` only from a trusted local caller
+    (the desktop adapter on mutation routes) to enable add/rotate/delete.
 
     \\b
     Examples:
@@ -2056,7 +2063,7 @@ def desktop_bridge(
     """
     from hermes_vault.desktop_bridge import run_desktop_bridge
 
-    code = run_desktop_bridge()
+    code = run_desktop_bridge(allow_mutations=allow_mutations)
     if code:
         raise typer.Exit(code=code)
 
