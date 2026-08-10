@@ -45,7 +45,7 @@ def _json(content: list[TextContent]) -> Any:
 
 def _resource_json(content: list[TextResourceContents]) -> Any:
     assert len(content) == 1
-    assert content[0].mimeType == "application/json"
+    assert content[0].mime_type == "application/json"
     return json.loads(content[0].text)
 
 
@@ -114,17 +114,17 @@ def test_list_resources_returns_expected_static_resources():
         "vault://requests",
         "vault://recovery",
     }.issubset(by_uri)
-    assert by_uri["vault://status"].mimeType == "application/json"
-    assert by_uri["vault://services"].mimeType == "application/json"
-    assert by_uri["vault://health"].mimeType == "application/json"
-    assert by_uri["vault://policy"].mimeType == "application/json"
+    assert by_uri["vault://status"].mime_type == "application/json"
+    assert by_uri["vault://services"].mime_type == "application/json"
+    assert by_uri["vault://health"].mime_type == "application/json"
+    assert by_uri["vault://policy"].mime_type == "application/json"
 
 
 def test_list_resource_templates_returns_service_detail_template():
     templates = _run_async(list_resource_templates())
-    by_template = {template.uriTemplate: template for template in templates}
+    by_template = {template.uri_template: template for template in templates}
     assert "vault://services/{name}" in by_template
-    assert by_template["vault://services/{name}"].mimeType == "application/json"
+    assert by_template["vault://services/{name}"].mime_type == "application/json"
     assert "vault://policy-explain?service={service}&action={action}" in by_template
     assert "vault://recovery?backup={path}" in by_template
 
@@ -407,7 +407,7 @@ def test_resource_content_is_application_json(vault_with_policy, tmp_path):
     ):
         result = _run_async(read_resource(uri))
         assert len(result) == 1
-        assert result[0].mimeType == "application/json"
+        assert result[0].mime_type == "application/json"
         json.loads(result[0].text)
 
 
