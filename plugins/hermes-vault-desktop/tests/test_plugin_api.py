@@ -480,3 +480,65 @@ def test_logs_never_contain_request_bodies(client, fake_popen, clean_env, caplog
     assert "agent-7" not in caplog.text
     assert "agent_id" not in caplog.text
     assert "method" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Windows plugin regression tests (#76: POSIX-only assumptions removed)
+# ---------------------------------------------------------------------------
+
+
+def test_child_env_allowlists_windows_launcher_keys(monkeypatch, clean_env):
+    # Bug 3 (#76): a .cmd canonical launcher cannot spawn without ComSpec and
+    # user-profile path variables; they must pass the allowlist like HOME does.
+    monkeypatch.setenv("COMSPEC", r"C:\Windows\System32\cmd.exe")
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\tony")
+    monkeypatch.setenv("HOMEDRIVE", "C:")
+    monkeypatch.setenv("HOMEPATH", r"\Users\tony")
+    monkeypatch.setenv("PATH", r"C:\Windows\System32")
+    monkeypatch.setenv("HOME", r"C:\Users\tony")
+    monkeypatch.setenv("HERMES_VAULT_HOME", r"C:\vault")
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "[REDACTED]")
+    monkeypatch.setenv("OPENAI_API_KEY", "[REDACTED]")
+
+    env = plugin_api._child_env()
+
+    assert env["COMSPEC"] == r"C:\Windows\System32\cmd.exe"
+    assert env["USERPROFILE"] == r"C:\Users\tony"
+    assert env["HOMEDRIVE"] == "C:"
+    assert env["HOMEPATH"] == r"\Users\tony"
+    assert "OPENAI_API_KEY" not in env
+    assert env["HERMES_VAULT_PASSPHRASE"] == "[REDACTED]"
+
+
+def test_crlf_response_is_accepted(client, fake_popen, clean_env):
+    # Bug 4 (#76): cmd.exe converts LF to CRLF on the stdout pipe; the strict
+    # single-line parser must accept a CRLF-terminated bridge response.
+    crlf_payload = _ok_result({"profile": "default", "credential_count": 2}).replace("\n", "\r\n")
+    fake_popen.stdout = crlf_payload
+    resp = client.get("/overview")
+    assert resp.status_code == 200
+    assert resp.json() == {"profile": "default", "credential_count": 2}
+
+
+def test_embedded_newline_and_bare_cr_still_rejected(client, fake_popen, clean_env):
+    # Framing contract is unchanged: embedded \n or bare \r inside the payload
+    # (not a CRLF line ending) must still yield a malformed-response 502.
+    bad_lf = _ok_result({"profile": "default"}).replace('"ok": true', '"ok": true\n')
+    fake_popen.stdout = bad_lf
+    resp = client.get("/overview")
+    assert resp.status_code == 502
+
+    bad_cr = _ok_result({"profile": "default"}).replace('"ok": true', '"ok": true\r')
+    fake_popen.stdout = bad_cr
+    resp = client.get("/overview")
+    assert resp.status_code == 502
+
+
+def test_no_posix_only_pipe_primitives_in_bridge_path():
+    # Bugs 1+2 (#76): os.set_blocking and selectors.select() are POSIX-only
+    # and crash on Windows (AttributeError / WinError 10093). The v0.25.0
+    # refactor removed the bounded reader entirely; guard against
+    # reintroducing POSIX-only pipe primitives in the bridge child path.
+    source = Path(plugin_api.__file__).read_text(encoding="utf-8")
+    assert "set_blocking" not in source
+    assert "selectors" not in source
