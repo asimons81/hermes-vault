@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.25.0 -- Feature: Desktop Mutation Surface (2026-08-10)
+
+### Added
+
+- **Bridge mutation methods** (`src/hermes_vault/desktop_bridge.py`): `add`, `rotate`, and `delete` NDJSON methods behind an explicit `--allow-mutations` flag (default off). Each method rejects renderer-supplied `agent_id`, validates `request_id`, routes through `Broker` → `VaultMutations` (the single audited write path), traps `AuditIntegrityError`, and returns metadata-only responses. Delete enforces a typed confirmation token (credential id or `service:alias`) before any write.
+- **Adapter mutation routes** (`plugins/hermes-vault-desktop/dashboard/plugin_api.py`): `POST /mutations/{add,rotate,delete}` gated behind `HERMES_VAULT_DESKTOP_MUTATIONS=1` (404 when unset). Bearer-only auth (no `?token=` fallback), pre-spawn body validation with an allowlist, `--allow-mutations` passed to the bridge child only on mutation routes, and R1 Host-header hardening on the adapter router.
+- **Desktop mutation UI** (`plugins/hermes-vault-desktop/desktop/plugin.js`): add / rotate / delete dialogs with masked secret fields, type-to-confirm delete, single-flight buttons, error-state taxonomy, and audit result display. Version-gated by the `/hello` `mutations` capability — read-only mode is preserved when the flag is off.
+- **Docs**: `docs/mutation-surface-rollback.md` — per-surface rollback procedures, recovery drill, lease impact, and known limits (risks R1–R9).
+- **Tests**: `tests/test_desktop_bridge_mutations.py` (13), `plugins/hermes-vault-desktop/tests/test_plugin_api_mutations.py` (39), plus same-mount React #310 phase-flip regression tests for `VaultPage` and `DeleteCredentialDialog`.
+
+### Security
+
+- Mutations are deny-by-default: operator agent only via the bridge, policy-gated for non-operator agents, every write audited through the protected audit chain.
+- `AuditIntegrityError` rolls back credential writes on add/rotate and returns HTTP 409 at the adapter; delete is destructive and documented as irreversible (backup reminder in the delete dialog).
+- Raw secrets are never serialized in any bridge/adapter response; renderer memory zeroization limitation (R6) is documented and accepted.
+
+### Fixed
+
+- React #310 on the real Hermes Desktop: `VaultPage` and `DeleteCredentialDialog` hook declarations hoisted above conditional early returns (same-mount loading→success phase-flip regression tests fail pre-fix with the exact #310).
+- Integration-caught drift: mutation calls no longer append query params (I6), delete confirmation token derives `service:alias` or full id (I2), hello/health restored to release bounded-query behavior.
+
+### Upgrade notes
+
+- The mutation surface is **opt-in**. Existing read-only desktop installs are unaffected until `HERMES_VAULT_DESKTOP_MUTATIONS=1` is set on the adapter environment AND the bridge is run with `--allow-mutations`. Rollback at any time by unsetting the flag (routes return 404) or restoring v0.24.0 files (`docs/mutation-surface-rollback.md`).
+- The desktop plugin remains operator-only for mutations; agent-scoped mutations are out of scope (R7).
+
 ## 0.24.0 -- Feature: Hermes Desktop Integration (2026-08-06)
 
 ### Added

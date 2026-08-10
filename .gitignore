@@ -49,3 +49,6 @@ incident-bundles/
 /proof/
 /specs/
 /surveys/
+
+# Local hardproof tool state (never a deliverable)
+.hardproof/
