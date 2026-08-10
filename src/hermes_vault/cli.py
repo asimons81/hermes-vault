@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 import re
 import sqlite3
@@ -18,18 +17,12 @@ from rich.table import Table
 
 from hermes_vault import _platform
 from hermes_vault.audit import AuditLogger
-from hermes_vault.audit_integrity.service import AuditIntegrityError
 from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings, reset_active_profile, set_active_profile
 from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase
 from hermes_vault.detectors import classify_env_name, detect_matches, parse_env_map
 from hermes_vault.diff import diff_backups
 from hermes_vault.health import run_health
-from hermes_vault.import_export import (
-    export_credentials,
-    add_tags as add_tags_to_credential,
-    remove_tags as remove_tags_from_credential,
-)
 from hermes_vault.models import AccessLogRecord, CredentialStatus, Decision
 from hermes_vault.mutations import VaultMutations, OPERATOR_AGENT_ID
 from hermes_vault.policy import PolicyEngine
@@ -93,19 +86,6 @@ _typer_app.add_typer(recovery_app, name="recovery")
 incident_app = typer.Typer(help="Redacted incident bundle operations.")
 _typer_app.add_typer(incident_app, name="incident")
 console = Console()
-
-
-@_typer_app.command("setup")
-def setup_wizard_cmd(ctx: typer.Context) -> None:
-    """Interactive first-time vault setup wizard.
-
-    Walks through vault creation, passphrase setup, import suggestions,
-    policy bootstrap, verification scheduling, and integration setup.
-    """
-    from hermes_vault.setup_wizard import run_setup_wizard
-    result = run_setup_wizard()
-    if result != 0:
-        raise typer.Exit(code=result)
 
 
 def _dashboard_runtime_warning() -> str | None:
@@ -436,33 +416,28 @@ def import_credentials(
     ctx: typer.Context,
     from_env: Path | None = typer.Option(None, "--from-env", help="Import from a .env file (KEY=value format)."),
     from_file: Path | None = typer.Option(None, "--from-file", help="Import from a JSON file (auto-detects secrets)."),
-    from_csv: Path | None = typer.Option(None, "--from-csv", help="Import from a CSV file with header row."),
-    service_column: str = typer.Option("service", "--service-column", help="CSV column for service name."),
-    secret_column: str = typer.Option("secret", "--secret-column", help="CSV column for secret value."),
-    alias_column: str | None = typer.Option(None, "--alias-column", help="CSV column for credential alias."),
     redact_source: bool = typer.Option(False, "--redact-source", help="Comment out imported lines in the source file after successful import."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview imports and skips without mutating the vault or source file."),
     env_map: list[str] | None = typer.Option(None, "--map", help="Explicit mapping ENV_NAME=service:credential_type. Repeatable."),
     tags: list[str] | None = typer.Option(None, "--tags", help="Plaintext metadata tags for imported credentials. Repeat or comma-separate."),
     notes: str | None = typer.Option(None, "--notes", help="Plaintext metadata notes for imported credentials."),
 ) -> None:
-    """Import credentials from env files, JSON, or CSV.
+    """Import credentials from env files or JSON.
 
     Service names are normalized to canonical IDs automatically.
 
-    \\b
+    \b
     Examples:
       hermes-vault import --from-env ~/.hermes/.env --dry-run
       hermes-vault import --from-env ~/.hermes/.env --map CUSTOM_KEY=custom-service:api_key
       hermes-vault import --from-env ~/.hermes/.env --redact-source
       hermes-vault import --from-file secrets.json
-      hermes-vault import --from-csv creds.csv --service-column provider --secret-column key
     """
-    if not from_env and not from_file and not from_csv:
-        console.print("[red]Provide --from-env, --from-file, or --from-csv[/red]")
+    if not from_env and not from_file:
+        console.print("[red]Provide --from-env or --from-file[/red]")
         raise typer.Exit(code=1)
-    if sum(1 for x in (from_env, from_file, from_csv) if x) > 1:
-        console.print("[red]Provide only one source: --from-env, --from-file, or --from-csv[/red]")
+    if from_env and from_file:
+        console.print("[red]Provide only one source: --from-env or --from-file[/red]")
         raise typer.Exit(code=1)
     if from_file and env_map:
         console.print("[red]--map only applies to --from-env imports[/red]")
@@ -606,49 +581,6 @@ def import_credentials(
             console.print("Review plaintext source removal separately.")
         return
 
-    # ── CSV import ──────────────────────────────────────────────────
-    if from_csv:
-        import csv as _csv
-        import io as _io
-        vault, _, _, mutations = build_services(prompt=True)
-        content = from_csv.read_text(encoding="utf-8", errors="ignore")
-        reader = _csv.DictReader(_io.StringIO(content))
-        if reader.fieldnames is None:
-            console.print("[red]CSV file has no header row[/red]")
-            raise typer.Exit(code=1)
-        parsed_tags = _parse_tags(tags)
-        imported = 0
-        skipped = 0
-        for row_num, row in enumerate(reader, start=2):
-            svc = normalize(row.get(service_column, "").strip())
-            secret = row.get(secret_column, "").strip()
-            if not svc or not secret:
-                skipped += 1
-                continue
-            als = (row.get(alias_column) or "").strip() if alias_column else "default"
-            if dry_run:
-                console.print(f"[cyan]Would import[/cyan] row {row_num}: {svc} (alias={als})")
-                continue
-            result = mutations.add_credential(
-                agent_id=OPERATOR_AGENT_ID,
-                service=svc,
-                secret=secret,
-                credential_type="api_key",
-                alias=als,
-                imported_from=str(from_csv),
-                tags=parsed_tags,
-                notes=notes,
-            )
-            if not result.allowed:
-                console.print(f"[red]Denied importing row {row_num} '{svc}': {result.reason}[/red]")
-                continue
-            imported += 1
-        if dry_run:
-            console.print(f"[green]Dry run: {imported} row(s) would be imported; {skipped} skipped.[/green]")
-        else:
-            console.print(f"[green]Imported {imported} credential(s); skipped {skipped} row(s).[/green]")
-        return
-
     vault, _, _, mutations = build_services(prompt=True)
     parsed = json.loads(original_content)
     imported_count = 0
@@ -757,30 +689,13 @@ def add(
 
 
 @_typer_app.command(name="list")
-def list_credentials_cmd(
-    ctx: typer.Context,
-    unverified: bool = typer.Option(False, "--unverified", help="Only show credentials that have never been verified."),
-    stale: bool = typer.Option(False, "--stale", help="Only show credentials not verified in 30+ days."),
-    service: str | None = typer.Option(None, "--service", help="Filter by service."),
-    tag: str | None = typer.Option(None, "--tag", help="Filter by tag."),
-) -> None:
+def list_credentials_cmd(ctx: typer.Context) -> None:
     """List all credentials in the vault.
 
     Shows canonical service IDs, aliases, and credential status.
     """
     vault, _, _, _ = build_services(prompt=True)
     records = vault.list_credentials()
-    now = datetime.now(timezone.utc)
-    if unverified:
-        records = [r for r in records if r.last_verified_at is None]
-    if stale:
-        records = [r for r in records if r.last_verified_at is None
-                   or (r.last_verified_at.replace(tzinfo=timezone.utc) if r.last_verified_at.tzinfo is None
-                       else r.last_verified_at) < now - timedelta(days=30)]
-    if service:
-        records = [r for r in records if r.service == normalize(service)]
-    if tag:
-        records = [r for r in records if tag in r.tags]
     table = Table(title="Vault Credentials")
     table.add_column("ID")
     table.add_column("Service")
@@ -1422,7 +1337,7 @@ def set_expiry(
 
     vault, policy, broker, mutations = build_services(prompt=True)
     settings = get_settings()
-    audit = AuditLogger(settings.db_path, master_key=vault.key)
+    audit = AuditLogger(settings.db_path)
 
     # Resolve target to get canonical service name
     try:
@@ -1478,7 +1393,7 @@ def clear_expiry(
 
     vault, policy, broker, mutations = build_services(prompt=True)
     settings = get_settings()
-    audit = AuditLogger(settings.db_path, master_key=vault.key)
+    audit = AuditLogger(settings.db_path)
 
     # Resolve target to get canonical service name
     try:
@@ -1639,213 +1554,6 @@ def verify(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(output_results, indent=2, sort_keys=True), encoding="utf-8")
         report_path.chmod(0o600)
-
-
-@_typer_app.command("export")
-def export_cmd(
-    ctx: typer.Context,
-    output: Path | None = typer.Option(None, "--output", "-o", help="Write to file instead of stdout."),
-    fmt: str = typer.Option("json", "--format", help="Output format: json, csv, or env."),
-    service: str | None = typer.Option(None, "--service", help="Filter by service."),
-    tag: str | None = typer.Option(None, "--tag", help="Filter by tag."),
-    unverified: bool = typer.Option(False, "--unverified", help="Only export never-verified credentials."),
-    with_secrets: bool = typer.Option(False, "--with-secrets", help="Include plaintext secrets in export."),
-) -> None:
-    """Export filtered credentials to JSON, CSV, or .env format."""
-    if fmt not in ("json", "csv", "env"):
-        console.print("[red]--format must be json, csv, or env[/red]")
-        raise typer.Exit(code=1)
-    vault, _, _, _ = build_services(prompt=True)
-    records = vault.list_credentials()
-    if service:
-        records = [r for r in records if r.service == normalize(service)]
-    if tag:
-        records = [r for r in records if tag in r.tags]
-    if unverified:
-        records = [r for r in records if r.last_verified_at is None]
-    try:
-        content = export_credentials(records, fmt=fmt, include_secrets=with_secrets, vault=vault)
-    except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
-    if output:
-        output.write_text(content, encoding="utf-8")
-        output.chmod(0o600)
-        console.print(f"[green]Exported {len(records)} credential(s) to {output}[/green]")
-    else:
-        console.print(content)
-
-
-@_typer_app.command("tag")
-def tag_cmd(
-    ctx: typer.Context,
-    target: str = typer.Argument(help="Service name or credential ID."),
-    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias."),
-    add_tags: list[str] | None = typer.Option(None, "--add", help="Tags to add. Repeatable."),
-    remove_tags: list[str] | None = typer.Option(None, "--remove", help="Tags to remove. Repeatable."),
-    set_tags: list[str] | None = typer.Option(None, "--set", help="Replace all tags. Repeatable."),
-) -> None:
-    """Manage tags on one credential or bulk by service.
-
-    \\b
-    Examples:
-      hermes-vault tag openai --add production,primary
-      hermes-vault tag github --alias work --remove deprecated
-      hermes-vault tag openai --set production
-    """
-    if not add_tags and not remove_tags and set_tags is None:
-        console.print("[red]Provide --add, --remove, or --set[/red]")
-        raise typer.Exit(code=1)
-    vault, _, _, _ = build_services(prompt=True)
-    try:
-        record = vault.resolve_credential(target, alias=alias)
-    except KeyError:
-        console.print(f"[red]Credential not found: {target} (alias={alias})[/red]")
-        raise typer.Exit(code=1)
-    new_tags = list(record.tags)
-    if set_tags is not None:
-        new_tags = vault._normalize_tags(set_tags)
-    elif add_tags:
-        new_tags = add_tags_to_credential(vault, record.id, add_tags)
-    elif remove_tags:
-        new_tags = remove_tags_from_credential(vault, record.id, remove_tags)
-    console.print(f"[green]Tags for {record.service} ({record.alias}): {', '.join(new_tags) or '(none)'}[/green]")
-
-
-@_typer_app.command("schedule-verify")
-def schedule_verify(
-    ctx: typer.Context,
-    every: str = typer.Option("24h", "--every", help="Verification interval: 1h, 6h, 24h, 7d."),
-    services: list[str] | None = typer.Option(None, "--service", help="Limit to specific services (repeatable)."),
-    print_unit: bool = typer.Option(False, "--print-unit", help="Print systemd timer+service units."),
-    print_cron: bool = typer.Option(False, "--print-cron", help="Print cron job line."),
-) -> None:
-    """Generate scheduled verification templates.
-
-    Outputs systemd timer units or cron job entries for automated
-    credential verification.
-
-    \\b
-    Examples:
-      hermes-vault schedule-verify --every 24h --print-cron
-      hermes-vault schedule-verify --every 6h --print-unit --service openai,anthropic
-    """
-    svc_args = ""
-    if services:
-        for s in services:
-            svc_args += f" --service {s}"
-    if print_unit:
-        console.print(_schedule_verify_systemd(every, svc_args))
-    if print_cron:
-        console.print(_schedule_verify_cron(every, svc_args))
-    if not print_unit and not print_cron:
-        console.print("Use --print-unit or --print-cron to see template.")
-        console.print("Example: hermes-vault schedule-verify --every 24h --print-cron")
-
-
-@_typer_app.command("catalog")
-def catalog_cmd(ctx: typer.Context) -> None:
-    """List all 45 canonical service IDs with metadata."""
-    from hermes_vault.service_ids import CANONICAL_IDS, get_env_var_map
-    from hermes_vault.verifier import Verifier
-    v = Verifier(load_entry_points=False)
-    registered = set()
-    if hasattr(v, '_registry'):
-        registered = {reg.service for reg in v._registry.values()}
-    table = Table(title="Hermes Vault Service Catalog")
-    table.add_column("Service")
-    table.add_column("Env Var")
-    table.add_column("Verified")
-    table.add_column("Description")
-
-    for svc in sorted(CANONICAL_IDS):
-        env_vars = get_env_var_map(svc)
-        primary_env = next(iter(env_vars.keys()), "-")
-        has_v = "\u2713" if svc in registered else "\u2717"
-        table.add_row(svc, primary_env, has_v, _svc_desc(svc))
-    console.print(table)
-    total = len(CANONICAL_IDS)
-    count = sum(1 for s in CANONICAL_IDS if s in registered)
-    console.print(f"\n[yellow]{total} canonical services. {count} verifiers loaded.[/yellow]")
-
-
-def _svc_desc(svc: str) -> str:
-    d: dict[str, str] = {
-        "anthropic": "Anthropic Claude API",
-        "bailian": "Alibaba Bailian / Tongyi AI",
-        "brave-search": "Brave Search API", "cloudflare": "Cloudflare API",
-        "commandcode": "CommandCode coding agent", "crof-ai": "Crof AI",
-        "deepseek": "DeepSeek AI API", "elevenlabs": "ElevenLabs TTS",
-        "evolink": "Evolink AI", "fal": "FAL.ai media generation",
-        "fireworks": "Fireworks AI inference", "gemini": "Google Gemini",
-        "generic": "Generic bearer token", "github": "GitHub API",
-        "google": "Google OAuth / APIs", "groq": "Groq LPU inference",
-        "huggingface": "Hugging Face Hub", "inception": "Inception AI",
-        "kilocode": "KiloCode coding agent", "kimi": "Moonshot Kimi",
-        "kimi-coding": "Moonshot Kimi Coding", "minimax": "MiniMax AI",
-        "mistral": "Mistral AI", "nahcrof-dedicated": "Nahcrof dedicated",
-        "netlify": "Netlify platform", "neuralwatt": "NeuralWatt",
-        "ninerouter": "9Router model gateway", "openai": "OpenAI API",
-        "openrouter": "OpenRouter gateway", "perplexity": "Perplexity AI",
-        "replicate": "Replicate model hosting", "resend": "Resend email",
-        "serpapi": "SerpAPI search", "serper": "Serper.dev search",
-        "supabase": "Supabase platform", "synthetic": "Synthetic agent",
-        "tavily": "Tavily search", "telegram": "Telegram Bot API",
-        "trinity": "Trinity agent", "venice": "Venice AI",
-        "vercel": "Vercel platform", "voyage": "Voyage embeddings",
-        "xai": "xAI / Grok", "xiaomi": "Xiaomi AI", "zai": "Zai AI",
-    }
-    return d.get(svc, "")
-
-
-def _schedule_verify_cron(interval: str, service_args: str) -> str:
-    """Generate a cron line for scheduled verification."""
-    cron_map = {"1h": "0 * * * *", "6h": "0 */6 * * *", "12h": "0 */12 * * *",
-                 "24h": "0 0 * * *", "7d": "0 0 * * 0"}
-    schedule = cron_map.get(interval, "0 0 * * *")
-    return f"{schedule} hermes-vault verify --all{service_args} --format json --report ~/vault-last-verify.json"
-
-
-def _schedule_verify_systemd(interval: str, service_args: str) -> str:
-    on_calendar = {"1h": "hourly", "6h": "*-*-* *:00:00", "12h": "*-*-* 00,12:00:00",
-                    "24h": "daily", "7d": "weekly"}
-    onc = on_calendar.get(interval, "daily")
-    return f"""# hermes-vault-verify.timer
-[Unit]
-Description=Hermes Vault credential verification
-
-[Timer]
-OnCalendar={onc}
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-
-# hermes-vault-verify.service
-[Unit]
-Description=Hermes Vault credential verification
-
-[Service]
-Type=oneshot
-ExecStart={shutil.which('hermes-vault') or 'hermes-vault'} verify --all{service_args}
-"""
-
-
-def _compute_health_score(report) -> str:
-    """A-F health score based on coverage, staleness, and findings."""
-    findings = len(report.findings)
-    coverage = getattr(report, "verification_coverage", 0.0)
-    total = max(report.total_credentials, 1)
-    stale_pct = report.stale_count / total
-    if findings == 0 and coverage > 0.8:
-        return "A"
-    if findings <= 2 and coverage > 0.5:
-        return "B"
-    if findings <= 5:
-        return "C"
-    if stale_pct > 0.5:
-        return "F"
-    return "D"
 
 
 @_typer_app.command()
@@ -2335,12 +2043,19 @@ def dashboard(
 @_typer_app.command("desktop-bridge")
 def desktop_bridge(
     ctx: typer.Context,
+    allow_mutations: bool = typer.Option(
+        False,
+        "--allow-mutations",
+        help="Enable mutation methods (add/rotate/delete). Read-only consumers must not pass this flag.",
+    ),
 ) -> None:
-    """Serve the read-only NDJSON desktop bridge on stdin/stdout.
+    """Serve the NDJSON desktop bridge on stdin/stdout.
 
     Each request is one JSON object per line; each response is one JSON
-    object per line. The bridge never prompts for a passphrase (env-only),
-    never returns raw credential material, and never mutates the vault.
+    object per line. The bridge never prompts for a passphrase (env-only)
+    and never returns raw credential material. By default the bridge is
+    read-only; pass ``--allow-mutations`` only from a trusted local caller
+    (the desktop adapter on mutation routes) to enable add/rotate/delete.
 
     \\b
     Examples:
@@ -2348,7 +2063,7 @@ def desktop_bridge(
     """
     from hermes_vault.desktop_bridge import run_desktop_bridge
 
-    code = run_desktop_bridge()
+    code = run_desktop_bridge(allow_mutations=allow_mutations)
     if code:
         raise typer.Exit(code=code)
 
@@ -2670,7 +2385,7 @@ def rotate_master_key(
 
     settings = get_settings()
     vault, _, _, _ = build_services(prompt=True)
-    audit = AuditLogger(settings.db_path, master_key=vault.key)
+    audit = AuditLogger(settings.db_path)
 
     console.print("[bold]Master Key Rotation[/bold]")
     console.print(f"  Vault: {settings.db_path}")
@@ -2840,7 +2555,7 @@ def recovery_drill(
     from hermes_vault.recovery import run_recovery_drill
 
     report = run_recovery_drill(backup_path=backup, vault=vault, policy=policy)
-    audit = AuditLogger(get_settings().db_path, master_key=vault.key)
+    audit = AuditLogger(get_settings().db_path)
     audit.record(
         AccessLogRecord(
             agent_id=OPERATOR_AGENT_ID,
@@ -2915,13 +2630,7 @@ def restore_vault(
     Existing credentials with the same service+alias are replaced.
     Requires --yes to confirm.
 
-    Supports hvbackup-v1 and hvbackup-v2 backups. The restore runs through
-    the E1 atomic preflight + single-transaction import (issue #62): the v2
-    evidence contract, lease credential linkage, and broker identity are
-    validated before any mutation, and the restore — including its protected
-    restore audit event — commits as one transaction. Any preflight rejection
-    or audit failure blocks the restore with a clear, non-zero exit and
-    leaves the vault unchanged.
+    Metadata-only backups are rejected with a clear error.
 
     Example:
       hermes-vault restore --input ~/vault-backup-2026-04.json --yes
@@ -2932,11 +2641,11 @@ def restore_vault(
 
     if dry_run:
         vault, _, _, _ = build_services(prompt=True)
-        from hermes_vault.backup import BACKUP_INTEGRITY_HEALTHY, restore_dry_run
+        from hermes_vault.backup import restore_dry_run
 
         report = restore_dry_run(input, vault)
         _print_backup_report(report, format=format)
-        audit = AuditLogger(get_settings().db_path, master_key=vault.key)
+        audit = AuditLogger(get_settings().db_path)
         audit.record(
             AccessLogRecord(
                 agent_id=OPERATOR_AGENT_ID,
@@ -2947,14 +2656,7 @@ def restore_vault(
                 metadata=report.as_dict(exclude_none=False),
             )
         )
-        # Align the preflight exit code with backup-verify (fail closed on
-        # invalid v2 evidence): exit 0 only when decryptable AND any present
-        # integrity evidence is healthy.
-        integrity_ok = (
-            not report.integrity_available
-            or report.integrity_status == BACKUP_INTEGRITY_HEALTHY
-        )
-        raise typer.Exit(code=0 if (report.decryptable and integrity_ok) else 1)
+        raise typer.Exit(code=0 if report.decryptable else 1)
 
     if not yes:
         console.print("[red]Restoration requires --yes flag.[/red]")
@@ -2965,60 +2667,15 @@ def restore_vault(
     except Exception as exc:
         console.print(f"[red]Failed to read backup file: {exc}[/red]")
         raise typer.Exit(code=1)
-
-    # E2 v2 gate. import_backup runs the E1 preflight (version + evidence
-    # contract + lease linkage + broker identity) and the single-transaction
-    # restore with the protected audit event through the shared seam. The gate
-    # surfaces each failure class distinctly and never lets a rejected or
-    # rolled-back restore exit successfully.
-    active_leases = _count_active_leases(backup)
-    if active_leases:
-        console.print(
-            f"[yellow]Notice: {active_leases} active lease(s) in the backup will be "
-            "force-revoked on restore (active lease identities are never restored).[/yellow]"
-        )
+    if backup.get("version") != "hvbackup-v1":
+        console.print(f"[red]Unsupported backup version: {backup.get('version')}[/red]")
+        raise typer.Exit(code=1)
     try:
         imported = vault.import_backup(backup)
-    except (ValueError, AuditIntegrityError, sqlite3.Error) as exc:
-        error_class = _restore_error_class(exc)
-        console.print(f"[red]Restore blocked ({error_class}): {exc}[/red]")
-        raise typer.Exit(code=1)
-    except Exception as exc:
-        console.print(f"[red]Restore failed: {exc}[/red]")
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
     console.print(f"[green]Restored {len(imported)} credential(s) from {input}[/green]")
-
-
-def _count_active_leases(backup: dict) -> int:
-    """Count leases in a backup that would be restored as active (E1 force-revokes them)."""
-    leases = backup.get("leases") or []
-    if not isinstance(leases, list):
-        return 0
-    return sum(
-        1
-        for lease in leases
-        if isinstance(lease, dict) and lease.get("status") == "active"
-    )
-
-
-def _restore_error_class(exc: Exception) -> str:
-    """Classify an E1 restore failure into a distinct operator-facing class."""
-    if isinstance(exc, AuditIntegrityError):
-        return "audit failure"
-    if isinstance(exc, sqlite3.Error):
-        return "transaction failure"
-    lowered = str(exc).lower()
-    if "metadata-only" in lowered:
-        return "partial-commit risk (metadata-only backup)"
-    if "foreign credential linkage" in lowered:
-        return "foreign credential linkage"
-    if "does not match" in lowered:
-        return "broker mismatch"
-    if "audit integrity evidence" in lowered:
-        return "missing audit integrity evidence"
-    if "unsupported backup version" in lowered:
-        return "unsupported backup version"
-    return "preflight rejection"
 
 
 @_typer_app.command("backup-verify")
@@ -3033,30 +2690,22 @@ def backup_verify(
         raise typer.Exit(code=2)
 
     vault, _, _, _ = build_services(prompt=True)
-    from hermes_vault.backup import BACKUP_INTEGRITY_HEALTHY, verify_backup_file
+    from hermes_vault.backup import verify_backup_file
 
     report = verify_backup_file(input, vault)
     _print_backup_report(report, format=format)
-    # Fail closed on tampered evidence: exit 0 only when decryptable AND
-    # (no integrity evidence OR evidence verified healthy). v2 backups with
-    # integrity_available exit nonzero on anything less than healthy (#59).
-    integrity_ok = (
-        not report.integrity_available
-        or report.integrity_status == BACKUP_INTEGRITY_HEALTHY
-    )
-    verified = report.decryptable and integrity_ok
-    audit = AuditLogger(get_settings().db_path, master_key=vault.key)
+    audit = AuditLogger(get_settings().db_path)
     audit.record(
         AccessLogRecord(
             agent_id=OPERATOR_AGENT_ID,
             service="*",
             action="backup_verify",
-            decision=Decision.allow if verified else Decision.deny,
-            reason=f"backup verify for {input}: {'ok' if verified else '; '.join(report.findings)}",
+            decision=Decision.allow if report.decryptable else Decision.deny,
+            reason=f"backup verify for {input}: {'ok' if report.decryptable else '; '.join(report.findings)}",
             metadata=report.as_dict(exclude_none=False),
         )
     )
-    raise typer.Exit(code=0 if verified else 1)
+    raise typer.Exit(code=0 if report.decryptable else 1)
 
 
 def _print_backup_report(report, *, format: str) -> None:
@@ -3073,10 +2722,6 @@ def _print_backup_report(report, *, format: str) -> None:
     table.add_row("Decryptable", "yes" if report.decryptable else "no")
     table.add_row("Would restore", str(report.would_restore_count))
     table.add_row("Audit included", "yes" if report.audit_included else "no")
-    if report.integrity_available:
-        table.add_row("Integrity status", report.integrity_status or "-")
-        if report.integrity_reason:
-            table.add_row("Integrity reason", report.integrity_reason)
     console.print(table)
     for finding in report.findings:
         console.print(f"[red]{finding}[/red]")

@@ -648,6 +648,7 @@ class Broker:
         imported_from: str | None = None,
         scopes: list[str] | None = None,
         replace_existing: bool = False,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Add a credential through the centralized mutation path."""
         return self._mutations.add_credential(
@@ -659,6 +660,7 @@ class Broker:
             imported_from=imported_from,
             scopes=scopes,
             replace_existing=replace_existing,
+            audit_metadata=audit_metadata,
         )
 
     def rotate_credential(
@@ -667,6 +669,7 @@ class Broker:
         service_or_id: str,
         new_secret: str,
         alias: str | None = None,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Rotate a credential through the centralized mutation path."""
         return self._mutations.rotate_credential(
@@ -674,6 +677,7 @@ class Broker:
             service_or_id=service_or_id,
             new_secret=new_secret,
             alias=alias,
+            audit_metadata=audit_metadata,
         )
 
     def delete_credential(
@@ -681,12 +685,14 @@ class Broker:
         agent_id: str,
         service_or_id: str,
         alias: str | None = None,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Delete a credential through the centralized mutation path."""
         return self._mutations.delete_credential(
             agent_id=agent_id,
             service_or_id=service_or_id,
             alias=alias,
+            audit_metadata=audit_metadata,
         )
 
     def get_metadata(

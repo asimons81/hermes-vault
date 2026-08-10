@@ -71,6 +71,7 @@ class VaultMutations:
         notes: str | None = None,
         replace_existing: bool = False,
         metadata: dict | None = None,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Add a credential with policy check and audit."""
         service = normalize(service)
@@ -82,7 +83,8 @@ class VaultMutations:
             )
             if not cap_ok:
                 return self._record_mutation(
-                    agent_id, service, "add_credential", False, cap_reason
+                    agent_id, service, "add_credential", False, cap_reason,
+                    audit_metadata=audit_metadata,
                 )
             # Service must be in agent's policy and allow add_credential action.
             svc_ok, svc_reason = self._check_service_action(
@@ -90,7 +92,8 @@ class VaultMutations:
             )
             if not svc_ok:
                 return self._record_mutation(
-                    agent_id, service, "add_credential", False, svc_reason
+                    agent_id, service, "add_credential", False, svc_reason,
+                    audit_metadata=audit_metadata,
                 )
 
         # Capture the before-image of an existing row so an audit-failure
@@ -119,7 +122,8 @@ class VaultMutations:
             )
         except Exception as exc:
             return self._record_mutation(
-                agent_id, service, "add_credential", False, str(exc)
+                agent_id, service, "add_credential", False, str(exc),
+                audit_metadata=audit_metadata,
             )
 
         try:
@@ -131,6 +135,7 @@ class VaultMutations:
                 f"credential {record.id} added for service '{service}' alias '{alias}'",
                 record=record,
                 before_image=before_image,
+                audit_metadata=audit_metadata,
             )
         except AuditRollbackError as exc:
             return MutationResult(
@@ -162,6 +167,7 @@ class VaultMutations:
         service_or_id: str,
         new_secret: str,
         alias: str | None = None,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Rotate a credential's secret with policy check and audit."""
         try:
@@ -173,6 +179,7 @@ class VaultMutations:
                 "rotate_credential",
                 False,
                 f"credential '{service_or_id}' not found",
+                audit_metadata=audit_metadata,
             )
 
         service = current.service
@@ -183,14 +190,16 @@ class VaultMutations:
             )
             if not svc_ok:
                 return self._record_mutation(
-                    agent_id, service, "rotate_credential", False, svc_reason
+                    agent_id, service, "rotate_credential", False, svc_reason,
+                    audit_metadata=audit_metadata,
                 )
 
         try:
             updated = self.vault.rotate(service_or_id, new_secret, alias=alias)
         except Exception as exc:
             return self._record_mutation(
-                agent_id, service, "rotate_credential", False, str(exc)
+                agent_id, service, "rotate_credential", False, str(exc),
+                audit_metadata=audit_metadata,
             )
 
         try:
@@ -202,6 +211,7 @@ class VaultMutations:
                 f"rotated credential for service '{service}' alias '{updated.alias}'",
                 record=updated,
                 before_image=current,
+                audit_metadata=audit_metadata,
             )
         except AuditRollbackError as exc:
             return MutationResult(
@@ -229,6 +239,7 @@ class VaultMutations:
         agent_id: str,
         service_or_id: str,
         alias: str | None = None,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Delete a credential with policy check and audit."""
         try:
@@ -240,6 +251,7 @@ class VaultMutations:
                 "delete_credential",
                 False,
                 f"credential '{service_or_id}' not found",
+                audit_metadata=audit_metadata,
             )
 
         service = current.service
@@ -250,7 +262,8 @@ class VaultMutations:
             )
             if not svc_ok:
                 return self._record_mutation(
-                    agent_id, service, "delete_credential", False, svc_reason
+                    agent_id, service, "delete_credential", False, svc_reason,
+                    audit_metadata=audit_metadata,
                 )
 
         record_id = current.id
@@ -258,7 +271,8 @@ class VaultMutations:
             deleted = self.vault.delete(service_or_id, alias=alias)
         except Exception as exc:
             return self._record_mutation(
-                agent_id, service, "delete_credential", False, str(exc)
+                agent_id, service, "delete_credential", False, str(exc),
+                audit_metadata=audit_metadata,
             )
 
         if not deleted:
@@ -268,6 +282,7 @@ class VaultMutations:
                 "delete_credential",
                 False,
                 "delete returned False (credential may not exist)",
+                audit_metadata=audit_metadata,
             )
 
         try:
@@ -279,6 +294,10 @@ class VaultMutations:
                 f"deleted credential '{record_id}' for service '{service}'",
                 metadata={"credential_id": record_id},
                 before_image=current,
+                audit_metadata={
+                    **(audit_metadata or {}),
+                    "credential_id": record_id,
+                },
             )
         except AuditRollbackError as exc:
             return MutationResult(
@@ -364,6 +383,7 @@ class VaultMutations:
         record: CredentialRecord | None = None,
         metadata: dict | None = None,
         before_image: CredentialRecord | None = None,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Write the audit entry and build the result.
 
@@ -381,6 +401,10 @@ class VaultMutations:
         exist before this mutation. The integrity exception is re-raised
         as an :class:`AuditIntegrityError` with an operator-actionable
         message.
+
+        ``audit_metadata`` is written into the access-log row's ``metadata``
+        column (e.g. a caller-supplied ``request_id``); it is never merged
+        into the returned :class:`MutationResult` metadata.
         """
         try:
             self.audit.record(
@@ -390,6 +414,7 @@ class VaultMutations:
                     action=action,
                     decision=Decision.allow if allowed else Decision.deny,
                     reason=reason,
+                    metadata=audit_metadata or {},
                 )
             )
         except AuditIntegrityError as exc:
