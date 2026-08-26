@@ -262,8 +262,8 @@ copyButtons.forEach((button) => {
 
       const originalText = button.textContent;
       button.textContent = 'Copied!';
-      button.style.borderColor = 'var(--accent-blue)';
-      button.style.color = 'var(--accent-blue)';
+      button.style.borderColor = 'var(--accent-red)';
+      button.style.color = 'var(--accent-red)';
 
       window.setTimeout(() => {
         button.textContent = originalText;
@@ -286,3 +286,236 @@ if (yearEl) {
 window.addEventListener('load', () => {
   document.documentElement.classList.add('ready');
 });
+
+// 8. Scroll Progress Bar & Floating Back-To-Top Button
+const scrollProgress = document.getElementById('scroll-progress');
+const btnBackToTop = document.getElementById('btn-back-to-top');
+
+function handleScroll() {
+  const scrollTop = window.scrollY || document.documentElement.scrollTop;
+  const docHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+  const scrollPercent = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+
+  if (scrollProgress) {
+    scrollProgress.style.width = `${scrollPercent}%`;
+  }
+
+  if (btnBackToTop) {
+    if (scrollTop > 400) {
+      btnBackToTop.classList.add('is-visible');
+    } else {
+      btnBackToTop.classList.remove('is-visible');
+    }
+  }
+}
+
+window.addEventListener('scroll', handleScroll, { passive: true });
+
+if (btnBackToTop) {
+  btnBackToTop.addEventListener('click', () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+}
+
+// 9. Dynamic Mouse Spotlight Effect on Spotlight Cards
+const spotlightCards = document.querySelectorAll('.spotlight-card');
+spotlightCards.forEach((card) => {
+  card.addEventListener('mousemove', (e) => {
+    const rect = card.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    card.style.setProperty('--mouse-x', `${x}px`);
+    card.style.setProperty('--mouse-y', `${y}px`);
+  });
+});
+
+// 10. Hero Quick Install Copy Button
+const btnHeroCopy = document.getElementById('btn-hero-copy');
+const heroCmdText = document.getElementById('hero-cmd-text');
+
+if (btnHeroCopy && heroCmdText) {
+  btnHeroCopy.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(heroCmdText.textContent.trim());
+      showToast('Install command copied to clipboard');
+      const span = btnHeroCopy.querySelector('span');
+      if (span) {
+        const orig = span.textContent;
+        span.textContent = 'Copied!';
+        setTimeout(() => { span.textContent = orig; }, 1800);
+      }
+    } catch {
+      showToast('Copy failed, select text manually');
+    }
+  });
+}
+
+// 11. Policy Doctor & Permission Simulator Logic
+const simAgentSelect = document.getElementById('sim-agent-select');
+const simSecretSelect = document.getElementById('sim-secret-select');
+const simActionSelect = document.getElementById('sim-action-select');
+const policyVerdict = document.getElementById('policy-verdict');
+const policyExplanation = document.getElementById('policy-explanation');
+const polDrift = document.getElementById('pol-drift');
+const polLease = document.getElementById('pol-lease');
+const polAudit = document.getElementById('pol-audit');
+const policyYamlCode = document.getElementById('policy-yaml-code');
+
+function updatePolicySimulator() {
+  if (!simAgentSelect || !simSecretSelect || !simActionSelect) return;
+
+  const agent = simAgentSelect.value;
+  const secret = simSecretSelect.value;
+  const action = simActionSelect.value;
+
+  let allow = false;
+  let explanationText = '';
+  let driftText = 'Clean (0)';
+  let leaseText = 'None Required';
+  let auditText = 'Chain Signed';
+  let yamlSnippet = '';
+
+  if (agent === 'hermes') {
+    if (action === 'delete') {
+      allow = false;
+      explanationText = `Action <code>delete</code> on <code>${secret}</code> is destructive and rejected by default; requires explicit <code>--yes</code> confirmation token.`;
+      driftText = 'Safety Gate';
+      yamlSnippet = `agents:\n  hermes:\n    capabilities: [read, verify, rotate]\n    services:\n      ${secret}: [get_env, verify]\n# destructive actions locked to local CLI operator token`;
+    } else {
+      allow = true;
+      explanationText = `Agent <code>hermes</code> is authorized to execute <code>${action}</code> on <code>${secret}</code> under explicit operator capabilities rule.`;
+      leaseText = action === 'get_env' ? '15m TTL' : 'Direct Call';
+      yamlSnippet = `agents:\n  hermes:\n    capabilities: [read, verify, rotate]\n    services:\n      ${secret}: [get_env, verify, rotate]`;
+    }
+  } else if (agent === 'claude') {
+    if (action === 'get_env' || action === 'verify') {
+      allow = true;
+      explanationText = `Agent <code>claude-code</code> is authorized for <code>${action}</code> on <code>${secret}</code> via lease-enforced handoff rule.`;
+      leaseText = 'Lease Required (15m TTL)';
+      yamlSnippet = `agents:\n  claude-code:\n    capabilities: [read]\n    services:\n      ${secret}: [get_env, verify]\n    policy_constraints:\n      require_lease_for_env: true`;
+    } else {
+      allow = false;
+      explanationText = `DENIED: Agent <code>claude-code</code> lacks capability <code>${action}</code> on service <code>${secret}</code> (least-privilege constraint).`;
+      driftText = 'Denied Action';
+      yamlSnippet = `agents:\n  claude-code:\n    capabilities: [read] # missing '${action}'\n    services:\n      ${secret}: [get_env]`;
+    }
+  } else { // untrusted
+    allow = false;
+    explanationText = `DENIED: Agent <code>untrusted-bot</code> is not defined in <code>policy.yaml</code>; zero-trust default deny rule applied.`;
+    driftText = 'Zero-Trust Gate';
+    auditText = 'Security Alert Logged';
+    yamlSnippet = `# policy.yaml\ndefault_action: DENY\nuntrusted_agent_behavior: BLOCK_AND_AUDIT`;
+  }
+
+  if (policyVerdict) {
+    policyVerdict.textContent = allow ? 'AUTHORIZED' : 'DENIED';
+    policyVerdict.className = `verdict-badge ${allow ? 'verdict-allow' : 'verdict-deny'}`;
+  }
+
+  if (policyExplanation) {
+    policyExplanation.innerHTML = explanationText;
+  }
+
+  if (polDrift) polDrift.textContent = driftText;
+  if (polLease) polLease.textContent = leaseText;
+  if (polAudit) polAudit.textContent = auditText;
+  if (policyYamlCode) policyYamlCode.textContent = yamlSnippet;
+}
+
+if (simAgentSelect && simSecretSelect && simActionSelect) {
+  simAgentSelect.addEventListener('change', updatePolicySimulator);
+  simSecretSelect.addEventListener('change', updatePolicySimulator);
+  simActionSelect.addEventListener('change', updatePolicySimulator);
+}
+
+// 12. Interactive Command Customizer Logic
+const optInstallerPills = document.querySelectorAll('#opt-installer .opt-pill');
+const optFlagsPills = document.querySelectorAll('#opt-flags .opt-pill');
+const usersCodeEl = document.getElementById('users-code');
+
+function updateCommandCustomizer() {
+  if (!usersCodeEl) return;
+
+  const activeInstallerEl = document.querySelector('#opt-installer .opt-pill.is-active');
+  const installer = activeInstallerEl ? activeInstallerEl.dataset.val : 'uv';
+
+  const activeFlags = [...document.querySelectorAll('#opt-flags .opt-pill.is-active')].map(p => p.dataset.val);
+
+  let cmdLines = [];
+
+  if (installer === 'uv') {
+    cmdLines.push('uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.25.0');
+  } else if (installer === 'pipx') {
+    cmdLines.push('pipx install git+https://github.com/asimons81/hermes-vault.git@v0.25.0');
+  } else {
+    cmdLines.push('git clone https://github.com/asimons81/hermes-vault.git && cd hermes-vault && uv sync');
+  }
+
+  cmdLines.push('hermes-vault setup');
+
+  let bootstrapCmd = 'hermes-vault bootstrap --from-env .env --agent hermes';
+  if (activeFlags.includes('dry-run')) bootstrapCmd += ' --dry-run';
+  cmdLines.push(bootstrapCmd);
+
+  cmdLines.push('hermes-vault health');
+
+  let auditCmd = 'hermes-vault audit-verify';
+  if (activeFlags.includes('integrity')) auditCmd += ' --with-integrity';
+  cmdLines.push(auditCmd);
+
+  if (activeFlags.includes('desktop')) {
+    cmdLines.push('HERMES_VAULT_DESKTOP_MUTATIONS=1 hermes-vault-desktop --allow-mutations');
+  } else {
+    cmdLines.push('hermes-vault policy explain hermes openai --action get_env');
+  }
+
+  usersCodeEl.textContent = cmdLines.join('\n');
+}
+
+optInstallerPills.forEach((pill) => {
+  pill.addEventListener('click', () => {
+    optInstallerPills.forEach(p => p.classList.remove('is-active'));
+    pill.classList.add('is-active');
+    updateCommandCustomizer();
+  });
+});
+
+optFlagsPills.forEach((pill) => {
+  pill.addEventListener('click', () => {
+    pill.classList.toggle('is-active');
+    updateCommandCustomizer();
+  });
+});
+
+// 13. Release Timeline Filters
+const releaseFilterPills = document.querySelectorAll('#release-filters .filter-pill');
+const releaseFeaturedCard = document.querySelector('.release-featured');
+const releaseRows = document.querySelectorAll('.release-row');
+
+releaseFilterPills.forEach((pill) => {
+  pill.addEventListener('click', () => {
+    const filter = pill.dataset.filter;
+
+    releaseFilterPills.forEach(p => p.classList.remove('is-active'));
+    pill.classList.add('is-active');
+
+    if (releaseFeaturedCard) {
+      const featCat = releaseFeaturedCard.dataset.category;
+      if (filter === 'all' || featCat === filter) {
+        releaseFeaturedCard.style.display = 'block';
+      } else {
+        releaseFeaturedCard.style.display = 'none';
+      }
+    }
+
+    releaseRows.forEach((row) => {
+      const rowCat = row.dataset.category;
+      if (filter === 'all' || rowCat === filter) {
+        row.style.display = 'flex';
+      } else {
+        row.style.display = 'none';
+      }
+    });
+  });
+});
+
