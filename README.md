@@ -1,6 +1,6 @@
 # Hermes Vault
 
-![Hermes Vault promo image](assets/hermes-vault-promo-image.png)
+![Hermes Vault architecture: zero-trust credential isolation and encrypted secrets vault](assets/hermes-vault-architecture.webp)
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
