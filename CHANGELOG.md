@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.25.1 -- Patch: Desktop plugin fixes + mcp 2.x support (2026-09-10)
+
+### Fixed
+
+- **False ✗ Integrity stat (Desktop plugin)**: the plugin header derived its Integrity stat from `overview.health.integrity_status`, which the bridge never emits — v0.25.0 rendered a false red ✗ Check on healthy vaults. The header now derives it from the `/integrity` endpoint, with fixtures mirroring the real bridge payload and an explicit regression assertion. Found during post-approval live verification; content landed on master via #80 (squash of the fix-branch work) with the UTF-8 node-harness decode for Windows.
+- **Windows plugin adapter crashes (#77, fixes #76)**: `os.set_blocking` is absent on Windows and `selectors.select()` rejects anonymous pipe fds (WinError 10093) — the bounded child reader now routes Windows children to the timeout-bounded `communicate()` fallback; `_SAFE_ENV_KEYS` adds `ComSpec`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH` so `.cmd` canonical launchers spawn and expand user-profile paths; `_parse_response` normalizes CRLF before the strict single-line framing check (cmd.exe converts LF to CRLF on pipes) while embedded newlines and bare CR stay rejected. Regression tests for all four Windows crashes, sabotage-verified.
+
+### Changed
+
+- **MCP SDK constraint widened (#81)**: `mcp>=1.0.0,<3.0.0` in runtime + dev deps (was `<2.0.0`). `mcp_server.py` now registers handlers explicitly via the mcp 2.x low-level API (`server.add_request_handler("tools/list", ...)`) — mcp 2.0.0 removed the decorator API and renamed wire kwargs to snake_case; the server works on both 1.x and 2.x. Fresh installs no longer need mcp pinned below 2.0.
+- **README hero (#86)**: architecture diagram (`assets/hermes-vault-architecture.webp`) replaces the promo image.
+- **Site branding + hero asset**: black/white/red Studio color scheme with modern Studio header and AIowa LLC footer (from the deployed site's branding pass); the hero `site/assets/hermes-vault-architecture.webp` referenced by the deployed `site/index.html` (hero `<img>` + `og:image`) is now tracked in git — deploys from a fresh clone no longer serve a broken hero.
+
+### Tests
+
+- **Concurrent OAuth refresh hardening (#82)**: the concurrent-refresh test no longer trips barrier timeouts (flaky on loaded CI runners).
+- **Audit-integrity TOCTOU hardening (#83)**: the concurrent-writer test no longer races Windows file locks.
+
+### Upgrade notes
+
+- No upgrade or migration steps required. No vault schema or backup-format changes. Users on 0.25.0 should reinstall as 0.25.1 (`uv tool install --force git+https://github.com/asimons81/hermes-vault.git@v0.25.1` or the pipx equivalent). Windows Desktop plugin users get the adapter fix on next plugin adapter restart.
+- Version number note (pre-tag): 0.25.1 is the provisional target. The mcp constraint widening (#81) widens the supported dependency range; if Tony prefers to signal that as a minor bump (0.26.0) the version surfaces in this commit are the only strings to change.
+
 ## 0.25.0 -- Feature: Desktop Mutation Surface (2026-08-10)
 
 ### Added

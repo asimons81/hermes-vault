@@ -444,9 +444,9 @@ function updateCommandCustomizer() {
   let cmdLines = [];
 
   if (installer === 'uv') {
-    cmdLines.push('uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.25.0');
+    cmdLines.push('uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.25.1');
   } else if (installer === 'pipx') {
-    cmdLines.push('pipx install git+https://github.com/asimons81/hermes-vault.git@v0.25.0');
+    cmdLines.push('pipx install git+https://github.com/asimons81/hermes-vault.git@v0.25.1');
   } else {
     cmdLines.push('git clone https://github.com/asimons81/hermes-vault.git && cd hermes-vault && uv sync');
   }
