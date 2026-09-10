@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.25.1 -- Patch: Desktop plugin fixes + mcp 2.x support (2026-09-10)
+
+### Fixed
+
+- **False ✗ Integrity stat (Desktop plugin)**: the plugin header derived its Integrity stat from `overview.health.integrity_status`, which the bridge never emits — v0.25.0 rendered a false red ✗ Check on healthy vaults. The header now derives it from the `/integrity` endpoint, with fixtures mirroring the real bridge payload and an explicit regression assertion. Found during post-approval live verification; content landed on master via #80 (squash of the fix-branch work) with the UTF-8 node-harness decode for Windows.
+- **Windows plugin adapter crashes (#77, fixes #76)**: `os.set_blocking` is absent on Windows and `selectors.select()` rejects anonymous pipe fds (WinError 10093) — the bounded child reader now routes Windows children to the timeout-bounded `communicate()` fallback; `_SAFE_ENV_KEYS` adds `ComSpec`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH` so `.cmd` canonical launchers spawn and expand user-profile paths; `_parse_response` normalizes CRLF before the strict single-line framing check (cmd.exe converts LF to CRLF on pipes) while embedded newlines and bare CR stay rejected. Regression tests for all four Windows crashes, sabotage-verified.
+
+### Changed
+
+- **MCP SDK floor raised to 2.x (#81 follow-up)**: `mcp>=2.0.0,<3.0.0` in runtime + dev deps (0.25.0 shipped `>=1.0.0,<2.0.0`; #81 had widened the range to admit 1.x, which never worked). `mcp_server.py` registers handlers explicitly via the mcp 2.x low-level API (`server.add_request_handler("tools/list", ...)`) — mcp 2.0.0 removed the decorator API and renamed wire kwargs to snake_case — so the package requires mcp 2.x (the lock pins 2.2.0); the floor now excludes mcp 1.x, which lacks `add_request_handler` entirely and would crash at import. Master's `uv.lock` was also left stale by #81 (still resolving mcp 1.27.0 against server code that requires the 2.x API, breaking lock-based installs of master tip); this release regenerates the lock with mcp 2.2.0.
+- **README hero (#86)**: architecture diagram (`assets/hermes-vault-architecture.webp`) replaces the promo image.
+- **Site branding + hero asset**: black/white/red Studio color scheme with modern Studio header and AIowa LLC footer (from the deployed site's branding pass); the hero `site/assets/hermes-vault-architecture.webp` referenced by the deployed `site/index.html` (hero `<img>` + `og:image`) is now tracked in git — deploys from a fresh clone no longer serve a broken hero.
+- **Site deploy script**: `scripts/deploy-hermesvault-site.sh` now calls the local `vercel` CLI directly (`vercel link` / `vercel deploy --prod` / `vercel alias set`) instead of shelling through `npx --yes vercel` — part of the site branding pass.
+
+### Tests
+
+- **Concurrent OAuth refresh hardening (#82)**: the concurrent-refresh test no longer trips barrier timeouts (flaky on loaded CI runners).
+- **Audit-integrity TOCTOU hardening (#83)**: the concurrent-writer test no longer races Windows file locks.
+
+### Upgrade notes
+
+- No upgrade or migration steps required. No vault schema or backup-format changes. Users on 0.25.0 should reinstall as 0.25.1 (`uv tool install --force git+https://github.com/asimons81/hermes-vault.git@v0.25.1` or the pipx equivalent). Windows Desktop plugin users get the adapter fix on next plugin adapter restart.
 ## 0.25.0 -- Feature: Desktop Mutation Surface (2026-08-10)
 
 ### Added

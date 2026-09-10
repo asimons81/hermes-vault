@@ -3,46 +3,50 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hermes Vault, Audit Assurance</title>
-  <meta name="description" content="Hermes Vault provides signed audit continuity, authenticated checkpoints, backup integrity, and read-only verification through CLI, dashboard, and MCP surfaces.">
-  <meta name="theme-color" content="#030407">
-  <meta property="og:title" content="Hermes Vault">
-  <meta property="og:description" content="Credential lifecycle and recovery for Hermes operators.">
-  <meta property="og:image" content="./assets/hermes-vault-promo-image.png">
+  <title>Hermes Vault — Safe Local-First Agent Access & Desktop Control</title>
+  <meta name="description" content="Hermes Vault provides local-first encrypted secret brokerage, policy-scoped agent access, Hermes Desktop integration, opt-in audited mutations, universal verification, and Ed25519 signed audit chains.">
+  <meta name="theme-color" content="#020203">
+  <meta property="og:title" content="Hermes Vault — Tony Simons">
+  <meta property="og:description" content="Credential lifecycle, local secret brokerage, and recovery for Hermes operators.">
+  <meta property="og:image" content="./assets/hermes-vault-architecture.webp">
   <meta name="twitter:card" content="summary_large_image">
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
+  <div id="scroll-progress" class="scroll-progress-bar"></div>
 
   <main class="page" id="top">
     <!-- Navigation Bar -->
     <header class="topbar reveal header-reveal">
-      <a class="brand" href="#top" aria-label="Hermes Vault home">
-        <span class="brand-mark" aria-hidden="true">HV</span>
+      <a class="brand" href="#top" aria-label="Tony Simons Hermes Vault home">
+        <span class="brand-mark-glyph" aria-hidden="true">T</span>
         <span class="brand-copy">
-          <strong>Hermes Vault</strong>
-          <small>agent access control plane</small>
+          <span class="brand-title">Tony Simons <span class="brand-accent">// HERMES VAULT</span></span>
+          <small class="brand-subtitle">LOCAL SECRETS BROKER &bull; ZERO-TRUST AGENT PLANE</small>
         </span>
       </a>
 
       <nav class="topnav" aria-label="Primary navigation">
-        <a href="#does">What it does</a>
-        <a href="#simulators">Flow</a>
-        <a href="#console">Console</a>
-        <a href="#install">Install</a>
+        <a href="#does"><span class="nav-idx">[01]</span> WHAT IT DOES</a>
+        <a href="#simulators"><span class="nav-idx">[02]</span> FLOW</a>
+        <a href="#console"><span class="nav-idx">[03]</span> CONSOLE</a>
+        <a href="#install"><span class="nav-idx">[04]</span> INSTALL</a>
       </nav>
 
-      <a class="ghost-link" href="https://github.com/asimons81/hermes-vault" rel="noreferrer noopener" target="_blank">GitHub</a>
+      <div class="topbar-actions">
+        <a class="nav-pill-link" href="https://launch.tonysimons.dev" rel="noreferrer noopener" target="_blank">Launch Lab ↗</a>
+        <a class="ghost-link" href="https://github.com/asimons81/hermes-vault" rel="noreferrer noopener" target="_blank">GitHub ↗</a>
+      </div>
     </header>
 
     <!-- Hero Section -->
     <section class="hero section-pad reveal hero-reveal-1">
       <div class="hero-copy">
-        <p class="eyebrow">v0.25.0 &bull; Feature &bull; Desktop mutation surface shipped</p>
+        <p class="eyebrow"><span class="eyebrow-pulse"></span>v0.25.1 &bull; Patch &bull; Desktop plugin fixes + mcp 2.x support</p>
         <h1>From <span>.env</span> to safe agent access.</h1>
         <p class="lede">
           Bootstrap a messy plaintext env file into an encrypted local vault, explain every access decision, route approvals through an audit trail, bind env handoffs to leases, and prove recovery before the incident. Less key sprawl, fewer auth lies, fewer agent mistakes.
@@ -51,6 +55,15 @@
         <div class="cta-row">
           <a class="button button-primary" href="#install">Install CLI</a>
           <a class="button button-secondary" href="https://github.com/asimons81/hermes-vault#readme" rel="noreferrer noopener" target="_blank">Read the repository</a>
+        </div>
+
+        <div class="hero-quick-install">
+          <span class="quick-install-label">Quick Install</span>
+          <code id="hero-cmd-text">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.25.1</code>
+          <button class="hero-copy-btn" type="button" id="btn-hero-copy" title="Copy install command">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <span>Copy</span>
+          </button>
         </div>
 
         <ul class="pill-row" aria-label="Product highlights">
@@ -63,8 +76,8 @@
         <div class="hero-metrics" aria-label="Release and platform notes">
           <div class="metric-card">
             <span>Current Release</span>
-            <strong>0.25.0</strong>
-            <small>Feature release shipping the opt-in Desktop mutation surface: bridge <code>add</code>/<code>rotate</code>/<code>delete</code>, adapter <code>POST /mutations/*</code> routes, and native Desktop dialogs — deny-by-default, Bearer-only, audited, metadata-only. Read-only surface unchanged when the flag is off. <a href="https://github.com/asimons81/hermes-vault/releases/tag/v0.25.0" target="_blank" rel="noreferrer noopener">View release</a></small>
+            <strong>0.25.1</strong>
+            <small>Patch release fixing the false ✗ Integrity stat in the Desktop plugin, making the plugin adapter Windows-safe (communicate() fallback, ComSpec/profile env, CRLF framing), and widening the MCP SDK constraint to <code>&gt;=1.0.0,&lt;3.0.0</code> for mcp 2.x installs. <a href="https://github.com/asimons81/hermes-vault/releases/tag/v0.25.1" target="_blank" rel="noreferrer noopener">View release</a></small>
           </div>
           <div class="metric-card">
             <span>Operator Loop</span>
@@ -87,11 +100,11 @@
       <!-- Hero Banner image -->
       <div class="hero-visual reveal hero-reveal-2">
         <figure class="glass-card">
-          <img src="./assets/hermes-vault-promo-image.png" alt="Hermes Vault official graphic showing a glowing obsidian vault box with winged foot logo, statue of Hermes holding a caduceus, and a terminal mockup of secrets list">
+          <img src="./assets/hermes-vault-architecture.webp" alt="Hermes Vault architecture: zero-trust credential isolation with compartmentalized, encrypted secrets and audited access">
           <figcaption>
-            <span>Obsidian Vault</span>
-            <span>Zero-trust control</span>
-            <span>Local-first scan</span>
+            <span>Zero-trust vault</span>
+            <span>Compartmentalized secrets</span>
+            <span>Audited access</span>
           </figcaption>
         </figure>
       </div>
@@ -187,6 +200,88 @@
           </div>
         </div>
       </div>
+
+      <!-- Simulator 3: Policy Doctor & Decision Simulator -->
+      <div class="simulator-container spotlight-card" style="margin-top: 32px;" id="policy-simulator">
+        <header class="sim-header">
+          <div class="sim-controls">
+            <span class="sim-dot"></span>
+            <span class="sim-dot"></span>
+            <span class="sim-dot"></span>
+          </div>
+          <div class="sim-title">Live Policy Doctor & Permission Simulator</div>
+          <span class="policy-live-badge"><span class="badge-pulse"></span>Policy Engine Active</span>
+        </header>
+
+        <div class="policy-sim-body">
+          <div class="policy-controls-bar">
+            <div class="policy-select-group">
+              <label for="sim-agent-select">Agent Role</label>
+              <select id="sim-agent-select" class="policy-select">
+                <option value="hermes">hermes (Operator Agent)</option>
+                <option value="claude">claude-code (Coding Agent)</option>
+                <option value="untrusted">untrusted-bot (Third-Party Agent)</option>
+              </select>
+            </div>
+
+            <div class="policy-select-group">
+              <label for="sim-secret-select">Target Secret</label>
+              <select id="sim-secret-select" class="policy-select">
+                <option value="openai">openai (OpenAI API Key)</option>
+                <option value="github">github (Developer Token)</option>
+                <option value="prod_db">prod_db (PostgreSQL Production DB)</option>
+              </select>
+            </div>
+
+            <div class="policy-select-group">
+              <label for="sim-action-select">Requested Action</label>
+              <select id="sim-action-select" class="policy-select">
+                <option value="get_env">get_env (Read Ephemeral Key)</option>
+                <option value="verify">verify (Check Health Status)</option>
+                <option value="rotate">rotate (Trigger Key Rotation)</option>
+                <option value="delete">delete (Destructive Purge)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="policy-result-grid">
+            <div class="policy-card-result">
+              <div class="result-header">
+                <span>Evaluation Verdict</span>
+                <span class="verdict-badge verdict-allow" id="policy-verdict">AUTHORIZED</span>
+              </div>
+              <p class="verdict-explanation" id="policy-explanation">
+                Agent <code>hermes</code> is authorized to perform <code>get_env</code> on <code>openai</code> under explicit operator rule matching <code>policy.yaml</code>.
+              </p>
+              <div class="policy-metrics-row">
+                <div class="pol-metric">
+                  <small>Policy Drift</small>
+                  <strong id="pol-drift">Clean (0)</strong>
+                </div>
+                <div class="pol-metric">
+                  <small>Lease Requirement</small>
+                  <strong id="pol-lease">15m TTL</strong>
+                </div>
+                <div class="pol-metric">
+                  <small>Audit Log</small>
+                  <strong id="pol-audit">Chain Signed</strong>
+                </div>
+              </div>
+            </div>
+
+            <div class="policy-yaml-preview">
+              <div class="yaml-title">policy.yaml (Matched Ruleset)</div>
+              <pre><code id="policy-yaml-code">agents:
+  hermes:
+    capabilities: [read, verify, rotate]
+    services:
+      openai: [get_env, verify]
+      github: [get_env, verify]
+      "*": [verify]</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- Features Section -->
@@ -207,28 +302,28 @@
         </article>
         <article class="feature-card">
           <span class="feature-index">02</span>
+          <h3>Hermes Desktop & Mutations</h3>
+          <p>NDJSON bridge, FastAPI adapter, and native Desktop plugin with opt-in audited <code>add</code>, <code>rotate</code>, and <code>delete</code> mutation dialogs.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-index">03</span>
+          <h3>Vault Intelligence & Verifiers</h3>
+          <p>39 built-in verifier configs covering 45 canonical services, health score (A–F), setup wizard, and CSV import/export filtering.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-index">04</span>
+          <h3>Signed Audit Continuity</h3>
+          <p>Ed25519 audit integrity chains, authenticated checkpoints, transactional restore, and <code>hvbackup-v2</code> evidence verification.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-index">05</span>
           <h3>Least-Privilege Policy</h3>
           <p><code>policy doctor</code> checks <code>policy.yaml</code> rules for agent capabilities, policy drift, and wildcard credential access.</p>
         </article>
         <article class="feature-card">
-          <span class="feature-index">03</span>
-          <h3>Ephemeral environments</h3>
-          <p>Brokers transient key injection into environment variables with a strict Time-to-Live (TTL) countdown constraint.</p>
-        </article>
-        <article class="feature-card">
-          <span class="feature-index">04</span>
-          <h3>Headless OAuth paths</h3>
-          <p>Use <code>oauth login --headless</code> or MCP <code>oauth_device_login</code> for device-code first login where providers support it.</p>
-        </article>
-        <article class="feature-card">
-          <span class="feature-index">05</span>
-          <h3>MCP Server protocol</h3>
-          <p>Exposes tools like <code>verify_credential</code> and <code>get_ephemeral_env</code> to Claude Desktop, Cursor, and LLM hosts.</p>
-        </article>
-        <article class="feature-card">
           <span class="feature-index">06</span>
-          <h3>Local console dashboard</h3>
-          <p><code>dashboard</code> serves a secure browser layout from packaged assets, keeping secret payloads out of the DOM.</p>
+          <h3>MCP & Secret Source Plugins</h3>
+          <p>In-loop agent tools like <code>get_ephemeral_env</code> alongside startup materialization using explicit <code>hv://</code> references.</p>
         </article>
       </div>
     </section>
@@ -284,7 +379,7 @@
           </figure>
         </div>
         <p class="gallery-note">
-          The published screenshot set below reflects the v0.18.0 console baseline and preserves the local-only, token-guarded boundary. The v0.21.0 release keeps this archive until a fresh capture set lands.
+          The published screenshot set below reflects the local console baseline and preserves the local-only, token-guarded boundary across the v0.25.1 release line.
         </p>
       </div>
     </section>
@@ -371,18 +466,42 @@
 
         <div class="install-panels">
           <section class="install-panel is-active" id="panel-users" role="tabpanel" aria-labelledby="tab-users" data-panel="users">
+            <div class="command-builder-widget spotlight-card" style="margin-bottom: 24px;">
+              <div class="builder-header">
+                <strong>Interactive Command Customizer</strong>
+                <span class="builder-subtitle">Choose options to auto-generate install & setup CLI string</span>
+              </div>
+              <div class="builder-options-row">
+                <div class="builder-group">
+                  <span class="group-label">Installer</span>
+                  <div class="pill-options" id="opt-installer">
+                    <button type="button" class="opt-pill is-active" data-val="uv">uv tool</button>
+                    <button type="button" class="opt-pill" data-val="pipx">pipx</button>
+                    <button type="button" class="opt-pill" data-val="git">git clone</button>
+                  </div>
+                </div>
+                <div class="builder-group">
+                  <span class="group-label">Flags / Mode</span>
+                  <div class="pill-options" id="opt-flags">
+                    <button type="button" class="opt-pill is-active" data-val="dry-run">--dry-run</button>
+                    <button type="button" class="opt-pill" data-val="integrity">--with-integrity</button>
+                    <button type="button" class="opt-pill" data-val="desktop">--allow-mutations</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="terminal-card">
               <div class="terminal-top">
                 <span>Production Install</span>
                 <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
               </div>
-              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.25.0
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.25.1
+hermes-vault setup
 hermes-vault bootstrap --from-env .env --agent hermes --dry-run
+hermes-vault health
 hermes-vault audit-verify
-hermes-vault audit-checkpoint show
-hermes-vault audit export --with-integrity
-hermes-vault policy explain hermes openai --action get_env
-            </div>
+hermes-vault policy explain hermes openai --action get_env</code></pre>
             <div class="install-notes">
               <article class="note-card">
                 <h3>Installation Scope</h3>
@@ -429,71 +548,110 @@ uv run pytest tests/ -q</code></pre>
         <p>Hermes Vault has an active release trail. The local changelog tracks security fixes, command line updates, dashboard improvements, and recovery proof.</p>
       </div>
 
+      <div class="release-filter-bar" id="release-filters">
+        <button type="button" class="filter-pill is-active" data-filter="all">All Releases</button>
+        <button type="button" class="filter-pill" data-filter="desktop">Desktop & UI</button>
+        <button type="button" class="filter-pill" data-filter="security">Security & Audit</button>
+        <button type="button" class="filter-pill" data-filter="plugins">Plugins & OAuth</button>
+      </div>
+
       <div class="release-timeline">
-        <article class="release-featured">
+        <article class="release-featured spotlight-card" data-category="desktop">
           <div class="release-badge">Current Release</div>
-          <h3>v0.21.0</h3>
-          <p>Audit Assurance: signed audit continuity with authenticated checkpoints, HKDF-derived Ed25519 chains, legacy anchoring, hvbackup-v2 with integrity evidence, transactional restore, and read-only CLI, dashboard, and MCP verification surfaces.</p>
+          <h3>v0.25.1</h3>
+          <p>Patch: false ✗ Integrity stat fix (derive from <code>/integrity</code>, not <code>overview.health</code>), Windows-safe plugin adapter (<code>communicate()</code> fallback, ComSpec/profile env, CRLF framing), MCP SDK constraint widened to <code>&gt;=1.0.0,&lt;3.0.0</code> for mcp 2.x, flaky-test hardening (#82/#83), README hero swap, and the site's Studio branding with the hero webp now tracked in git.</p>
         </article>
 
         <div class="release-list">
-          <article class="release-row">
+          <article class="release-row" data-category="desktop">
+            <span class="release-version">v0.25.0</span>
+            <p>Desktop Mutation Surface: opt-in bridge <code>add</code>/<code>rotate</code>/<code>delete</code> methods, FastAPI adapter mutation routes, native Desktop dialogs with type-to-confirm delete, fail-closed audit protection, and React same-mount state fixes.</p>
+          </article>
+          <article class="release-row" data-category="desktop">
+            <span class="release-version">v0.24.0</span>
+            <p>Hermes Desktop Integration: versioned NDJSON <code>desktop-bridge</code> CLI entry point, FastAPI plugin adapter, and native Desktop runtime page for read-only metadata, audit, and integrity.</p>
+          </article>
+          <article class="release-row" data-category="security">
+            <span class="release-version">v0.23.2</span>
+            <p>Patch: audit chain wedge fix across six CLI write paths and fail-closed secret export handling.</p>
+          </article>
+          <article class="release-row" data-category="security">
+            <span class="release-version">v0.23.1</span>
+            <p>Patch: capped MCP SDK dependency below 2.0.0 for import compatibility.</p>
+          </article>
+          <article class="release-row" data-category="security">
+            <span class="release-version">v0.23.0</span>
+            <p>Maintenance & Docs: <code>PYTHONPATH</code> pollution guard in test collection and release readiness records.</p>
+          </article>
+          <article class="release-row" data-category="security">
+            <span class="release-version">v0.22.0</span>
+            <p>Vault Intelligence: 39 shipped YAML verifiers covering 45 canonical services, health score (A–F), setup wizard, CSV import/export, and tag management CLI.</p>
+          </article>
+          <article class="release-row" data-category="security">
+            <span class="release-version">v0.21.0</span>
+            <p>Audit Assurance: signed audit continuity with authenticated checkpoints, HKDF-derived Ed25519 chains, legacy anchoring, <code>hvbackup-v2</code> with integrity evidence, and transactional restore.</p>
+          </article>
+          <article class="release-row" data-category="plugins">
             <span class="release-version">v0.20.0</span>
             <p>Hermes Secret Source Plugin: mapped startup env materialization, protected bootstrap passphrases, non-interactive fetches, redacted errors, and MCP kept for in-loop access.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="security">
+            <span class="release-version">v0.19.0</span>
+            <p>Agent Access Control Plane: policy explain, lease-enforced handoffs, access request workflow, agent context manifests, and recovery drills.</p>
+          </article>
+          <article class="release-row" data-category="desktop">
             <span class="release-version">v0.18.0</span>
             <p>Operator Workflow Convergence with dry-run dashboard onboarding preview, recovery diff drills, searchable credential/lease/audit views, MCP <code>vault://status</code>, and fixes for lease metrics, key validation, and OAuth login state isolation.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="security">
             <span class="release-version">v0.17.0</span>
             <p>Lease Assurance with health visibility, scheduled cleanup, policy drift detection, backup lease diffing, and full lease lifecycle coverage.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="security">
             <span class="release-version">v0.16.0</span>
             <p>Agent Access Lifecycle with <code>lease issue/renew/revoke</code> workflows, policy pack templates, and dashboard/MCP surfacing for access metadata.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="plugins">
             <span class="release-version">v0.15.1</span>
             <p>EvoLink provider support with canonical service ID mapping and provider-specific verification.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="plugins">
             <span class="release-version">v0.15.0</span>
             <p>Agent OAuth freshness: broker auto-refreshes near-expiry OAuth tokens before env handoff. OAuth refresh metadata, 30s refresh cooldown, and policy-gated via the <code>rotate</code> service action.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="desktop">
             <span class="release-version">v0.14.0</span>
             <p>Native Windows support with <code>HERMES_VAULT_DPAPI=1</code> master-key wrapping, a new <code>_platform.py</code> abstraction layer, and full <code>docs/windows.md</code> install, OAuth, backup, and Task Scheduler guides.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="security">
             <span class="release-version">v0.13.0</span>
             <p>Credential lifecycle and recovery with <code>maintain</code>, <code>policy doctor</code>, <code>backup-verify</code>, and <code>restore --dry-run</code>.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="plugins">
             <span class="release-version">v0.12.0</span>
             <p>OAuth readiness with <code>oauth doctor</code>, live <code>health --verify-live</code>, and MCP <code>oauth_provider_status</code>.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="security">
             <span class="release-version">v0.11.0</span>
             <p>First Safe Agent bootstrap, <code>oauth login --headless</code>, and MCP device-login parity.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="plugins">
             <span class="release-version">v0.10.1</span>
             <p>Explicit OAuth device-code login for headless shell sessions.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="plugins">
             <span class="release-version">v0.10.0</span>
             <p>Unattended OAuth auto-refresh engines and generic custom verifiers.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="plugins">
             <span class="release-version">v0.9.0</span>
             <p>Multi-vault profile support, file-based verifier plugins, tags and notes.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="desktop">
             <span class="release-version">v0.8.0</span>
             <p>Hermes Vault Console local browser dashboard with safe action boundaries.</p>
           </article>
-          <article class="release-row">
+          <article class="release-row" data-category="security">
             <span class="release-version">v0.7.0</span>
             <p>Policy doctor auditing tool, backup-verify drills, and Systemd integration helpers.</p>
           </article>
@@ -503,19 +661,23 @@ uv run pytest tests/ -q</code></pre>
 
     <!-- Footer -->
     <footer class="footer reveal">
-      <div>
+      <div class="footer-meta">
         <strong>hermesvault.tonysimons.dev</strong>
-        <p>Broker logs, CLI commands, and dashboard captures verified. &copy; <span data-year></span></p>
+        <p>&copy; <span data-year>2026</span> Tony Simons · Independent Studio · Commercial services operated through <a href="https://aiowa.dev" target="_blank" rel="noopener noreferrer">AIowa LLC</a>.</p>
       </div>
       <nav class="footer-links" aria-label="Footer links">
-        <a href="https://github.com/asimons81/hermes-vault" rel="noreferrer noopener" target="_blank">GitHub Repository</a>
-        <a href="https://github.com/asimons81/hermes-vault#readme" rel="noreferrer noopener" target="_blank">README</a>
-        <a href="https://github.com/asimons81/hermes-vault/blob/main/CHANGELOG.md" rel="noreferrer noopener" target="_blank">Changelog</a>
+        <a href="https://tonysimons.dev" target="_blank" rel="noopener noreferrer">Studio Portfolio ↗</a>
+        <a href="https://launch.tonysimons.dev" target="_blank" rel="noopener noreferrer">Hermes Launch Lab ↗</a>
+        <a href="https://aiowa.dev" target="_blank" rel="noopener noreferrer">AIowa Corporate ↗</a>
+        <a href="https://github.com/asimons81/hermes-vault" target="_blank" rel="noopener noreferrer">GitHub Repository ↗</a>
       </nav>
     </footer>
   </main>
 
   <div class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+  <button class="back-to-top" id="btn-back-to-top" type="button" aria-label="Back to top">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"/></svg>
+  </button>
   <script src="./app.js"></script>
 </body>
 </html>
