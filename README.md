@@ -4,7 +4,7 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.25.1 is the current release — a patch on the **Desktop Mutation Surface** (v0.25.0) line that fixes the false ✗ Integrity stat in the Desktop plugin, makes the plugin adapter Windows-safe, widens the MCP SDK constraint to accept 2.x, hardens two flaky tests, refreshes the README hero, and lands the site's black/white/red Studio branding. The read-only surface from v0.24.0 and the mutation surface from v0.25.0 are unchanged. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
+v0.25.1 is the current release — a patch on the **Vault Intelligence** line's **Desktop Mutation Surface** (v0.25.0) that fixes the false ✗ Integrity stat in the Desktop plugin, makes the plugin adapter Windows-safe, widens the MCP SDK constraint to accept 2.x, hardens two flaky tests, refreshes the README hero, and lands the site's black/white/red Studio branding. The read-only surface from v0.24.0 and the mutation surface from v0.25.0 are unchanged. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
 
 ## What's New in 0.25.1
 
