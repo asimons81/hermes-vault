@@ -3,19 +3,14 @@
 **Prepared by**: Hermes (docs lane, kanban task t_23d63138)
 **Date**: 2026-09-10
 **Candidate**: `bump/v0.25.1` (local, 4 commits ahead of `origin/master` 9b05b77)
-**Version**: 0.25.1 — **PROVISIONAL** (Tony confirms 0.25.1 vs 0.26.0 before tag)
+**Version**: 0.25.1 — confirmed by Tony 2026-09-10 (patch; mcp widening rides as a patch per changelog)
 **Line**: Vault Intelligence — patch on the Desktop Mutation Surface (v0.25.0)
 
-## Decision: PENDING
+## Decision: RELEASED (GO)
 
-Not a GO/NO-GO from this lane. Remaining gates before release:
-
-1. **Tony**: version-number confirmation (0.25.1 patch vs 0.26.0 minor — the mcp
-   constraint widening in #81 is the argument for minor) and release approval.
-2. **QA** (task t_51ecfad3): independent acceptance — version consistency,
-   suite re-run, notes-vs-commits spot check, clean tree, nothing
-   pushed/tagged.
-3. Tag `v0.25.1` on the release branch, PR to master, PyPI trusted publish.
+All gates cleared. History: Tony confirmed version 0.25.1 and approved release
+2026-09-10; QA gate (task t_51ecfad3) returned PASS (QA-L2) at commit 871dcf3
+(1303 tests green, nothing pushed/tagged at verification time).
 
 Pre-bump audit (t_4c34ec46) verdict NOT READY with blockers B1–B3 — all three
 cleared on this branch (see below).
@@ -92,10 +87,9 @@ would add surface for a state that always crashed. Implemented on this branch
   committed by the docs lane, per the release-notes-0.23.0 precedent (draft
   committed pre-tag, removed after the CHANGELOG becomes the record).
 
-## Post-release verification plan (for after approval)
+## Post-release verification plan (execution)
 
-1. Tony confirms version (0.25.1 vs 0.26.0 — if 0.26.0, only the version
-   strings in 7d41298 + this directory/filename change).
+1. ✅ Version confirmed by Tony 2026-09-10: 0.25.1 (patch).
 2. Tag `v0.25.1` on the release branch (not the merge commit); tag push
    triggers PyPI trusted publishing.
 3. PR to master; CI green; merge.

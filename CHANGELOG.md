@@ -22,8 +22,6 @@
 ### Upgrade notes
 
 - No upgrade or migration steps required. No vault schema or backup-format changes. Users on 0.25.0 should reinstall as 0.25.1 (`uv tool install --force git+https://github.com/asimons81/hermes-vault.git@v0.25.1` or the pipx equivalent). Windows Desktop plugin users get the adapter fix on next plugin adapter restart.
-- Version number note (pre-tag): 0.25.1 is the provisional target. The mcp constraint widening (#81) widens the supported dependency range; if Tony prefers to signal that as a minor bump (0.26.0) the version surfaces in this commit are the only strings to change.
-
 ## 0.25.0 -- Feature: Desktop Mutation Surface (2026-08-10)
 
 ### Added

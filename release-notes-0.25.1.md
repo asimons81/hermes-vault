@@ -1,11 +1,5 @@
 # v0.25.1 — Patch: Desktop plugin fixes + mcp 2.x support
 
-> **PRE-TAG DRAFT — version number PROVISIONAL.** 0.25.1 is the working
-> target; Tony confirms 0.25.1 vs 0.26.0 before tag (the mcp constraint
-> widening in #81 is the argument for a minor bump). If 0.26.0 is chosen, the
-> version strings in the bump commit plus this filename are the only changes.
-> Nothing is tagged, pushed, or published yet — approval gate intact.
-
 Patch release on the **Vault Intelligence** line's Desktop Mutation Surface
 (v0.25.0). It fixes the false ✗ Integrity stat in the Desktop plugin, makes the
 plugin adapter Windows-safe (#77, fixing #76), fixes master's stale `uv.lock`
@@ -38,7 +32,7 @@ surface from v0.25.0 are unchanged.
 
 - No upgrade or migration steps required. No vault schema or backup-format changes. Users on 0.25.0 should reinstall as 0.25.1 (`uv tool install --force git+https://github.com/asimons81/hermes-vault.git@v0.25.1` or the pipx equivalent). Windows Desktop plugin users get the adapter fix on next plugin adapter restart.
 - Users who installed from master's `uv.lock` after #81 merged (2026-09-04) have a broken MCP server and should reinstall from this release.
-- Version number note (pre-tag): 0.25.1 is the provisional target; the mcp constraint widening (#81) may argue for 0.26.0 — Tony decides before tag.
+- Version confirmed by Tony 2026-09-10: 0.25.1 (patch).
 
 ## Validation
 
