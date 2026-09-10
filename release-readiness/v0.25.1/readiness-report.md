@@ -29,24 +29,25 @@ cleared on this branch (see below).
   Windows children (no `os.set_blocking` / pipe-fd `selectors`), `ComSpec` +
   user-profile env keys for `.cmd` launchers, CRLF normalization before strict
   line framing.
-- **MCP 2.x support (#81)**: constraint `mcp>=1.0.0,<3.0.0`; handler
+- **MCP 2.x floor (#81 follow-up)**: constraint `mcp>=2.0.0,<3.0.0`; handler
   registration via the 2.x `add_request_handler` API. Lock regenerated with
-  mcp 2.2.0 — fixes master's silently-broken lock-based installs (see caveat).
+  mcp 2.2.0 — fixes master's silently-broken lock-based installs.
 - **Test hardening (#82, #83)**: OAuth concurrent-refresh barrier flake;
   audit-integrity TOCTOU Windows lock-race flake.
 - **README hero (#86)** + **site branding pass**: Studio black/white/red theme,
   AIowa LLC footer, hero webp tracked in git, deploy script uses local `vercel`
   CLI instead of `npx --yes vercel`.
 
-### Known caveat (documented, decision routed to owner)
+### mcp 1.x floor — RESOLVED (decision t_f5cd8347)
 
-The widened mcp constraint still admits mcp 1.x, which lacks
-`add_request_handler` — an environment that resolves mcp 1.x fails to import
-`hermes_vault.mcp_server` (verified against the mcp 1.27.0 package: the symbol
-does not exist anywhere in it; `mcp_server.py:1401` calls it unconditionally at
-import). Fresh pip installs resolve mcp 2.x and are unaffected. Whether to raise
-the floor to `>=2.0.0` (or add a 1.x shim) is a developer/Tony decision, not a
-docs one.
+The #81-widened constraint admitted mcp 1.x, which lacks `add_request_handler`
+— an environment that resolved mcp 1.x failed to import `hermes_vault.mcp_server`
+(verified against the mcp 1.27.0 package: the symbol does not exist anywhere in
+it; `mcp_server.py:1401` calls it unconditionally at import). Orchestrator
+decision (binding, pre-tag): raise the floor to `mcp>=2.0.0,<3.0.0` in runtime
++ dev deps; no 1.x compat shim — 1.x coexistence has never worked, so a shim
+would add surface for a state that always crashed. Implemented on this branch
+(constraint, lock regen, docs truth-fix).
 
 ## Pre-bump blockers — cleared
 

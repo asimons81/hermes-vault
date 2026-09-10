@@ -12,7 +12,7 @@ v0.25.1 is a patch release fixing Desktop plugin defects and widening dependency
 
 - **Integrity stat fix**: the Desktop plugin header now derives its Integrity stat from the `/integrity` endpoint instead of `overview.health.integrity_status` (which the bridge never emits) — v0.25.0 showed a false red ✗ Check on healthy vaults
 - **Windows plugin adapter fix (#77/#76)**: the bounded child reader no longer assumes POSIX — Windows children route to a timeout-bounded `communicate()` fallback, `.cmd` canonical launchers get `ComSpec`/`USERPROFILE`/`HOMEDRIVE`/`HOMEPATH` in the safe env, and CRLF pipe output is normalized before strict line framing
-- **MCP SDK constraint widened (#81)**: `mcp>=1.0.0,<3.0.0` (runtime + dev deps) — `mcp_server.py` now registers handlers via the mcp 2.x low-level `add_request_handler` API; fresh installs no longer need mcp pinned below 2.0
+- **MCP SDK floor raised to 2.x (#81 follow-up)**: `mcp>=2.0.0,<3.0.0` (runtime + dev deps) — `mcp_server.py` registers handlers via the mcp 2.x low-level `add_request_handler` API; mcp 1.x lacks that API and is excluded by the floor
 - **Test hardening (#82/#83)**: the concurrent OAuth refresh test no longer trips barrier timeouts and the audit-integrity TOCTOU test no longer races Windows file locks
 - **README hero (#86)**: architecture diagram replaces the promo image
 - **Site branding + hero asset**: black/white/red Studio theme with AIowa LLC footer; the hero `assets/hermes-vault-architecture.webp` referenced by the deployed site is now tracked in git
