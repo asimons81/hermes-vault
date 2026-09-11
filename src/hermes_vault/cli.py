@@ -17,7 +17,7 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import click
 import typer
@@ -28,6 +28,14 @@ from rich.table import Table
 from hermes_vault import _platform
 from hermes_vault.audit import AuditLogger
 from hermes_vault.audit_integrity.service import AuditIntegrityError
+from hermes_vault.bitwarden import (
+    ApplyPlan,
+    BitwardenExportError,
+    BitwardenPlan,
+    load_bitwarden_export,
+    plan_bitwarden_import,
+    resolve_collisions,
+)
 from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings, reset_active_profile, set_active_profile
 from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase
@@ -108,6 +116,7 @@ _typer_app.add_typer(recovery_app, name="recovery")
 incident_app = typer.Typer(help="Redacted incident bundle operations.")
 _typer_app.add_typer(incident_app, name="incident")
 console = Console()
+console_err = Console(stderr=True)
 
 
 @_typer_app.command("setup")
@@ -512,7 +521,20 @@ def bootstrap(
         console.print(f"- {step}")
 
 
-@_typer_app.command("import")
+# ── `import` command group ─────────────────────────────────────────────
+#
+# `import` is a Typer group with `invoke_without_command=True` so both
+# syntaxes work:
+#   hermes-vault import --from-env .env           (legacy flat command)
+#   hermes-vault import bitwarden --file bw.json  (P9 interop on-ramp)
+#
+# The group callback re-declares every legacy option; when a subcommand is
+# invoked the callback returns immediately and the subcommand owns the run.
+import_app = typer.Typer(help="Import credentials from env files, JSON, CSV, or Bitwarden.", invoke_without_command=True)
+_typer_app.add_typer(import_app, name="import")
+
+
+@import_app.callback()
 def import_credentials(
     ctx: typer.Context,
     from_env: Path | None = typer.Option(None, "--from-env", help="Import from a .env file (KEY=value format)."),
@@ -531,6 +553,8 @@ def import_credentials(
 
     Service names are normalized to canonical IDs automatically.
 
+    To import from Bitwarden, use: hermes-vault import bitwarden --file <bw-export.json>
+
     \\b
     Examples:
       hermes-vault import --from-env ~/.hermes/.env --dry-run
@@ -539,6 +563,9 @@ def import_credentials(
       hermes-vault import --from-file secrets.json
       hermes-vault import --from-csv creds.csv --service-column provider --secret-column key
     """
+    if ctx.invoked_subcommand is not None:
+        return
+
     if not from_env and not from_file and not from_csv:
         console.print("[red]Provide --from-env, --from-file, or --from-csv[/red]")
         raise typer.Exit(code=1)
@@ -792,6 +819,223 @@ def import_credentials(
         console.print("[yellow]--redact-source only applies to --from-env files.[/yellow]")
     else:
         console.print("Review plaintext source removal separately.")
+
+
+@import_app.command("bitwarden")
+def import_bitwarden(
+    ctx: typer.Context,
+    file: Path = typer.Option(..., "--file", help="Path to an unencrypted `bw export --format json` file."),
+    collision: str = typer.Option(
+        "skip",
+        "--on-collision",
+        help="What to do when a service+alias pair already exists in the vault: skip (keep vault row), rename (import under a -bwN alias), or fail (abort before writing).",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview the import plan without touching the vault."),
+    yes: bool = typer.Option(False, "--yes", help="Apply the import without the confirmation prompt."),
+    json_output: bool = typer.Option(False, "--json", help="Emit a machine-readable import report."),
+) -> None:
+    """Import credentials from an unencrypted Bitwarden JSON export.
+
+    Reads a `bw export --format json` file (bw CLI or web vault "JSON (
+    plaintext)" export) and maps logins, secure notes, custom fields, and
+    TOTP seeds onto vault credentials. Secrets never appear in output.
+
+    \\b
+    Examples:
+      hermes-vault import bitwarden --file bw-export.json --dry-run
+      hermes-vault import bitwarden --file bw-export.json --yes
+      hermes-vault import bitwarden --file bw-export.json --on-collision rename --yes
+    """
+    del ctx  # unused; subcommand context is not needed
+
+    if collision not in ("skip", "rename", "fail"):
+        console.print(f"[red]Invalid --on-collision policy: {collision!r} (expected skip, rename, or fail)[/red]")
+        raise typer.Exit(code=2)
+
+    try:
+        data = load_bitwarden_export(file)
+    except BitwardenExportError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    except OSError as exc:
+        console.print(f"[red]Could not read {file}: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    plan = plan_bitwarden_import(data)
+
+    if dry_run:
+        # Warn on stderr so --json stdout stays a clean machine payload.
+        console_err.print(
+            f"[yellow]Warning:[/yellow] {file} is a PLAINTEXT Bitwarden export. "
+            "Delete it after import; never commit or sync it."
+        )
+        _print_bitwarden_preview(plan, json_output)
+        return
+
+    vault, _, _, mutations = build_services(prompt=True)
+
+    existing_pairs = {(r.service, r.alias) for r in vault.list_credentials()}
+    apply_plan = resolve_collisions(plan, existing_pairs, collision)
+
+    if collision == "fail" and apply_plan.collisions:
+        colliding = ", ".join(f"{c.service}:{c.alias}" for c in apply_plan.collisions[:10])
+        more = f" (and {len(apply_plan.collisions) - 10} more)" if len(apply_plan.collisions) > 10 else ""
+        console.print(
+            f"[red]Collision policy 'fail': {len(apply_plan.collisions)} credential(s) already exist: "
+            f"{colliding}{more}. Nothing was written.[/red]"
+        )
+        _audit_bitwarden_import(vault=vault, applied=0, skipped=len(apply_plan.collisions), policy=collision,
+                                source=str(file), outcome="failed-collision", json_output=json_output)
+        raise typer.Exit(code=1)
+
+    _print_bitwarden_preview(plan, json_output, apply_plan=apply_plan, policy=collision)
+
+    if not yes:
+        confirmed = typer.confirm(
+            f"Import {len(apply_plan.to_write)} credential(s) into the vault?"
+        )
+        if not confirmed:
+            console.print("[yellow]Import cancelled. Nothing was written.[/yellow]")
+            _audit_bitwarden_import(vault=vault, applied=0, skipped=0, policy=collision,
+                                    source=str(file), outcome="cancelled", json_output=json_output)
+            raise typer.Exit(code=1)
+
+    imported, denied = 0, 0
+    for cred in apply_plan.to_write:
+        result = mutations.add_credential(
+            agent_id=OPERATOR_AGENT_ID,
+            service=cred.service,
+            secret=cred.secret,
+            credential_type=cred.credential_type,
+            alias=cred.alias,
+            imported_from="bitwarden",
+            tags=["imported", "bitwarden"],
+            notes=cred.notes,
+            metadata=cred.metadata,
+        )
+        if not result.allowed:
+            denied += 1
+            console.print(f"[red]Denied importing {cred.describe()}: {result.reason}[/red]")
+            continue
+        imported += 1
+
+    renames = sum(1 for c in apply_plan.collisions if c.action == "rename")
+    skips = sum(1 for c in apply_plan.collisions if c.action == "skip")
+    if json_output:
+        console.print_json(data={
+            "outcome": "applied",
+            "applied": imported,
+            "renamed": renames,
+            "skipped_collisions": skips,
+            "skipped_items": len(plan.skipped),
+            "denied": denied,
+        })
+    else:
+        console.print(
+            f"[green]Imported {imported} credential(s) from Bitwarden[/green] "
+            f"({renames} renamed on collision, {skips} skipped on collision, {denied} denied)."
+        )
+        console.print(f"[yellow]Delete the plaintext export file now:[/yellow] {file}")
+
+    _audit_bitwarden_import(
+        vault=vault, applied=imported, skipped=skips + len(plan.skipped), policy=collision,
+        source=str(file), outcome="applied", json_output=json_output,
+        renames=renames, denied=denied,
+    )
+
+
+def _print_bitwarden_preview(
+    plan: BitwardenPlan,
+    json_output: bool,
+    apply_plan: ApplyPlan | None = None,
+    policy: str | None = None,
+) -> None:
+    """Print the dry-run/apply preview without ever printing a secret."""
+    if json_output:
+        payload: dict[str, Any] = {
+            "importable": plan.importable_count,
+            "skipped_items": len(plan.skipped),
+            "folders": plan.folders,
+            "items_seen": plan.items_seen,
+            "planned": [
+                {
+                    "service": c.service,
+                    "alias": c.alias,
+                    "credential_type": c.credential_type,
+                    "origin": c.origin,
+                }
+                for c in plan.planned
+            ],
+            "skips": [{"item": s.item_name, "reason": s.reason} for s in plan.skipped],
+        }
+        if apply_plan is not None:
+            payload["collisions"] = [
+                {"service": c.service, "alias": c.alias, "action": c.action} for c in apply_plan.collisions
+            ]
+        console.print_json(data=payload)
+        return
+
+    # Which planned credentials survive collision resolution, and under what
+    # final alias. resolve_collisions already mutated cred.alias for renames.
+    if apply_plan is not None:
+        skip_pairs = {(c.service, c.alias) for c in apply_plan.collisions if c.action == "skip"}
+    else:
+        skip_pairs = set()
+
+    table = Table(title="Bitwarden Import Preview")
+    table.add_column("Action")
+    table.add_column("Service")
+    table.add_column("Alias")
+    table.add_column("Type")
+    table.add_column("Origin")
+    for cred in plan.planned:
+        if (cred.service, cred.alias) in skip_pairs:
+            table.add_row("skip (exists)", cred.service, cred.alias, cred.credential_type, cred.origin or "-")
+        else:
+            table.add_row("import", cred.service, cred.alias, cred.credential_type, cred.origin or "-")
+    console.print(table)
+
+    if apply_plan is not None:
+        for c in apply_plan.collisions:
+            console.print(f"[yellow]Collision ({policy}):[/yellow] {c.service}:{c.alias} -> {c.action}")
+    for s in plan.skipped:
+        console.print(f"[yellow]Skipped[/yellow] '{s.item_name}': {s.reason}")
+    console.print(
+        f"[green]Plan:[/green] {len(apply_plan.to_write) if apply_plan is not None else plan.importable_count} "
+        f"to import, {len(plan.skipped)} skipped item(s), {plan.folders} folder(s) used as service prefixes."
+    )
+
+
+def _audit_bitwarden_import(
+    *,
+    vault: Vault | None,
+    applied: int,
+    skipped: int,
+    policy: str,
+    source: str,
+    outcome: str,
+    json_output: bool,
+    renames: int = 0,
+    denied: int = 0,
+) -> None:
+    """Record the summary ``import_bitwarden`` audit event (best-effort)."""
+    try:
+        settings = get_settings()
+        audit = AuditLogger(settings.db_path, master_key=getattr(vault, "key", None))
+        audit.record(AccessLogRecord(
+            agent_id=OPERATOR_AGENT_ID,
+            service="*",
+            action="import_bitwarden",
+            decision=Decision.allow if outcome == "applied" else Decision.deny,
+            reason=(
+                f"bitwarden import {outcome}: {applied} applied, {skipped} skipped, "
+                f"{renames} renamed, {denied} denied (collision policy={policy}, source={source})"
+            ),
+        ))
+    except Exception as exc:  # pragma: no cover - audit must not crash the import
+        console_err.print(f"[yellow]Warning: could not write audit event: {exc}[/yellow]")
+        if json_output:
+            pass  # stdout stays a clean payload; the warning went to stderr
 
 
 @_typer_app.command()
