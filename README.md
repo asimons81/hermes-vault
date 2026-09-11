@@ -4,14 +4,14 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.25.1 is the current release — a patch on the **Vault Intelligence** line's **Desktop Mutation Surface** (v0.25.0) that fixes the false ✗ Integrity stat in the Desktop plugin, makes the plugin adapter Windows-safe, widens the MCP SDK constraint to accept 2.x, hardens two flaky tests, refreshes the README hero, and lands the site's black/white/red Studio branding. The read-only surface from v0.24.0 and the mutation surface from v0.25.0 are unchanged. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
+v0.25.1 is the current release — a patch on the **Vault Intelligence** line's **Desktop Mutation Surface** (v0.25.0) that fixes the false ✗ Integrity stat in the Desktop plugin, completes the plugin adapter's Windows safety (the reader mechanism shipped in v0.25.0; #77 adds the `HOMEDRIVE`/`HOMEPATH` launcher keys and regression tests), widens the MCP SDK constraint to accept 2.x, hardens two flaky tests, refreshes the README hero, and lands the site's black/white/red Studio branding. The read-only surface from v0.24.0 and the mutation surface from v0.25.0 are unchanged. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
 
 ## What's New in 0.25.1
 
 v0.25.1 is a patch release fixing Desktop plugin defects and widening dependency compatibility.
 
 - **Integrity stat fix**: the Desktop plugin header now derives its Integrity stat from the `/integrity` endpoint instead of `overview.health.integrity_status` (which the bridge never emits) — v0.25.0 showed a false red ✗ Check on healthy vaults
-- **Windows plugin adapter fix (#77/#76)**: the bounded child reader no longer assumes POSIX — Windows children route to a timeout-bounded `communicate()` fallback, `.cmd` canonical launchers get `ComSpec`/`USERPROFILE`/`HOMEDRIVE`/`HOMEPATH` in the safe env, and CRLF pipe output is normalized before strict line framing
+- **Windows plugin adapter fix (#77/#76)**: the Windows-safe reader mechanism (timeout-bounded `communicate()` fallback, `ComSpec`/`USERPROFILE` safe-env entries, CRLF pipe normalization) shipped with v0.25.0; #77 completes it with the `HOMEDRIVE`/`HOMEPATH` launcher keys (so `.cmd` canonical launchers can expand user-profile paths) plus regression tests covering all four Windows crashes
 - **MCP SDK floor raised to 2.x (#81 follow-up)**: `mcp>=2.0.0,<3.0.0` (runtime + dev deps) — `mcp_server.py` registers handlers via the mcp 2.x low-level `add_request_handler` API; mcp 1.x lacks that API and is excluded by the floor
 - **Test hardening (#82/#83)**: the concurrent OAuth refresh test no longer trips barrier timeouts and the audit-integrity TOCTOU test no longer races Windows file locks
 - **README hero (#86)**: architecture diagram replaces the promo image

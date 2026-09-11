@@ -77,7 +77,7 @@
           <div class="metric-card">
             <span>Current Release</span>
             <strong>0.25.1</strong>
-            <small>Patch release fixing the false ✗ Integrity stat in the Desktop plugin, making the plugin adapter Windows-safe (communicate() fallback, ComSpec/profile env, CRLF framing), and widening the MCP SDK constraint to <code>&gt;=2.0.0,&lt;3.0.0</code> for mcp 2.x installs. <a href="https://github.com/asimons81/hermes-vault/releases/tag/v0.25.1" target="_blank" rel="noreferrer noopener">View release</a></small>
+            <small>Patch release fixing the false ✗ Integrity stat in the Desktop plugin, completing the plugin adapter's Windows safety (reader mechanism from v0.25.0; this patch adds the HOMEDRIVE/HOMEPATH launcher keys + regression tests), and widening the MCP SDK constraint to <code>&gt;=2.0.0,&lt;3.0.0</code> for mcp 2.x installs. <a href="https://github.com/asimons81/hermes-vault/releases/tag/v0.25.1" target="_blank" rel="noreferrer noopener">View release</a></small>
           </div>
           <div class="metric-card">
             <span>Operator Loop</span>
@@ -559,7 +559,7 @@ uv run pytest tests/ -q</code></pre>
         <article class="release-featured spotlight-card" data-category="desktop">
           <div class="release-badge">Current Release</div>
           <h3>v0.25.1</h3>
-          <p>Patch: false ✗ Integrity stat fix (derive from <code>/integrity</code>, not <code>overview.health</code>), Windows-safe plugin adapter (<code>communicate()</code> fallback, ComSpec/profile env, CRLF framing), MCP SDK constraint raised to <code>&gt;=2.0.0,&lt;3.0.0</code> for mcp 2.x, flaky-test hardening (#82/#83), README hero swap, and the site's Studio branding with the hero webp now tracked in git.</p>
+          <p>Patch: false ✗ Integrity stat fix (derive from <code>/integrity</code>, not <code>overview.health</code>), completed Windows safety for the plugin adapter (reader mechanism from v0.25.0; adds the <code>HOMEDRIVE</code>/<code>HOMEPATH</code> launcher keys + regression tests), MCP SDK constraint raised to <code>&gt;=2.0.0,&lt;3.0.0</code> for mcp 2.x, flaky-test hardening (#82/#83), README hero swap, and the site's Studio branding with the hero webp now tracked in git.</p>
         </article>
 
         <div class="release-list">
