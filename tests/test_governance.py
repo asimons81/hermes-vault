@@ -70,6 +70,7 @@ def test_broker_expiry_warning_when_expiring_soon(tmp_path: Path) -> None:
 
 
 def test_broker_expired_warning(tmp_path: Path) -> None:
+    """F-03: an expired credential is denied at env handoff — never served."""
     os.environ["HERMES_VAULT_EXPIRY_WARNING_DAYS"] = "7"
     db = tmp_path / "vault.db"
     salt = tmp_path / "salt.bin"
@@ -81,9 +82,10 @@ def test_broker_expired_warning(tmp_path: Path) -> None:
     audit = AuditLogger(db)
     broker = Broker(vault=vault, policy=policy, verifier=Verifier(), audit=audit)
     decision = broker.get_ephemeral_env("openai", "hermes", 900)
-    warnings = decision.metadata.get("warnings", [])
-    expired = [w for w in warnings if w["kind"] == "credential_expired"]
-    assert len(expired) == 1
+    assert decision.allowed is False
+    assert "expired" in decision.reason
+    assert decision.metadata.get("expired_at") == expiry.isoformat()
+    assert decision.env == {}
 
 
 def test_broker_backup_reminder_when_no_backup(tmp_path: Path) -> None:

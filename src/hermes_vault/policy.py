@@ -65,6 +65,7 @@ def _preprocess_policy(raw: dict) -> dict:
                     max_ttl_seconds=entry_data.get("max_ttl_seconds"),
                     require_lease_for_env=entry_data.get("require_lease_for_env"),
                     require_lease_purpose=entry_data.get("require_lease_purpose"),
+                    allow_expired_env=entry_data.get("allow_expired_env"),
                 )
             agent_data["service_actions"] = sa
             agent_data["services"] = list(svc.keys())
@@ -272,6 +273,39 @@ class PolicyEngine:
             if entry and entry.require_lease_purpose is not None:
                 return bool(entry.require_lease_purpose)
         return bool(agent.require_lease_purpose)
+
+    def can_manage_leases(self, agent_id: str) -> tuple[bool, str]:
+        """Operator/auditor escape hatch for lease ownership (F-01).
+
+        Only an explicit ``manage_leases`` capability grants cross-agent
+        lease administration.  Unlike other capabilities this is NEVER
+        implicitly granted to legacy agents with an empty capabilities
+        list — ownership is the security default; cross-agent access is
+        the exception an operator must opt into.
+        """
+        agent = self.get_agent_policy(agent_id)
+        if not agent:
+            return False, f"agent '{agent_id}' is not defined in policy"
+        if AgentCapability.manage_leases in agent.capabilities:
+            return True, "allowed by policy (manage_leases capability)"
+        return False, (
+            f"agent '{agent_id}' does not hold the manage_leases capability; "
+            "agents may only access leases issued to themselves"
+        )
+
+    def allow_expired_env(self, agent_id: str, service: str) -> bool:
+        """Whether get_ephemeral_env may hand off an expired credential (F-03).
+
+        Defaults to False (deny).  A service entry's ``allow_expired_env``
+        overrides the agent-level default when explicitly set.
+        """
+        agent = self.get_agent_policy(agent_id)
+        if not agent:
+            return False
+        entry = agent.service_actions.get(normalize(service)) if agent.service_actions else None
+        if entry is not None and entry.allow_expired_env is not None:
+            return bool(entry.allow_expired_env)
+        return bool(agent.allow_expired_env)
 
     def explain(
         self,

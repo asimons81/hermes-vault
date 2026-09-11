@@ -356,6 +356,25 @@ agents:
     raw_secret_access: false
 ```
 
+**Expired credentials are denied at env handoff.** If a credential has an
+expiry timestamp in the past, `broker env` refuses to materialize it — the
+expiry is enforced, not advisory. OAuth access tokens are still refreshed
+first when possible; only credentials that remain expired after any refresh
+are denied. To deliberately allow an expired credential for a service (e.g.
+a long-lived partner key whose provider never enforces the date), set
+`allow_expired_env: true` on that service entry:
+
+```yaml
+  coder:
+    services:
+      legacy-partner:
+        actions: [get_env]
+        allow_expired_env: true
+```
+
+A service-level `allow_expired_env` (either value) overrides the
+agent-level default of the same name; the default is `false` everywhere.
+
 Use the narrowest profile that still gets the job done. If an auditor can verify the thing, don't hand it mutation rights just because it's convenient. If the coder only needs `github` and `openai`, don't give it every other service in the vault.
 
 ## MCP Server Option
@@ -577,6 +596,14 @@ Some actions aren't service-scoped. They are controlled by the
 | `scan_secrets` | `scan`, scan the filesystem for plaintext secrets |
 | `export_backup` | `backup`, export an encrypted backup of the vault |
 | `import_credentials` | `import`, add credentials from env files or JSON |
+| `manage_leases` | Cross-agent lease administration: view/renew/revoke leases issued to *other* agents, and list all leases without the ownership filter |
+
+**Note on `manage_leases`:** unlike other capabilities, it is never granted
+implicitly to legacy agents (an agent with no `capabilities` field gets all
+*other* capabilities for backward compatibility, but not this one). Lease
+ownership is the security default: an agent may only list, show, renew, or
+revoke leases issued to itself. Grant `manage_leases` only to operator or
+auditor agents that genuinely administer other agents' leases.
 
 **Backward compatibility:** If an agent has no `capabilities` field, all capabilities are implicitly granted for backward compatibility.
 
