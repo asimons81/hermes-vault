@@ -31,7 +31,7 @@ from hermes_vault.oauth.oauth_refresh import (
 )
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.service_ids import get_env_var_map, normalize
-from hermes_vault.verifier import Verifier
+from hermes_vault.verifier import UNSUPPORTED_VERIFIER_REASON, Verifier
 from hermes_vault.vault import AmbiguousTargetError, Vault
 
 OAUTH_REFRESH_MARGIN_SECONDS = 300  # 5 minutes
@@ -41,7 +41,7 @@ OAUTH_REFRESH_COOLDOWN_SECONDS = 30  # seconds between refresh attempts
 def _verification_is_unsupported(result: VerificationResult) -> bool:
     return (
         result.category is VerificationCategory.unknown
-        and result.reason == "No provider-specific verifier is configured for this service."
+        and result.reason == UNSUPPORTED_VERIFIER_REASON
     )
 
 
@@ -418,27 +418,7 @@ class Broker:
 
         # ── backup reminder ──────────────────────────────────────────
         backup_days = int(os.environ.get("HERMES_VAULT_BACKUP_REMINDER_DAYS", "30"))
-        entries = self.audit.list_recent(limit=500, action="export_backup")
-        last_backup: datetime | None = None
-        for entry in entries:
-            ts_str = entry.get("timestamp")
-            if ts_str and isinstance(ts_str, str):
-                try:
-                    last_backup = datetime.fromisoformat(ts_str)
-                    break
-                except ValueError:
-                    continue
-        if last_backup is None:
-            entries = self.audit.list_recent(limit=500, action="backup")
-            for entry in entries:
-                ts_str = entry.get("timestamp")
-                if ts_str and isinstance(ts_str, str):
-                    try:
-                        last_backup = datetime.fromisoformat(ts_str)
-                        break
-                    except ValueError:
-                        continue
-
+        last_backup = self.audit.last_backup_at()
         if last_backup is not None:
             days_since = (now - last_backup.replace(tzinfo=timezone.utc)).days
             if days_since > backup_days:

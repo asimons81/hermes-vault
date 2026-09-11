@@ -20,6 +20,13 @@ from hermes_vault.service_ids import normalize
 
 _SHIPPED_CONFIGS_DIR = Path(__file__).resolve().parent / "verifier_configs"
 
+#: Reason returned when a service has no provider-specific verifier configured.
+#: A shared constant (rather than inline strings) because the CLI's truthful
+#: exit-code logic must exempt exactly this configured no-op from failure —
+#: string drift between the two sites would silently flip ``verify --all``
+#: batches to exit 1 for every service without a verifier.
+UNSUPPORTED_VERIFIER_REASON = "No provider-specific verifier is configured for this service."
+
 
 @dataclass(frozen=True)
 class ProviderVerifierConfig:
@@ -295,7 +302,7 @@ class Verifier:
                 service=service,
                 category=VerificationCategory.unknown,
                 success=False,
-                reason="No provider-specific verifier is configured for this service.",
+                reason=UNSUPPORTED_VERIFIER_REASON,
             )
         return adapter(secret)
 

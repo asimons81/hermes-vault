@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+from hermes_vault._envguard import sanitize_poisoned_sys_path
+
+# Scrub hermes-agent PYTHONPATH leakage from sys.path BEFORE any third-party
+# import (pydantic et al. crash with ModuleNotFoundError against the agent
+# venv's incompatible wheels). No-op in a clean environment; dev/editable
+# installs whose checkout path merely contains the marker are preserved
+# (see hermes_vault/_envguard.py).
+sanitize_poisoned_sys_path(__file__)
+
 import json
 import os
 import shutil
@@ -39,7 +48,7 @@ from hermes_vault.scanner import Scanner
 from hermes_vault.service_ids import normalize
 from hermes_vault.skillgen import SkillGenerator
 from hermes_vault.update import UpdateError, UpdatePlan, perform_update, resolve_update_plan
-from hermes_vault.verifier import Verifier
+from hermes_vault.verifier import UNSUPPORTED_VERIFIER_REASON, Verifier
 from hermes_vault.vault import (
     AmbiguousTargetError,
     RestoreCommittedCheckpointError,
@@ -258,6 +267,19 @@ class HermesGroup(click.Group, typer.Typer):  # type: ignore[misc]
         return self._resolved_typer_group().get_command(ctx, cmd_name)
 
 
+# ── Version option ──────────────────────────────────────────────────────────
+
+
+def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
+    """Eager --version callback: print and exit 0 before any dispatch."""
+    if not value or ctx.resilient_parsing:
+        return
+    from hermes_vault import __version__
+
+    click.echo(f"hermes-vault {__version__}")
+    ctx.exit(0)
+
+
 _hermes_group = HermesGroup(
     params=[
         click.Option(
@@ -269,6 +291,14 @@ _hermes_group = HermesGroup(
             is_flag=True,
             is_eager=True,
             help="Suppress the vault splash banner.",
+        ),
+        click.Option(
+            ["--version"],
+            is_flag=True,
+            is_eager=True,
+            expose_value=False,
+            callback=_print_version,
+            help="Show the hermes-vault version and exit.",
         ),
     ],
     help="Hermes-native local-first credential vault, scanner, and broker.",
@@ -314,6 +344,51 @@ def _handle_mutation_error(result, success_msg: str | None = None) -> None:
         raise typer.Exit(code=1)
     if success_msg:
         console.print(success_msg)
+
+
+_AGENT_NOT_DEFINED_MARKER = "is not defined in policy"
+
+
+def _print_agent_policy_hint(agent: str, decision=None) -> None:
+    """Append an actionable hint to stderr after an agent_id-shaped failure.
+
+    ``--agent`` failures used to print only the bare denial JSON
+    ("agent 'x' is not defined in policy") with no way to discover valid
+    ids. This lists the agents defined in the active policy and surfaces the
+    default-binding mechanism. It goes to stderr so the JSON on stdout
+    stays parseable for scripts.
+
+    Fires when ``decision`` is a denied BrokerDecision whose reason names an
+    undefined agent. With ``decision=None`` (``broker list`` returns a bare
+    empty list, never a decision) it fires only when the agent is genuinely
+    absent from the policy — an empty listing for a defined agent has a
+    different cause and must not be mislabeled.
+    """
+    if decision is not None:
+        if decision.allowed or _AGENT_NOT_DEFINED_MARKER not in decision.reason:
+            return
+    defined: list[str] = []
+    policy_path = None
+    try:
+        settings = get_settings()
+        policy_path = settings.effective_policy_path
+        defined = sorted(PolicyEngine.from_yaml(policy_path).config.agents)
+    except Exception:
+        pass
+    if decision is None and agent in defined:
+        return
+    err = Console(stderr=True)
+    err.print(f"[yellow]agent '{agent}' is not defined in policy.[/yellow]")
+    if policy_path is not None:
+        err.print(f"[dim]Policy file: {policy_path}[/dim]")
+    if defined:
+        err.print(f"[dim]Defined agents: {', '.join(defined)}[/dim]")
+    else:
+        err.print("[dim]No agents defined in policy — add one under 'agents:'.[/dim]")
+    err.print(
+        "[dim]Add the agent under 'agents:' or pass an existing id via --agent; "
+        "MCP sessions bind via ?agent_id= or HERMES_VAULT_MCP_DEFAULT_AGENT.[/dim]"
+    )
 
 
 def _parse_tags(values: list[str] | None) -> list[str]:
@@ -1725,6 +1800,21 @@ def verify(
         console.print("[red]--format must be 'table' or 'json'[/red]")
         raise typer.Exit(code=1)
 
+    def _verification_failure(result) -> bool:
+        """Truthful failure test for exit-code purposes.
+
+        - Not-found / decrypt-denied results (no verification_result payload)
+          are failures.
+        - A verification that ran and reported success=False is a failure
+          (invalid, network, rate-limit — the pipeline must not read "fine").
+        - The one exemption: an unsupported verifier (no provider-specific
+          verifier configured) is a configured no-op, not a failed check.
+        """
+        success, category, reason, _, _ = _verification_payload(result)
+        if category == "unknown" and reason == UNSUPPORTED_VERIFIER_REASON:
+            return False
+        return not success
+
     vault, _, broker, _ = build_services(prompt=True)
     targets: list[tuple[str, str | None]]
     if all:
@@ -1756,7 +1846,11 @@ def verify(
     output_results = [r.model_dump(mode="json") for r in results]
 
     if format == "json":
-        console.print_json(data=json.dumps(output_results))
+        # data= must receive the OBJECT, not a pre-encoded string — rich's
+        # print_json re-encodes strings, which double-encoded the payload
+        # (E#4: `verify x --format json` printed a JSON string containing
+        # JSON, a parse trap for the exact scripting audience this targets).
+        console.print_json(data=output_results)
     else:
         table = Table(title="Verification Results")
         table.add_column("SERVICE")
@@ -1790,6 +1884,14 @@ def verify(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(output_results, indent=2, sort_keys=True), encoding="utf-8")
         report_path.chmod(0o600)
+
+    # Truthful exit code: cron/agent pipelines branch on it. A denied /
+    # not-found / invalid verification must not exit 0 (E#3 live probe:
+    # `verify nonexistent-svc` printed allowed:false and exited 0). The one
+    # exemption is a service with no configured verifier — a no-op, not a
+    # failure. Mixed batches fail if any target failed.
+    if any(_verification_failure(r) for r in results):
+        raise typer.Exit(code=1)
 
 
 @_typer_app.command("export")
@@ -2581,10 +2683,10 @@ def broker_get(
     _, _, broker, _ = build_services(prompt=True)
     canonical = normalize(service)
     decision = broker.get_credential(service=canonical, purpose=purpose, agent_id=agent)
+    console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
-        console.print_json(data=decision.model_dump_json())
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
-    console.print_json(data=json.dumps(decision.model_dump(mode="json")))
 
 
 @broker_app.command("env")
@@ -2604,10 +2706,10 @@ def broker_env(
     _, _, broker, _ = build_services(prompt=True)
     canonical = normalize(service)
     decision = broker.get_ephemeral_env(service=canonical, agent_id=agent, ttl=ttl)
-    if not decision.allowed:
-        console.print_json(data=decision.model_dump(mode="json"))
-        raise typer.Exit(code=1)
     console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
+        raise typer.Exit(code=1)
 
 
 @secret_source_app.command("fetch", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -2681,6 +2783,7 @@ def lease_issue(
     )
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2695,6 +2798,7 @@ def lease_list(
     decision = broker.list_leases(agent_id=agent, service=service, status=status)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2708,6 +2812,7 @@ def lease_show(
     decision = broker.show_lease(agent_id=agent, lease_id=lease_id)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2722,6 +2827,7 @@ def lease_renew(
     decision = broker.renew_lease(agent_id=agent, lease_id=lease_id, ttl_seconds=ttl)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2736,6 +2842,7 @@ def lease_revoke(
     decision = broker.revoke_lease(agent_id=agent, lease_id=lease_id, reason=reason)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2759,6 +2866,7 @@ def lease_checkout(
     )
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2784,6 +2892,7 @@ def request_access(
     )
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2855,7 +2964,10 @@ def broker_list(
       hermes-vault broker list --agent hermes
     """
     _, _, broker, _ = build_services(prompt=True)
-    console.print_json(data=json.dumps(broker.list_available_credentials(agent)))
+    credentials = broker.list_available_credentials(agent)
+    console.print_json(data=credentials)
+    if not credentials:
+        _print_agent_policy_hint(agent, decision=None)
 
 
 
@@ -3024,10 +3136,11 @@ def backup_vault(
       hermes-vault backup --include-audit --output ~/vault-full.json
     """
     vault, _, _, _ = build_services(prompt=True)
+    # Audit into the vault's own DB (vault.db_path): the vault under backup is
+    # the authority on where its audit rows live, not a re-resolved setting.
+    audit = AuditLogger(vault.db_path, master_key=vault.key)
     backup = vault.export_backup(metadata_only=metadata_only)
     if include_audit:
-        settings = get_settings()
-        audit = AuditLogger(settings.db_path)
         entries = audit.list_recent(limit=5000)
         backup["audit_log"] = entries
     content = json.dumps(backup, indent=2, sort_keys=True)
@@ -3035,6 +3148,31 @@ def backup_vault(
     output.chmod(0o600)
     console.print(f"[green]Backup written to {output}[/green]")
     console.print(f"  {len(backup['credentials'])} credential(s) exported")
+
+    # Audit row feeds the health report's "Days since last backup" and the
+    # broker's backup reminder (both scan for these actions via
+    # AuditLogger.last_backup_at). Without it, every CLI backup was invisible
+    # to health forever. The audit append must never fail the backup itself
+    # (an integrity wedge would otherwise block the recovery tool) — degrade
+    # to a visible warning instead.
+    try:
+        audit.record(AccessLogRecord(
+            agent_id=OPERATOR_AGENT_ID,
+            service="*",
+            action="export_backup",
+            decision=Decision.allow,
+            reason=(
+                f"backup written to {output.name}, "
+                f"{len(backup['credentials'])} credential(s)"
+                + (", metadata-only" if metadata_only else "")
+            ),
+            metadata={"path": str(output), "metadata_only": metadata_only},
+        ))
+    except Exception as exc:
+        console.print(
+            f"[yellow]Warning: backup succeeded but the audit row could not be "
+            f"written ({exc}). Health's backup age will not reflect this run.[/yellow]"
+        )
 
 
 @recovery_app.command("drill")
@@ -3938,7 +4076,14 @@ def oauth_normalize(
 def app() -> int:
     """Proxy that strips deprecated --banner, then delegates to _hermes_group."""
     argv = [arg for arg in sys.argv[1:] if arg != "--banner"]
-    if _targets_root_command(argv) and "--no-banner" not in argv and _should_show_banner():
+    root_only = _targets_root_command(argv)
+    # --version must print only the version line (no splash, no dispatch).
+    if root_only and "--version" in argv:
+        from hermes_vault import __version__
+
+        click.echo(f"hermes-vault {__version__}")
+        return 0
+    if root_only and "--no-banner" not in argv and _should_show_banner():
         _show_banner()
     return _hermes_group(args=argv, prog_name=Path(sys.argv[0]).name)
 

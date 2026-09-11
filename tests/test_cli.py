@@ -1434,9 +1434,8 @@ def test_verify_default_is_json(monkeypatch) -> None:
     assert result.exit_code == 0
     import re
     clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', result.output)
-    # Output is a JSON-encoded string, so we parse twice
-    inner = json.loads(clean)
-    data = json.loads(inner)
+    # P3 truth pack: stdout is now the JSON array itself (no double encoding)
+    data = json.loads(clean)
     assert isinstance(data, list)
     assert data[0]["service"] == "openai"
 
@@ -1453,8 +1452,7 @@ def test_verify_format_json(monkeypatch) -> None:
     assert result.exit_code == 0
     import re
     clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', result.output)
-    inner = json.loads(clean)
-    data = json.loads(inner)
+    data = json.loads(clean)
     assert isinstance(data, list)
     assert data[0]["service"] == "openai"
 
@@ -1515,7 +1513,9 @@ def test_verify_format_table_with_brokerdecision_metadata(monkeypatch) -> None:
     runner = CliRunner()
     result = runner.invoke(_hermes_group, ["verify", "--all", "--format", "table"])
 
-    assert result.exit_code == 0
+    # P3 truth pack: a verification that ran and failed (network_failure)
+    # must exit non-zero; the table still renders the failure.
+    assert result.exit_code == 1
     assert "primary" in result.output
     assert "provider" in result.output
 
