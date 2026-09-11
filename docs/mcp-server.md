@@ -36,7 +36,7 @@ export HERMES_VAULT_MCP_DEFAULT_AGENT='claude-desktop'
 hermes-vault mcp
 ```
 
-When the binding env vars are set, the server denies any `agent_id` outside the allowed set before policy evaluation. When they are not set, `agent_id` remains required on every MCP tool call or MCP resource read.
+When the binding env vars are set, the server denies any `agent_id` outside the allowed set before policy evaluation. When they are not set, `agent_id` remains required on every MCP **tool call**; bare **resource reads** fall back to a default identity (see below).
 
 ## Caller Identity
 
@@ -45,6 +45,15 @@ The MCP server uses the caller's supplied `agent_id` unless the deployment provi
 This is a deployment guardrail, not strong authentication. Policy still decides what the effective agent may do once identity is resolved.
 
 MCP resource reads receive only a URI, not JSON tool arguments. In unbound mode, include identity in the query string, for example `vault://services?agent_id=hermes`. In bound mode, set both `HERMES_VAULT_MCP_ALLOWED_AGENTS` and `HERMES_VAULT_MCP_DEFAULT_AGENT` so bare resource URIs such as `vault://services` resolve to the configured default agent.
+
+### Bare resource URIs in unbound mode (v0.26.0)
+
+Generic MCP hosts perform `resources/list` and then `resources/read` on the advertised URI verbatim — no `?agent_id=` query. Since v0.26.0 those bare reads succeed in unbound mode:
+
+- If `HERMES_VAULT_MCP_DEFAULT_AGENT` is set, the bare URI resolves as that agent through the normal policy-gated path (`binding_mode: "default_fallback"`).
+- Otherwise the read falls back to the embedded **operator default** (`binding_mode: "operator_default"`): the server process holds the operator's unlock material, so the host receives the operator's metadata-only view of the vault — service names, lease inventories, health, and policy summaries; never secrets or encrypted payloads. Every such read is audit-logged.
+
+Resource reads that require parameters (for example `vault://policy-explain?service=...` or `vault://recovery?backup=...`) still return their documented error envelopes when the parameter is missing. Tool calls remain agent-scoped: `agent_id` is still required on every tool call in unbound mode.
 
 ## Available MCP Resources
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.0 (unreleased) — P4: MCP correctness
+
+### Fixed
+
+- **Advertised `vault://` resources readable in unbound mode (P4)**: generic MCP hosts do `resources/list` then `resources/read` on the advertised URI verbatim — every one of the 10 advertised URIs previously returned `Missing required parameter: agent_id` in unbound mode. Bare resource reads now resolve to `HERMES_VAULT_MCP_DEFAULT_AGENT` when set (normal policy-gated path, `binding_mode: "default_fallback"`), otherwise to the embedded operator default (`binding_mode: "operator_default"`): the operator's metadata-only view, audit-logged, never secrets or encrypted payloads. Parameterized resources (`vault://policy-explain`, `vault://recovery`) keep their documented missing-parameter errors; tool calls remain agent-scoped in unbound mode. The tests that previously pinned the error envelope (`test_read_services_resource_requires_agent_or_default`) were rewritten to pin the new behavior — **intended behavior change**.
+
 ## 0.25.1 -- Patch: Desktop plugin fixes + mcp 2.x support (2026-09-10)
 
 ### Fixed

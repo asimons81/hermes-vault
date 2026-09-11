@@ -138,11 +138,64 @@ def test_resource_capability_is_advertised():
 # ── MCP resources ─────────────────────────────────────────────────────────────
 
 
-def test_read_services_resource_requires_agent_or_default():
+def test_read_services_resource_bare_uri_uses_operator_default(vault_with_policy, tmp_path):
+    # v0.26.0 P4 behavior change: advertised URIs must be readable as
+    # advertised. In unbound mode (no binding env vars) a bare URI read
+    # previously errored with "Missing required parameter: agent_id" for
+    # every advertised resource; it now falls back to the embedded operator
+    # default and returns the operator's metadata-only view.
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
     result = _run_async(read_resource("vault://services"))
     data = _resource_json(result)
-    assert data["version"] == "vault-resource-error-v1"
-    assert "Missing required parameter: agent_id" in data["error"]
+    assert data["version"] == "vault-services-v1"
+    assert data["binding_mode"] == "operator_default"
+    assert data["agent_id"] == "operator"
+    assert data["policy_scoped"] is False
+    assert {item["service"] for item in data["services"]} == {"openai", "supabase", "github"}
+    serialized = json.dumps(data)
+    assert "encrypted_payload" not in serialized
+    assert "test-openai-key" not in serialized
+
+
+def test_read_all_advertised_uris_without_agent_query(vault_with_policy, tmp_path):
+    # Every statically advertised URI must be readable verbatim (the exact
+    # generic-host pattern: resources/list then resources/read, no query).
+    # vault://agent-context and vault://audit-integrity use fixed payload
+    # shapes without binding_mode; they must still return non-error payloads.
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    for uri in (
+        "vault://services",
+        "vault://health",
+        "vault://status",
+        "vault://policy",
+        "vault://leases",
+        "vault://requests",
+        "vault://services/openai",
+    ):
+        result = _run_async(read_resource(uri))
+        data = _resource_json(result)
+        assert data.get("version") != "vault-resource-error-v1", f"{uri} errored: {data.get('error')}"
+        assert data["binding_mode"] == "operator_default"
+        assert "encrypted_payload" not in json.dumps(data)
+    for uri in ("vault://agent-context", "vault://audit-integrity"):
+        result = _run_async(read_resource(uri))
+        data = _resource_json(result)
+        assert data.get("version") != "vault-resource-error-v1", f"{uri} errored: {data.get('error')}"
+        assert "encrypted_payload" not in json.dumps(data)
+
+
+def test_read_bare_uri_unbound_default_agent_resolves_through_policy(vault_with_policy, tmp_path, monkeypatch):
+    # HERMES_VAULT_MCP_DEFAULT_AGENT fallback: bare URIs resolve as that
+    # named agent through the normal policy-gated path (default_fallback
+    # mode), not the operator view.
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    monkeypatch.setenv("HERMES_VAULT_MCP_DEFAULT_AGENT", "test-agent")
+    result = _run_async(read_resource("vault://services"))
+    data = _resource_json(result)
+    assert data["version"] == "vault-services-v1"
+    assert data["binding_mode"] == "default_fallback"
+    assert data["agent_id"] == "test-agent"
+    assert {item["service"] for item in data["services"]} == {"openai", "supabase"}
 
 
 def test_read_services_resource_uses_default_agent(vault_with_policy, tmp_path, monkeypatch):
@@ -1329,3 +1382,5 @@ def test_vault_lease_detail_resource_returns_detail(vault_with_policy, tmp_path)
 
     assert data["version"] == "vault-lease-v1"
     assert data["lease"]["id"] == lease.metadata["lease"]["id"]
+
+

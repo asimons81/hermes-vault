@@ -368,6 +368,17 @@ def _record_binding_denial(
     )
 
 
+# Embedded operator default for unbound-mode MCP resource reads (v0.26.0 P4).
+# Generic MCP hosts do `resources/list` then `resources/read` on the advertised
+# URI verbatim — no `?agent_id=` query. In unbound mode those reads previously
+# errored with "Missing required parameter: agent_id" for every advertised URI.
+# Resource reads are read-only surfaces, so they fall back to the operator
+# identity (or HERMES_VAULT_MCP_DEFAULT_AGENT when set) when the URI carries no
+# agent; policy still gates every payload exactly as for an explicit agent.
+# Tool calls are NOT relaxed: they remain agent-scoped in unbound mode.
+_UNBOUND_RESOURCE_DEFAULT_AGENT = OPERATOR_AGENT_ID
+
+
 def _resolve_mcp_binding(
     settings: Any,
     arguments: dict[str, Any],
@@ -472,11 +483,45 @@ def _resource_lease_id(uri: Any) -> str | None:
 
 
 def _resolve_resource_binding(settings: Any, uri: Any, resource_key: str) -> MCPBindingContext:
-    return _resolve_mcp_binding(
-        settings,
-        _resource_arguments(uri),
-        f"resource:{resource_key}",
-    )
+    arguments = _resource_arguments(uri)
+    requested_agent_id = _normalize_agent_id(arguments.get("agent_id"))
+    allowed_agents = tuple(settings.mcp_allowed_agents or ())
+    env_default_agent = _normalize_agent_id(settings.mcp_default_agent)
+
+    if not allowed_agents:
+        if requested_agent_id is not None:
+            # Explicit ?agent_id= stays caller-scoped in unbound mode.
+            return MCPBindingContext(
+                requested_agent_id=requested_agent_id,
+                effective_agent_id=requested_agent_id,
+                binding_mode="unrestricted",
+                allowed_agents=allowed_agents,
+                default_agent=env_default_agent,
+            )
+        if env_default_agent is not None:
+            # HERMES_VAULT_MCP_DEFAULT_AGENT names a policy agent: bare URIs
+            # resolve through the normal policy-gated path as that agent.
+            return MCPBindingContext(
+                requested_agent_id=None,
+                effective_agent_id=env_default_agent,
+                binding_mode="default_fallback",
+                allowed_agents=allowed_agents,
+                default_agent=env_default_agent,
+            )
+        # v0.26.0 P4: bare advertised URIs (no ?agent_id=) must be readable as
+        # advertised. Fall back to the embedded operator default: the server
+        # process holds the operator's unlock material, so the advertised
+        # default gets the operator's metadata-only view (desktop-bridge
+        # precedent). Every payload stays metadata-only and audit-logged.
+        return MCPBindingContext(
+            requested_agent_id=None,
+            effective_agent_id=_UNBOUND_RESOURCE_DEFAULT_AGENT,
+            binding_mode="operator_default",
+            allowed_agents=allowed_agents,
+            default_agent=None,
+        )
+
+    return _resolve_mcp_binding(settings, arguments, f"resource:{resource_key}")
 
 
 def _json_resource(uri: Any, payload: dict[str, Any]) -> TextResourceContents:
@@ -520,6 +565,8 @@ def _service_metadata_payload(record: Any) -> dict[str, Any]:
 
 def _services_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
+    if binding.binding_mode == "operator_default":
+        return _operator_services_resource_payload(broker, binding)
     services = broker.list_available_credentials(agent_id)
     return {
         "version": "vault-services-v1",
@@ -537,12 +584,58 @@ def _services_resource_payload(broker: Broker, binding: MCPBindingContext) -> di
     }
 
 
+def _operator_services_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    """Operator-default fallback view: metadata for every service in the vault.
+
+    Mirrors the desktop bridge's operator credential listing — the server
+    process holds the operator's unlock material, so the advertised default
+    resource shows the operator's metadata-only view. Never includes secret
+    material or encrypted payloads.
+    """
+    services: dict[str, dict[str, str]] = {}
+    for record in broker.vault.list_credentials():
+        services.setdefault(
+            record.service,
+            {
+                "service": record.service,
+                "alias": record.alias,
+                "credential_type": record.credential_type,
+                "status": record.status.value,
+            },
+        )
+    _record_resource_audit(
+        broker,
+        OPERATOR_AGENT_ID,
+        "mcp_resource_services",
+        Decision.allow,
+        "operator-default fallback: returned metadata-only service list",
+    )
+    payload_services = [
+        {
+            **info,
+            "resource_uri": f"vault://services/{urllib.parse.quote(info['service'], safe='')}",
+        }
+        for info in services.values()
+    ]
+    return {
+        "version": "vault-services-v1",
+        "generated_at": _generated_at(),
+        "agent_id": OPERATOR_AGENT_ID,
+        "binding_mode": binding.binding_mode,
+        "policy_scoped": False,
+        "count": len(payload_services),
+        "services": payload_services,
+    }
+
+
 def _service_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
     service = _resource_service_name(uri)
     if service is None:
         raise ValueError(f"Missing service name in resource URI: {uri}")
     alias = _resource_arguments(uri).get("alias")
+    if binding.binding_mode == "operator_default":
+        return _operator_service_detail_resource_payload(uri, broker, binding, service, alias)
 
     allowed, reason = broker.policy.can(agent_id, service, ServiceAction.metadata)
     if not allowed:
@@ -585,6 +678,38 @@ def _service_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBindi
     }
 
 
+def _operator_service_detail_resource_payload(
+    uri: Any,
+    broker: Broker,
+    binding: MCPBindingContext,
+    service: str,
+    alias: str | None,
+) -> dict[str, Any]:
+    """Operator-default fallback for ``vault://services/{name}`` — metadata-only."""
+    records = [record for record in broker.vault.list_credentials() if record.service == service]
+    if alias is not None:
+        records = [record for record in records if record.alias == alias]
+    credentials = [_service_metadata_payload(record) for record in records]
+    _record_resource_audit(
+        broker,
+        OPERATOR_AGENT_ID,
+        "mcp_resource_service_detail",
+        Decision.allow,
+        "operator-default fallback: returned metadata-only credential records",
+    )
+    return {
+        "version": "vault-service-v1",
+        "generated_at": _generated_at(),
+        "agent_id": OPERATOR_AGENT_ID,
+        "binding_mode": binding.binding_mode,
+        "policy_scoped": False,
+        "service": service,
+        "alias": alias,
+        "count": len(credentials),
+        "credentials": credentials,
+    }
+
+
 def _lease_metadata_payload(record: Any) -> dict[str, Any]:
     payload = record.model_dump(mode="json")
     payload.pop("metadata", None)
@@ -594,6 +719,24 @@ def _lease_metadata_payload(record: Any) -> dict[str, Any]:
 
 def _leases_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
+    if binding.binding_mode == "operator_default":
+        leases = [lease.model_dump(mode="json") for lease in broker.vault.list_leases()]
+        _record_resource_audit(
+            broker,
+            OPERATOR_AGENT_ID,
+            "mcp_resource_leases",
+            Decision.allow,
+            "operator-default fallback: returned metadata-only lease inventory",
+        )
+        return {
+            "version": "vault-leases-v1",
+            "generated_at": _generated_at(),
+            "agent_id": OPERATOR_AGENT_ID,
+            "binding_mode": binding.binding_mode,
+            "policy_scoped": False,
+            "count": len(leases),
+            "leases": leases,
+        }
     lease_list_result = broker.list_leases(agent_id)
     if not lease_list_result.allowed:
         raise ValueError(lease_list_result.reason)
@@ -613,6 +756,25 @@ def _lease_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBinding
     lease_id = _resource_lease_id(uri)
     if lease_id is None:
         raise ValueError(f"Missing lease id in resource URI: {uri}")
+    if binding.binding_mode == "operator_default":
+        lease_record = broker.vault.get_lease(lease_id)
+        if lease_record is None:
+            raise ValueError(f"lease '{lease_id}' not found")
+        _record_resource_audit(
+            broker,
+            OPERATOR_AGENT_ID,
+            "mcp_resource_lease_detail",
+            Decision.allow,
+            "operator-default fallback: returned metadata-only lease detail",
+        )
+        return {
+            "version": "vault-lease-v1",
+            "generated_at": _generated_at(),
+            "agent_id": OPERATOR_AGENT_ID,
+            "binding_mode": binding.binding_mode,
+            "policy_scoped": False,
+            "lease": lease_record.model_dump(mode="json"),
+        }
     lease_show_result = broker.show_lease(agent_id, lease_id)
     if not lease_show_result.allowed:
         raise ValueError(lease_show_result.reason)
@@ -628,6 +790,8 @@ def _lease_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBinding
 
 def _health_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
+    if binding.binding_mode == "operator_default":
+        return _operator_health_resource_payload(broker, binding)
     cap_ok, cap_reason = broker.policy.can_capability(agent_id, AgentCapability.list_credentials)
     if not cap_ok:
         _record_resource_audit(broker, agent_id, "mcp_resource_health", Decision.deny, cap_reason)
@@ -659,15 +823,42 @@ def _health_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict
     return payload
 
 
+def _operator_health_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    """Operator-default fallback health snapshot — full vault, metadata-only."""
+    _record_resource_audit(
+        broker,
+        OPERATOR_AGENT_ID,
+        "mcp_resource_health",
+        Decision.allow,
+        "operator-default fallback: returned metadata-only health snapshot",
+    )
+    payload = run_health(broker.vault, audit=broker.audit, verify_live=False).as_dict(exclude_none=False)
+    payload.update({
+        "agent_id": OPERATOR_AGENT_ID,
+        "binding_mode": binding.binding_mode,
+        "policy_scoped": False,
+    })
+    return payload
+
+
 def _status_resource_payload(broker: Broker, binding: MCPBindingContext, settings: Any) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
+    operator_view = binding.binding_mode == "operator_default"
     health = _health_resource_payload(broker, binding)
     agent_policy = broker.policy.get_agent_policy(agent_id)
-    if agent_policy is None:
+    if agent_policy is None and not operator_view:
         raise ValueError(f"agent '{agent_id}' is not defined in policy")
 
-    lease_result = broker.list_leases(agent_id)
-    leases = list(lease_result.metadata.get("leases", [])) if lease_result.allowed else []
+    if operator_view:
+        leases = [lease.model_dump(mode="json") for lease in broker.vault.list_leases()]
+        service_count = len(
+            {record.service for record in broker.vault.list_credentials()}
+        )
+    else:
+        assert agent_policy is not None
+        lease_result = broker.list_leases(agent_id)
+        leases = list(lease_result.metadata.get("leases", [])) if lease_result.allowed else []
+        service_count = len(agent_policy.services)
     policy_report = run_policy_doctor(
         settings.effective_policy_path,
         generated_skills_dir=settings.generated_skills_dir,
@@ -729,7 +920,7 @@ def _status_resource_payload(broker: Broker, binding: MCPBindingContext, setting
         },
         "policy": {
             "policy_hash": broker.policy.compute_policy_hash(),
-            "service_count": len(agent_policy.services),
+            "service_count": service_count,
             "finding_count": policy_report.finding_count,
         },
         "leases": {
@@ -746,6 +937,8 @@ def _status_resource_payload(broker: Broker, binding: MCPBindingContext, setting
 
 def _policy_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
+    if binding.binding_mode == "operator_default":
+        return _operator_policy_resource_payload(broker, binding)
     agent_policy = broker.policy.get_agent_policy(agent_id)
     if agent_policy is None:
         reason = f"agent '{agent_id}' is not defined in policy"
@@ -782,6 +975,44 @@ def _policy_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict
     }
 
 
+def _operator_policy_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    """Operator-default fallback: metadata-only summary of every defined agent."""
+    _record_resource_audit(
+        broker,
+        OPERATOR_AGENT_ID,
+        "mcp_resource_policy",
+        Decision.allow,
+        "operator-default fallback: returned metadata-only all-agents policy summary",
+    )
+    agents: list[dict[str, Any]] = []
+    for agent_key, agent_policy in broker.policy.config.agents.items():
+        agents.append({
+            "agent_id": agent_key,
+            "services": agent_policy.services,
+            "capabilities": [capability.value for capability in agent_policy.capabilities],
+            "raw_secret_access": agent_policy.raw_secret_access,
+            "ephemeral_env_only": agent_policy.ephemeral_env_only,
+            "require_verification_before_reauth": agent_policy.require_verification_before_reauth,
+            "max_ttl_seconds": agent_policy.max_ttl_seconds,
+            "approval_required_services": agent_policy.approval_required_services,
+            "service_actions": {
+                service: {
+                    "actions": [action.value for action in entry.actions],
+                    "max_ttl_seconds": entry.max_ttl_seconds,
+                }
+                for service, entry in agent_policy.service_actions.items()
+            },
+        })
+    return {
+        "version": "policy-summary-v1",
+        "generated_at": _generated_at(),
+        "agent_id": OPERATOR_AGENT_ID,
+        "binding_mode": binding.binding_mode,
+        "policy_hash": broker.policy.compute_policy_hash(),
+        "agents": agents,
+    }
+
+
 def _agent_context_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
     from hermes_vault.agent_context import build_agent_context
@@ -803,6 +1034,23 @@ def _policy_explain_resource_payload(uri: Any, broker: Broker, binding: MCPBindi
 
 def _requests_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
+    if binding.binding_mode == "operator_default":
+        requests = [request.model_dump(mode="json") for request in broker.vault.list_access_requests()]
+        _record_resource_audit(
+            broker,
+            OPERATOR_AGENT_ID,
+            "mcp_resource_requests",
+            Decision.allow,
+            "operator-default fallback: returned metadata-only access requests",
+        )
+        return {
+            "version": "vault-requests-v1",
+            "generated_at": _generated_at(),
+            "agent_id": OPERATOR_AGENT_ID,
+            "binding_mode": binding.binding_mode,
+            "policy_scoped": False,
+            "requests": requests,
+        }
     result = broker.list_access_requests(agent_id=agent_id)
     if not result.allowed:
         raise ValueError(result.reason)
