@@ -81,6 +81,35 @@ class RestoreCommittedCheckpointError(RuntimeError):
     """
 
 
+class SaltMismatchError(RuntimeError):
+    """A backup's credentials do not decrypt under this vault's master key.
+
+    P1 restore guard: the master key is derived from the vault passphrase
+    AND ``master_key_salt.bin``; a failed decryptability proof means the
+    backup was encrypted under different key material (most commonly after
+    a vault rebuild rotated or replaced the salt file). hermes-vault never
+    rotates or replaces the salt automatically — restore the ORIGINAL
+    salt file that pairs with the backup, or re-export the backup from a
+    vault home that still has the paired salt. Do NOT delete ``vault.db``
+    or ``master_key_salt.bin``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        credential_count: int = 0,
+        decryptable_count: int = 0,
+        salt_fingerprint: str | None = None,
+        findings: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.credential_count = credential_count
+        self.decryptable_count = decryptable_count
+        self.salt_fingerprint = salt_fingerprint
+        self.findings = list(findings or [])
+
+
 def _restore_event_id(backup: dict, version: str, agent_id: str = "operator") -> str:
     """Deterministic id for a restore's protected audit event (issue #62B / F6).
 
@@ -100,6 +129,45 @@ def _restore_event_id(backup: dict, version: str, agent_id: str = "operator") ->
         default=str,
     )
     return f"restore-{hashlib.sha256(content.encode('utf-8')).hexdigest()[:32]}"
+
+
+def _salt_fingerprint_or_none(salt_path: Path) -> str | None:
+    """sha256(salt-file-bytes)[:16], or None when the file is unreadable."""
+    import hashlib
+
+    try:
+        return hashlib.sha256(salt_path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return None
+
+
+SALT_MISMATCH_GUIDANCE = """The master key is derived from the vault passphrase AND master_key_salt.bin. A
+mismatch means this {subject} was encrypted under different key material — most
+commonly after a vault rebuild rotated or replaced master_key_salt.bin.
+hermes-vault NEVER rotates or replaces master_key_salt.bin automatically.
+
+Recovery options (do NOT delete vault.db or master_key_salt.bin):
+  1. Restore the ORIGINAL master_key_salt.bin that pairs with this {subject}
+     (check safety copies in the vault home, e.g. master_key_salt.bin.bak-*,
+     vault.db.pre-auditreset-*, vault.db.pre-repair-*), then re-run this command.
+  2. Or open this {subject} in a vault home that still has the paired salt,
+     re-export a fresh backup there, and restore that file here."""
+
+
+def _salt_mismatch_message(
+    *,
+    decryptable_count: int,
+    credential_count: int,
+    salt_fingerprint: str | None,
+    subject: str = "backup",
+) -> str:
+    """The single canonical P1 salt-migration error block (design §4.2)."""
+    fp = f", salt fingerprint {salt_fingerprint}" if salt_fingerprint else ""
+    return (
+        f"{'Backup' if subject == 'backup' else 'Store'} credentials do not decrypt "
+        f"under this vault's master key (decryptable {decryptable_count}/{credential_count}{fp}).\n\n"
+        + SALT_MISMATCH_GUIDANCE.format(subject=subject)
+    )
 
 
 def _record_aad_metadata(record: "CredentialRecord") -> dict[str, Any]:
@@ -341,7 +409,10 @@ class Vault:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         if self.db_path.exists() and not self.salt_path.exists():
             raise MissingKeyMaterialError(
-                f"Vault database exists at {self.db_path} but salt file {self.salt_path} is missing."
+                f"Vault database exists at {self.db_path} but the salt file {self.salt_path} is missing. "
+                "The vault is NOT re-initialized and no new salt was written. Restore the original "
+                "master_key_salt.bin that pairs with this database (check *.bak-* safety copies) "
+                "or, if the vault is genuinely new/empty, move the database file aside first."
             )
         # The salt file is either a 16-byte legacy salt or a DPAPI
         # envelope (4-byte magic header + wrapped bytes). Reject only
@@ -1623,6 +1694,29 @@ class Vault:
                     f"evidence ({status}: {reason}). Run backup-verify or restore "
                     "--dry-run for a full report."
                 )
+
+        # ── P1 decryptability proof: every credential payload must decrypt
+        #    under this vault's master key BEFORE any state is prepared or
+        #    written. Protects every caller (CLI, broker-driven restores,
+        #    future doctor) — not just the CLI preflight. A foreign-key
+        #    hvbackup-v1 backup previously imported cleanly and bricked the
+        #    vault silently ("secret could not be decrypted" on every later
+        #    access); it now fails closed as SaltMismatchError.
+        from hermes_vault.backup import prove_backup_decryptable
+
+        proof = prove_backup_decryptable(backup, self.key)
+        if not proof.ok:
+            raise SaltMismatchError(
+                _salt_mismatch_message(
+                    decryptable_count=proof.decryptable_count,
+                    credential_count=proof.credential_count,
+                    salt_fingerprint=_salt_fingerprint_or_none(self.salt_path),
+                ),
+                credential_count=proof.credential_count,
+                decryptable_count=proof.decryptable_count,
+                salt_fingerprint=_salt_fingerprint_or_none(self.salt_path),
+                findings=list(proof.findings),
+            )
 
         # 2. Parse and validate every credential row before writing anything.
         prepared_creds: list[tuple[CredentialRecord, CredentialRecord | None]] = []

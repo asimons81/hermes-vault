@@ -18,6 +18,145 @@ REPORT_VERSION = "backup-verification-v2"
 BACKUP_VERSION_V1 = "hvbackup-v1"
 BACKUP_VERSION_V2 = "hvbackup-v2"
 
+# Blocked-restore reason codes for the preflight guard (restore-receipt-v1).
+BLOCKED_SALT_MISMATCH = "salt_mismatch"
+BLOCKED_PARTIAL_DECRYPT = "partial_decrypt_failure"
+BLOCKED_EVIDENCE_INVALID = "integrity_evidence_invalid"
+
+
+@dataclass(frozen=True)
+class DecryptProof:
+    """Result of proving every backup credential decrypts under a key.
+
+    ``findings`` are service/alias-scoped human strings only — never
+    plaintext, key material, or raw payloads.
+    """
+
+    credential_count: int = 0
+    decryptable_count: int = 0
+    ok: bool = False
+    blocked_reason: str | None = None
+    findings: tuple[str, ...] = ()
+
+
+def _backup_entry_aad(entry: dict[str, Any]) -> dict[str, Any]:
+    """AAD metadata built from the backup row's own fields (backup.py:159-184 semantics)."""
+    return credential_aad_metadata(
+        entry.get("id", ""),
+        entry.get("service", ""),
+        entry.get("alias", "default"),
+        entry.get("credential_type", ""),
+        entry.get("scopes") or [],
+    )
+
+
+def prove_backup_decryptable(backup: dict[str, Any], key: bytes) -> DecryptProof:
+    """P1: prove every credential entry in *backup* decrypts under *key*.
+
+    Enumerates ALL failures (never early-returns on the first). A backup with
+    zero credentials proves vacuously (``empty backup: nothing to prove``);
+    restoring an empty backup cannot brick decryption. Semantics identical to
+    the per-entry loop in ``_verify_v1_backup`` and the rebind-decrypt inside
+    ``Vault.import_backup`` (same AAD inputs), so proof and import agree.
+    """
+    credentials = backup.get("credentials") or []
+    if not isinstance(credentials, list):
+        credentials = []
+    entries = [entry for entry in credentials if isinstance(entry, dict)]
+
+    if not entries:
+        return DecryptProof(
+            credential_count=0,
+            decryptable_count=0,
+            ok=True,
+            findings=("empty backup: nothing to prove",),
+        )
+
+    findings: list[str] = []
+    decryptable = 0
+    proved = 0  # entries with a payload that were proven (attempted)
+    for entry in entries:
+        payload = entry.get("encrypted_payload")
+        if payload is None:
+            # Metadata-only entries are the metadata-only backup class —
+            # the parse loop inside import_backup owns that rejection
+            # (ValueError); the decrypt proof must not claim it as a key
+            # mismatch. Skip: nothing to prove for an absent payload.
+            continue
+        proved += 1
+        try:
+            decrypt_secret_versioned(
+                payload,
+                key,
+                entry.get("crypto_version") or CRYPTO_VERSION,
+                _backup_entry_aad(entry),
+            )
+        except Exception:
+            findings.append(
+                f"{entry.get('service', '?')}/{entry.get('alias', 'default')}: "
+                "encrypted payload could not be decrypted with this vault's master key"
+            )
+            continue
+        decryptable += 1
+
+    if proved == 0:
+        # No payloads to prove (all metadata-only): vacuous pass; the
+        # import's metadata-only rejection fires downstream.
+        return DecryptProof(
+            credential_count=proved,
+            decryptable_count=0,
+            ok=True,
+        )
+
+    if decryptable == proved:
+        return DecryptProof(
+            credential_count=proved,
+            decryptable_count=decryptable,
+            ok=True,
+        )
+    blocked_reason = (
+        BLOCKED_SALT_MISMATCH
+        if decryptable == 0
+        else BLOCKED_PARTIAL_DECRYPT
+    )
+    return DecryptProof(
+        credential_count=proved,
+        decryptable_count=decryptable,
+        ok=False,
+        blocked_reason=blocked_reason,
+        findings=tuple(findings),
+    )
+
+
+def destination_salt_fingerprint(salt_path: Path) -> str:
+    """First 16 hex chars of sha256 over the salt-file bytes.
+
+    A DPAPI envelope is hashed as-is: it still uniquely identifies the
+    key material for operator comparison purposes.
+    """
+    import hashlib
+
+    return hashlib.sha256(Path(salt_path).read_bytes()).hexdigest()[:16]
+
+
+def backup_key_fingerprint(backup: dict[str, Any]) -> str | None:
+    """First 16 hex of the v2 evidence active segment's entry_public_key; None for v1."""
+    integrity = backup.get("audit_integrity")
+    if not isinstance(integrity, dict):
+        return None
+    state_rows = integrity.get("state")
+    if not state_rows:
+        return None
+    state = state_rows[0] if isinstance(state_rows[0], dict) else {}
+    active_segment_id = state.get("active_segment_id")
+    segments = integrity.get("segments") or []
+    for seg in segments:
+        if isinstance(seg, dict) and seg.get("segment_id") == active_segment_id:
+            key = seg.get("entry_public_key")
+            if key:
+                return str(key)[:16]
+    return None
+
 # Backup-integrity states returned by v2 verification.
 BACKUP_INTEGRITY_HEALTHY = "healthy"
 BACKUP_INTEGRITY_LEGACY = "legacy"

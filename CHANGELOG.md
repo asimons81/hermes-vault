@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.26.0 -- Unreleased
+
+### P7 `doctor` — guided install/recovery health
+
+#### Added
+
+- **`hermes-vault doctor`**: one read-only command for install and recovery health — binary integrity (version, import, PYTHONPATH-poisoning signal), launcher/home layout (db/salt pairing, salt shape, key-material file permissions, passphrase source), store integrity (keyless `PRAGMA quick_integrity_check`), salt/key pairing (P1 `store_decryptability`), audit-chain state (P1 `verify()` + `classify_repairability` with the repair verdict and named P1 command), optional `--backup` pairing (P1 `prove_backup_decryptable`), and MCP wiring (config entry shape incl. the documented `args:`-string trap, resolvable command, JSON-RPC `initialize` smoke). Human-readable findings plus `--json` (`doctor-v1`) for agents. Exit codes: 0 healthy / 1 degraded / 2 broken. Doctor wraps P1's primitives as-is and owns no recovery logic; it never mutates the store, never writes audit rows (a wedged chain cannot crash it), never prompts, and never creates a vault where none exists. The two ops-skill bricking traps surface as named failures: trap #1 (audit wedge) → `repairable` + the exact `audit-checkpoint repair` command; trap #2 (rotated salt) → `KEY-MATERIAL MISMATCH` + `refuse_key_material`, never a cover-up repair. New `docs/doctor.md` operator guide; README common-commands and `docs/safe-recovery.md` link it.
+
+### P1 Safe recovery
+
+#### Added
+
+- **Mandatory restore preflight (design p1-design.md §1)**: every `restore --yes` now proves — before any mutation — that every credential payload in the backup decrypts under the live master key (`prove_backup_decryptable`), computes salt/key identity fingerprints, and writes a `restore-receipt-v1` JSON artifact under `$VAULT_HOME/recovery/` (atomic write, 0600, fail-closed: an unwritable recovery directory blocks the restore). `restore --dry-run` writes the same receipt with `mode: dry-run`. There is no `--skip-preflight`; the receipt records `proceed`/`blocked` + reason (`salt_mismatch`, `partial_decrypt_failure`, `integrity_evidence_invalid`), counts, fingerprints, and the two-phase outcome (`preflight-passed` → `restored` / `failed:<class>`).
+- **`audit-checkpoint repair` (non-destructive audit recovery, §2–§3)**: read-only self-check by default (verify + store-decryptability proof + repair verdict, byte-identical db); `--yes --reason` executes the quarantine repair — the 6 audit tables are copied to `quarantine_<table>_<ts>` with an `audit_quarantine_manifest` row per table and a `vault.db.pre-repair-<ts>` safety copy, all inside one `BEGIN IMMEDIATE` transaction (no `DROP`, no `VACUUM`), then re-anchored via `ensure_initialized` + `establish_checkpoint`, and a protected `audit_repair` event lands on the new chain with quarantine metadata plus any deferred recovery events recorded while the old chain was broken. Tamper-evidence reasons (`entry_digest_mismatch`, `sequence_gap`, …) and the salt-migration signature (`active_key_mismatch`) are refused with guidance — repair never destroys evidence or covers up a key-material brick. `--no-safety-copy` opts out of the file copy; the manifest records the choice.
+- **Salt-migration guard (§4)**: new typed `SaltMismatchError` with a single canonical, actionable error block (why the mismatch happened, that hermes-vault never rotates `master_key_salt.bin` automatically, and the two recovery options — restore the paired salt or re-export from a paired home; never delete `vault.db`/salt). `load_or_create_master_key` refuses salt creation when a `vault.db` exists next to the missing default salt file (belt-and-braces alongside `Vault._prepare_storage`, whose message is upgraded to the same actionable text).
+- **Recovery audit events (§5)**: `restore_preflight` (allow/deny with counts, fingerprints, receipt path) on every real restore; `audit_repair` on every executed repair. When the chain itself is broken, the facts live in the receipt/quarantine manifest and are folded into the post-repair `audit_repair` metadata — nothing is silently dropped.
+
+#### Changed — BREAKING-fix
+
+- **`recover` no longer rebuilds on key mismatch (F-06)**: `recover_checkpoint()`'s `active_key_mismatch` route to `_rebuild_integrity_for_key_mismatch()` is deleted — that path DROPped all integrity tables and rebuilt from current `access_logs`, erasing forensic evidence and covering up the exact state that means wrong key material. The mismatch now returns the failed verification with the salt-migration guidance.
+- **Foreign-key restores fail closed**: a backup whose payloads do not decrypt under the destination vault's key (previously imported cleanly for v1, bricking the vault silently with "secret could not be decrypted") is blocked at two layers — the CLI preflight and the `import_backup` library guard — as `SaltMismatchError`/exit 1. Automation that relied on cross-key imports must share the salt file or re-export from a paired home. Changelog-tagged BREAKING-fix: this is the point of P1, and the recovery text is in the error.
+
+#### Tests
+
+- `tests/test_p1_safe_recovery.py` (16): both ops-skill bricking traps as end-to-end regression scenarios, transactionality, refusal classes, receipt lifecycle, fail-closed receipt dir, sibling-db guard, deferred events. One deliberately rewritten pin: `test_recover_checkpoint_handles_active_key_mismatch` → `test_recover_checkpoint_refuses_key_mismatch_without_rebuild`.
+
 ## 0.25.1 -- Patch: Desktop plugin fixes + mcp 2.x support (2026-09-10)
 
 ### Fixed

@@ -92,11 +92,20 @@ def test_rotation_creates_a_new_segment_and_retains_history(tmp_path: Path) -> N
     assert result.verified_count == 1
 
 
-def test_recover_checkpoint_handles_active_key_mismatch(tmp_path: Path) -> None:
+def test_recover_checkpoint_refuses_key_mismatch_without_rebuild(tmp_path: Path) -> None:
+    """P1 (F-06): recover_checkpoint never rebuilds integrity for a mismatched key.
+
+    Replaces the pre-P1 pin (test_recover_checkpoint_handles_active_key_mismatch)
+    which asserted the destructive DROP-and-rebuild behavior: rebuilding over
+    an active_key_mismatch erases the forensic evidence of the salt-migration
+    state and covers up the exact failure that means wrong key material. The
+    loud rewrite: recover returns the failed result, the integrity tables
+    survive, and the rebuild method no longer exists.
+    """
     vault1 = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "passphrase-a")
     logger1 = AuditLogger(vault1.db_path, master_key=vault1.key)
     record(logger1)
-    # Unlock with a different passphrase — integrity should detect key mismatch
+    # Unlock with a different passphrase — integrity detects key mismatch
     vault2 = Vault(vault1.db_path, vault1.salt_path, "passphrase-b")
     service2 = AuditLogger(vault2.db_path, master_key=vault2.key).integrity  # type: ignore[union-attr]
 
@@ -104,12 +113,19 @@ def test_recover_checkpoint_handles_active_key_mismatch(tmp_path: Path) -> None:
     assert result.status is AuditIntegrityStatus.failed
     assert result.reason_code == "active_key_mismatch"
 
-    # recover_checkpoint should rebuild integrity for the new key
+    # recover_checkpoint returns the failure — it does NOT rebuild.
     recovered = service2.recover_checkpoint()
-    assert recovered.status is AuditIntegrityStatus.healthy
-    # After recovery, append works with the new key
-    logger2 = AuditLogger(vault2.db_path, master_key=vault2.key)
-    record(logger2, reason="post-recovery")
-    post_result = logger2.integrity.verify()  # type: ignore[union-attr]
-    assert post_result.status is AuditIntegrityStatus.healthy
-    assert post_result.verified_count == 1  # only the new record is protected
+    assert recovered.status is AuditIntegrityStatus.failed
+    assert recovered.reason_code == "active_key_mismatch"
+
+    # The old integrity tables are still present (evidence preserved), and
+    # the destructive rebuild method is gone from the service entirely.
+    assert not hasattr(service2, "_rebuild_integrity_for_key_mismatch")
+    with sqlite3.connect(vault2.db_path) as conn:
+        for table in ("audit_integrity_records", "audit_integrity_segments", "audit_integrity_state"):
+            exists = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+            ).fetchone()
+            assert exists, f"{table} was dropped by recover"
+        count = conn.execute("SELECT COUNT(*) FROM audit_integrity_records").fetchone()[0]
+    assert count == 1
