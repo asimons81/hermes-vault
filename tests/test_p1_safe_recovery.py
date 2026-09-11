@@ -635,6 +635,50 @@ def test_t14_deferred_events_folded_into_audit_repair(tmp_path: Path) -> None:
 # ── receipt fail-closed unit ──────────────────────────────────────────────
 
 
+def test_t16_post_commit_failure_exits_three_at_cli(tmp_path: Path, monkeypatch) -> None:
+    """T16: a post-commit audit_repair append failure surfaces as exit 3.
+
+    Design §3.3 interlock 9: the quarantine + purge committed and the chain
+    verifies healthy — the failure is confined to the audit event append.
+    The CLI must report it distinctly (exit 3 with remediation), never as a
+    refused or rolled-back repair.
+    """
+    _set_cli_env(tmp_path)
+    vault = make_cli_vault(tmp_path)
+    vault.add_credential("openai", "sk-1", "api_key")
+    _seed_chain(vault)
+    wedge_audit(vault)
+
+    from hermes_vault.audit import AuditLogger as _AL
+
+    def failing_record(self, record, **kwargs):
+        raise AuditIntegrityError("simulated append failure post-repair")
+
+    monkeypatch.setattr(_AL, "record", failing_record)
+    runner = CliRunner()
+    result = runner.invoke(
+        _hermes_group,
+        ["audit-checkpoint", "repair", "--yes", "--reason", "post-commit test"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 3, result.output
+    assert "committed" in result.output.lower(), result.output
+    assert "safety copy" in result.output.lower() or "quarantine id" in result.output.lower()
+
+    # The repair itself is durable: quarantine tables exist and the chain
+    # verifies healthy despite the audit-event failure.
+    conn = sqlite3.connect(vault.db_path)
+    try:
+        quarantine = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'quarantine_%' AND name != 'audit_quarantine_manifest'"
+        )]
+        assert len(quarantine) == 6
+    finally:
+        conn.close()
+    service = AuditIntegrityService(vault.db_path, vault.key)
+    assert service.verify().status == AuditIntegrityStatus.healthy
+
+
 def test_receipt_write_fail_closed(tmp_path: Path) -> None:
     """The receipt writer itself raises ReceiptWriteError on an unwritable dir."""
     home = tmp_path / "home"

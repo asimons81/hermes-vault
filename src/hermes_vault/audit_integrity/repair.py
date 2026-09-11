@@ -109,6 +109,21 @@ class RepairRefusedError(RuntimeError):
         self.reason_code = reason_code
 
 
+class RepairPostCommitError(RuntimeError):
+    """The repair transaction committed, but a post-commit step failed.
+
+    Raised for design §3.3 interlocks 7–9 (re-establish, post-verify,
+    audit_repair append). The quarantine + purge are durable; the failure is
+    confined to re-anchoring or the audit event. Callers must NOT report
+    this as a refused or rolled-back repair — exit 3 with the safety-copy
+    path and remediation. ``report`` carries everything that succeeded.
+    """
+
+    def __init__(self, message: str, *, report: "RepairReport") -> None:
+        super().__init__(message)
+        self.report = report
+
+
 @dataclass(frozen=True)
 class StoreDecryptability:
     """P1 self-check: does every live credential decrypt under the current key?"""
@@ -414,17 +429,27 @@ def run_repair(
         )
 
     # Interlock 7: re-initialize + establish over the purged state.
-    service.ensure_initialized()
-    establish_result = service.establish_checkpoint()
+    try:
+        service.ensure_initialized()
+        establish_result = service.establish_checkpoint()
+    except Exception as exc:
+        raise RepairPostCommitError(
+            f"The repair transaction committed, but the fresh checkpoint could not be "
+            f"established ({exc}). The pre-repair safety copy is at {report.safety_copy_path}; "
+            f"quarantine id {quarantine_id}. Re-run 'hermes-vault audit-checkpoint establish "
+            "--yes' to re-anchor the new chain.",
+            report=report,
+        ) from exc
 
     # Interlock 8: post-verify must be healthy.
     post = service.verify()
     if post.status != AuditIntegrityStatus.healthy:
         report.verify_result = post.to_dict()
-        raise RuntimeError(
+        raise RepairPostCommitError(
             "Repair transaction committed but post-repair verification is not healthy "
             f"({post.reason_code}). The pre-repair safety copy is at {report.safety_copy_path}; "
-            f"quarantine id {quarantine_id}."
+            f"quarantine id {quarantine_id}.",
+            report=report,
         )
 
     report.executed = True
@@ -446,16 +471,27 @@ def run_repair(
     }
     if deferred:
         metadata["deferred_recovery_events"] = deferred
-    audit = AuditLogger(Path(service.db_path), master_key=service.master_key)
-    audit.record(
-        AccessLogRecord(
-            agent_id="operator",
-            service="*",
-            action="audit_repair",
-            decision=Decision.allow,
-            reason=f"audit chain repaired (quarantine {quarantine_id}): {reason}",
-            metadata=metadata,
+    try:
+        audit = AuditLogger(Path(service.db_path), master_key=service.master_key)
+        audit.record(
+            AccessLogRecord(
+                agent_id="operator",
+                service="*",
+                action="audit_repair",
+                decision=Decision.allow,
+                reason=f"audit chain repaired (quarantine {quarantine_id}): {reason}",
+                metadata=metadata,
+            )
         )
-    )
+    except Exception as exc:
+        # The repair itself is valid; only the audit event could not be
+        # appended. Print the checkpoint_stale-style remediation (§3.3 #9).
+        raise RepairPostCommitError(
+            f"The repair committed and verifies healthy, but the audit_repair event could "
+            f"not be appended to the new chain ({exc}). Run 'hermes-vault audit-checkpoint "
+            "establish --yes' and re-run the repair reasoning in an incident note; "
+            f"quarantine id {quarantine_id}.",
+            report=report,
+        ) from exc
     report.deferred_events = deferred
     return report

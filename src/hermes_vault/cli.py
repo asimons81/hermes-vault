@@ -1161,6 +1161,7 @@ def _run_audit_checkpoint_repair(
     """P1: the audit-checkpoint repair self-check + executed repair (design §3)."""
     from hermes_vault.audit_integrity.repair import (
         RepairClass,
+        RepairPostCommitError,
         RepairRefusedError,
         classify_repairability,
         quarantine_row_counts,
@@ -1245,6 +1246,11 @@ def _run_audit_checkpoint_repair(
     except RepairRefusedError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=2)
+    except RepairPostCommitError as exc:
+        # The quarantine + purge committed; only a post-commit step failed.
+        # Distinct exit 3 per design §3.3 — never reported as refused/rolled-back.
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(code=3)
     except Exception as exc:
         console.print(f"[red]Repair failed: {exc}[/red]")
         raise typer.Exit(code=1)
