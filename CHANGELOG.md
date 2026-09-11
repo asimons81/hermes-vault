@@ -26,6 +26,14 @@
 
 - `tests/test_p1_safe_recovery.py` (16): both ops-skill bricking traps as end-to-end regression scenarios, transactionality, refusal classes, receipt lifecycle, fail-closed receipt dir, sibling-db guard, deferred events. One deliberately rewritten pin: `test_recover_checkpoint_handles_active_key_mismatch` → `test_recover_checkpoint_refuses_key_mismatch_without_rebuild`.
 
+### P4: MCP correctness
+
+### Fixed
+
+- **Advertised `vault://` resources readable in unbound mode (P4)**: generic MCP hosts do `resources/list` then `resources/read` on the advertised URI verbatim — every one of the 10 advertised URIs previously returned `Missing required parameter: agent_id` in unbound mode. Bare resource reads now resolve to `HERMES_VAULT_MCP_DEFAULT_AGENT` when set (normal policy-gated path, `binding_mode: "default_fallback"`), otherwise to the embedded operator default (`binding_mode: "operator_default"`): the operator's metadata-only view, audit-logged, never secrets or encrypted payloads. Parameterized resources (`vault://policy-explain`, `vault://recovery`) keep their documented missing-parameter errors; tool calls remain agent-scoped in unbound mode. The tests that previously pinned the error envelope (`test_read_services_resource_requires_agent_or_default`) were rewritten to pin the new behavior — **intended behavior change**.
+- **Clean typed cold-start on locked vaults (P4)**: `hermes-vault mcp` no longer dies at startup with a 53-line `MissingPassphraseError` traceback when no passphrase is available. Tool calls and resource reads now return a typed `MISSING_PASSPHRASE` envelope (`locked: true`, mirroring the desktop bridge's 423 MISSING_PASSPHRASE) or `VAULT_NOT_READY` for missing/corrupt key material; the CLI entrypoint prints a one-line typed error on stderr if startup ever raises.
+- **Lazy broker build (P4)**: the MCP server no longer builds the vault broker at startup. Capabilities-only sessions (`initialize`, `tools/list`, `resources/list`, `resources/templates/list`) never require a decryptable vault; the broker is built on the first vault-touching request.
+
 ## 0.25.1 -- Patch: Desktop plugin fixes + mcp 2.x support (2026-09-10)
 
 ### Fixed

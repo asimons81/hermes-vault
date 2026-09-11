@@ -309,6 +309,8 @@ Configure your MCP host (Claude Desktop, Cursor, etc.) to run:
 
 If the MCP server is started without an allowed-agent binding, every tool call still requires a caller-supplied `agent_id`. When the server is launched with both `HERMES_VAULT_MCP_ALLOWED_AGENTS` and `HERMES_VAULT_MCP_DEFAULT_AGENT`, the host may omit `agent_id` and the server uses the configured default agent within that allowed set.
 
+Since v0.26.0, bare MCP resource reads (the exact URIs the server advertises, with no `?agent_id=` query — what generic hosts send after `resources/list`) also succeed in unbound mode: they resolve to `HERMES_VAULT_MCP_DEFAULT_AGENT` when set, otherwise to the operator's metadata-only view (`binding_mode: "operator_default"`). Payloads remain metadata-only and audit-logged; tool calls stay agent-scoped. A locked vault no longer crashes the server at startup: capabilities answer immediately, and vault-touching calls return a typed `MISSING_PASSPHRASE` / `VAULT_NOT_READY` envelope with `locked: true` instead of a traceback.
+
 Example bound launch:
 
 ```bash
