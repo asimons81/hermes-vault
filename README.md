@@ -405,6 +405,8 @@ hermes-vault sync-skill --check
 hermes-vault backup --metadata-only --output ~/meta-backup.json
 hermes-vault diff --against ~/meta-backup.json
 hermes-vault rotate-master-key
+hermes-vault migrate-crypto --dry-run
+hermes-vault migrate-crypto --yes
 hermes-vault oauth login google --alias work
 hermes-vault oauth login google --alias work --headless
 hermes-vault oauth doctor google
