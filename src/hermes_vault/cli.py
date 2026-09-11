@@ -47,7 +47,7 @@ from hermes_vault.scanner import Scanner
 from hermes_vault.service_ids import normalize
 from hermes_vault.skillgen import SkillGenerator
 from hermes_vault.update import UpdateError, UpdatePlan, perform_update, resolve_update_plan
-from hermes_vault.verifier import Verifier
+from hermes_vault.verifier import UNSUPPORTED_VERIFIER_REASON, Verifier
 from hermes_vault.vault import AmbiguousTargetError, RestoreCommittedCheckpointError, Vault
 
 # â”€â”€ Banner helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1604,6 +1604,21 @@ def verify(
         console.print("[red]--format must be 'table' or 'json'[/red]")
         raise typer.Exit(code=1)
 
+    def _verification_failure(result) -> bool:
+        """Truthful failure test for exit-code purposes.
+
+        - Not-found / decrypt-denied results (no verification_result payload)
+          are failures.
+        - A verification that ran and reported success=False is a failure
+          (invalid, network, rate-limit — the pipeline must not read "fine").
+        - The one exemption: an unsupported verifier (no provider-specific
+          verifier configured) is a configured no-op, not a failed check.
+        """
+        success, category, reason, _, _ = _verification_payload(result)
+        if category == "unknown" and reason == UNSUPPORTED_VERIFIER_REASON:
+            return False
+        return not success
+
     vault, _, broker, _ = build_services(prompt=True)
     targets: list[tuple[str, str | None]]
     if all:
@@ -1635,7 +1650,11 @@ def verify(
     output_results = [r.model_dump(mode="json") for r in results]
 
     if format == "json":
-        console.print_json(data=json.dumps(output_results))
+        # data= must receive the OBJECT, not a pre-encoded string — rich's
+        # print_json re-encodes strings, which double-encoded the payload
+        # (E#4: `verify x --format json` printed a JSON string containing
+        # JSON, a parse trap for the exact scripting audience this targets).
+        console.print_json(data=output_results)
     else:
         table = Table(title="Verification Results")
         table.add_column("SERVICE")
@@ -1669,6 +1688,14 @@ def verify(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(output_results, indent=2, sort_keys=True), encoding="utf-8")
         report_path.chmod(0o600)
+
+    # Truthful exit code: cron/agent pipelines branch on it. A denied /
+    # not-found / invalid verification must not exit 0 (E#3 live probe:
+    # `verify nonexistent-svc` printed allowed:false and exited 0). The one
+    # exemption is a service with no configured verifier — a no-op, not a
+    # failure. Mixed batches fail if any target failed.
+    if any(_verification_failure(r) for r in results):
+        raise typer.Exit(code=1)
 
 
 @_typer_app.command("export")

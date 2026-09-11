@@ -40,8 +40,7 @@ def test_version_flag_before_subcommand_still_versions() -> None:
 def test_version_entrypoint_path_root_argv(monkeypatch) -> None:
     """The app() proxy short-circuits root-only --version (console script path)."""
     monkeypatch.setattr("sys.argv", ["hermes-vault", "--version"])
-    # Capture stdout via click.echo -> use CliRunner on the proxy.
-    from click.testing import CliRunner as _CR
+    # Capture stdout via click.echo -> the app() proxy prints through it.
 
     class _Cap:
         def __init__(self) -> None:
