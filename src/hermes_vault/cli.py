@@ -340,6 +340,51 @@ def _handle_mutation_error(result, success_msg: str | None = None) -> None:
         console.print(success_msg)
 
 
+_AGENT_NOT_DEFINED_MARKER = "is not defined in policy"
+
+
+def _print_agent_policy_hint(agent: str, decision=None) -> None:
+    """Append an actionable hint to stderr after an agent_id-shaped failure.
+
+    ``--agent`` failures used to print only the bare denial JSON
+    ("agent 'x' is not defined in policy") with no way to discover valid
+    ids. This lists the agents defined in the active policy and surfaces the
+    default-binding mechanism. It goes to stderr so the JSON on stdout
+    stays parseable for scripts.
+
+    Fires when ``decision`` is a denied BrokerDecision whose reason names an
+    undefined agent. With ``decision=None`` (``broker list`` returns a bare
+    empty list, never a decision) it fires only when the agent is genuinely
+    absent from the policy — an empty listing for a defined agent has a
+    different cause and must not be mislabeled.
+    """
+    if decision is not None:
+        if decision.allowed or _AGENT_NOT_DEFINED_MARKER not in decision.reason:
+            return
+    defined: list[str] = []
+    policy_path = None
+    try:
+        settings = get_settings()
+        policy_path = settings.effective_policy_path
+        defined = sorted(PolicyEngine.from_yaml(policy_path).config.agents)
+    except Exception:
+        pass
+    if decision is None and agent in defined:
+        return
+    err = Console(stderr=True)
+    err.print(f"[yellow]agent '{agent}' is not defined in policy.[/yellow]")
+    if policy_path is not None:
+        err.print(f"[dim]Policy file: {policy_path}[/dim]")
+    if defined:
+        err.print(f"[dim]Defined agents: {', '.join(defined)}[/dim]")
+    else:
+        err.print("[dim]No agents defined in policy — add one under 'agents:'.[/dim]")
+    err.print(
+        "[dim]Add the agent under 'agents:' or pass an existing id via --agent; "
+        "MCP sessions bind via ?agent_id= or HERMES_VAULT_MCP_DEFAULT_AGENT.[/dim]"
+    )
+
+
 def _parse_tags(values: list[str] | None) -> list[str]:
     """Normalize repeated or comma-separated --tags values."""
     tags: list[str] = []
@@ -2434,10 +2479,10 @@ def broker_get(
     _, _, broker, _ = build_services(prompt=True)
     canonical = normalize(service)
     decision = broker.get_credential(service=canonical, purpose=purpose, agent_id=agent)
+    console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
-        console.print_json(data=decision.model_dump_json())
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
-    console.print_json(data=json.dumps(decision.model_dump(mode="json")))
 
 
 @broker_app.command("env")
@@ -2457,10 +2502,10 @@ def broker_env(
     _, _, broker, _ = build_services(prompt=True)
     canonical = normalize(service)
     decision = broker.get_ephemeral_env(service=canonical, agent_id=agent, ttl=ttl)
-    if not decision.allowed:
-        console.print_json(data=decision.model_dump(mode="json"))
-        raise typer.Exit(code=1)
     console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
+        raise typer.Exit(code=1)
 
 
 @secret_source_app.command("fetch", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -2534,6 +2579,7 @@ def lease_issue(
     )
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2548,6 +2594,7 @@ def lease_list(
     decision = broker.list_leases(agent_id=agent, service=service, status=status)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2561,6 +2608,7 @@ def lease_show(
     decision = broker.show_lease(agent_id=agent, lease_id=lease_id)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2575,6 +2623,7 @@ def lease_renew(
     decision = broker.renew_lease(agent_id=agent, lease_id=lease_id, ttl_seconds=ttl)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2589,6 +2638,7 @@ def lease_revoke(
     decision = broker.revoke_lease(agent_id=agent, lease_id=lease_id, reason=reason)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2612,6 +2662,7 @@ def lease_checkout(
     )
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2637,6 +2688,7 @@ def request_access(
     )
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2708,7 +2760,10 @@ def broker_list(
       hermes-vault broker list --agent hermes
     """
     _, _, broker, _ = build_services(prompt=True)
-    console.print_json(data=json.dumps(broker.list_available_credentials(agent)))
+    credentials = broker.list_available_credentials(agent)
+    console.print_json(data=credentials)
+    if not credentials:
+        _print_agent_policy_hint(agent, decision=None)
 
 
 
