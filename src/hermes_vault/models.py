@@ -176,6 +176,10 @@ class AgentCapability(str, Enum):
     scan_secrets = "scan_secrets"
     export_backup = "export_backup"
     import_credentials = "import_credentials"
+    # Operator/auditor escape hatch for lease ownership (F-01): agents holding
+    # this capability may inspect and manage leases issued to OTHER agents.
+    # Explicit-only — never granted implicitly to legacy agents.
+    manage_leases = "manage_leases"
 
 
 ALL_AGENT_CAPABILITIES: list[AgentCapability] = list(AgentCapability)
@@ -188,6 +192,9 @@ class ServicePolicyEntry(BaseModel):
     max_ttl_seconds: int | None = None
     require_lease_for_env: bool | None = None
     require_lease_purpose: bool | None = None
+    # F-03: when True, get_ephemeral_env may hand off a credential whose
+    # expiry <= now (explicit operator override of the default deny).
+    allow_expired_env: bool | None = None
 
 
 class AgentPolicy(BaseModel):
@@ -206,6 +213,9 @@ class AgentPolicy(BaseModel):
     approval_required_services: list[str] = Field(default_factory=list)
     require_lease_for_env: bool = False
     require_lease_purpose: bool = False
+    # F-03: agent-level default for allowing expired-credential env handoff.
+    # A service entry's allow_expired_env (when set) overrides this.
+    allow_expired_env: bool = False
 
 
 class PolicyConfig(BaseModel):
