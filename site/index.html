@@ -46,7 +46,7 @@
     <!-- Hero Section -->
     <section class="hero section-pad reveal hero-reveal-1">
       <div class="hero-copy">
-        <p class="eyebrow"><span class="eyebrow-pulse"></span>v0.25.1 &bull; Patch &bull; Desktop plugin fixes + mcp 2.x support</p>
+        <p class="eyebrow"><span class="eyebrow-pulse"></span>v0.26.0 &bull; Feature &bull; Trustworthy under failure: safe recovery, doctor, auth enforcement, crypto v2</p>
         <h1>From <span>.env</span> to safe agent access.</h1>
         <p class="lede">
           Bootstrap a messy plaintext env file into an encrypted local vault, explain every access decision, route approvals through an audit trail, bind env handoffs to leases, and prove recovery before the incident. Less key sprawl, fewer auth lies, fewer agent mistakes.
@@ -59,7 +59,7 @@
 
         <div class="hero-quick-install">
           <span class="quick-install-label">Quick Install</span>
-          <code id="hero-cmd-text">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.25.1</code>
+          <code id="hero-cmd-text">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.26.0</code>
           <button class="hero-copy-btn" type="button" id="btn-hero-copy" title="Copy install command">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             <span>Copy</span>
@@ -76,8 +76,8 @@
         <div class="hero-metrics" aria-label="Release and platform notes">
           <div class="metric-card">
             <span>Current Release</span>
-            <strong>0.25.1</strong>
-            <small>Patch release fixing the false ✗ Integrity stat in the Desktop plugin, completing the plugin adapter's Windows safety (reader mechanism from v0.25.0; this patch adds the HOMEDRIVE/HOMEPATH launcher keys + regression tests), and widening the MCP SDK constraint to <code>&gt;=2.0.0,&lt;3.0.0</code> for mcp 2.x installs. <a href="https://github.com/asimons81/hermes-vault/releases/tag/v0.25.1" target="_blank" rel="noreferrer noopener">View release</a></small>
+            <strong>0.26.0</strong>
+            <small>Feature release focused on being trustworthy under failure: mandatory restore preflights, non-destructive audit repair, <code>hermes-vault doctor</code>, lease ownership + expiry enforcement, a truthful CLI (<code>--version</code>, honest exit codes), MCP resource correctness, crypto v2 write-default with opt-in <code>migrate-crypto</code>, and CI release integrity. <a href="https://github.com/asimons81/hermes-vault/releases/tag/v0.26.0" target="_blank" rel="noreferrer noopener">View release</a></small>
           </div>
           <div class="metric-card">
             <span>Operator Loop</span>
@@ -379,7 +379,7 @@
           </figure>
         </div>
         <p class="gallery-note">
-          The published screenshot set below reflects the local console baseline and preserves the local-only, token-guarded boundary across the v0.25.1 release line.
+          The published screenshot set below reflects the local console baseline and preserves the local-only, token-guarded boundary across the v0.26.0 release line.
         </p>
       </div>
     </section>
@@ -496,7 +496,7 @@
                 <span>Production Install</span>
                 <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
               </div>
-              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.25.1
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.26.0
 hermes-vault setup
 hermes-vault bootstrap --from-env .env --agent hermes --dry-run
 hermes-vault health
@@ -558,7 +558,7 @@ uv run pytest tests/ -q</code></pre>
       <div class="release-timeline">
         <article class="release-featured spotlight-card" data-category="desktop">
           <div class="release-badge">Current Release</div>
-          <h3>v0.25.1</h3>
+          <h3>v0.26.0</h3>
           <p>Patch: false ✗ Integrity stat fix (derive from <code>/integrity</code>, not <code>overview.health</code>), completed Windows safety for the plugin adapter (reader mechanism from v0.25.0; adds the <code>HOMEDRIVE</code>/<code>HOMEPATH</code> launcher keys + regression tests), MCP SDK constraint raised to <code>&gt;=2.0.0,&lt;3.0.0</code> for mcp 2.x, flaky-test hardening (#82/#83), README hero swap, and the site's Studio branding with the hero webp now tracked in git.</p>
         </article>
 
