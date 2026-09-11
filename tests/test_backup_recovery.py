@@ -117,6 +117,11 @@ def test_backup_import_round_trip_preserves_lease_data(tmp_path: Path) -> None:
     lease = vault.issue_lease(record.id, agent_id="backup-agent", ttl_seconds=600, metadata={"ticket": "42"})
     backup_path = _write_backup(tmp_path / "backup.json", vault.export_backup())
 
+    # Destination shares the source key material (same salt): the P1 restore
+    # guard blocks foreign-key imports with SaltMismatchError.
+    import shutil
+
+    shutil.copy(vault.salt_path, tmp_path / "restored-salt.bin")
     restore_vault = Vault(tmp_path / "restored.db", tmp_path / "restored-salt.bin", "test-passphrase")
     restore_vault.import_backup(json.loads(backup_path.read_text(encoding="utf-8")))
     restored = restore_vault.get_lease(lease.id)

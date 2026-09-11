@@ -57,8 +57,13 @@ def test_normal_backup_includes_payload(vault_with_two_creds: Vault) -> None:
 def test_restore_rejects_metadata_only(vault_with_two_creds: Vault, tmp_path: Path) -> None:
     backup = vault_with_two_creds.export_backup(metadata_only=True)
     db2 = tmp_path / "vault2.db"
-    salt2 = tmp_path / "salt2.bin"
-    vault2 = Vault(db2, salt2, "test-passphrase")
+    # Destination shares the source key material (same salt): the P1 restore
+    # guard blocks foreign-key imports before the metadata-only check would
+    # even matter; sharing the salt keeps this test about metadata-only.
+    import shutil
+
+    shutil.copy(vault_with_two_creds.salt_path, tmp_path / "salt2.bin")
+    vault2 = Vault(db2, tmp_path / "salt2.bin", "test-passphrase")
     with pytest.raises(ValueError, match="metadata-only"):
         vault2.import_backup(backup)
 

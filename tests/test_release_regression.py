@@ -203,6 +203,11 @@ def test_backup_round_trip_preserves_aliases(tmp_path: Path) -> None:
     vault_a.add_credential("github", "ghp_personal", "personal_access_token", alias="personal")
 
     backup = vault_a.export_backup()
+    # Destination shares the source key material (same salt): the P1 restore
+    # guard blocks foreign-key imports with SaltMismatchError.
+    import shutil
+
+    shutil.copy(tmp_path / "a_salt.bin", tmp_path / "b_salt.bin")
     vault_b = Vault(tmp_path / "b.db", tmp_path / "b_salt.bin", "test-pass")
     vault_b.import_backup(backup)
 

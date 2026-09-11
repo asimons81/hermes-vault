@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_vault.crypto import SALT_SIZE
-from hermes_vault.models import CredentialStatus, LeaseStatus, utc_now
+from hermes_vault.crypto import SALT_SIZE, encrypt_secret_versioned
+from hermes_vault.models import CredentialSecret, CredentialStatus, LeaseStatus, utc_now
 from hermes_vault.vault import Vault
 from hermes_vault.vault import DuplicateCredentialError, AmbiguousTargetError
 
@@ -218,6 +218,9 @@ def test_vault_delete_normalizes_service_name(tmp_path: Path) -> None:
 
 def test_vault_import_backup_normalizes_service_names(tmp_path: Path) -> None:
     vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    # Real payload encrypted under THIS vault's key: the P1 restore guard
+    # blocks payloads that do not decrypt (the old "dummy" fixture).
+    payload = encrypt_secret_versioned(CredentialSecret(secret="sk-normalize").model_dump_json(), vault.key, "aesgcm-v1", None)
     backup = {
         "version": "hvbackup-v1",
         "exported_at": "2026-01-01T00:00:00+00:00",
@@ -227,7 +230,7 @@ def test_vault_import_backup_normalizes_service_names(tmp_path: Path) -> None:
                 "service": "Open_AI",
                 "alias": "default",
                 "credential_type": "api_key",
-                "encrypted_payload": "dummy",
+                "encrypted_payload": payload,
                 "status": "unknown",
                 "scopes": [],
                 "imported_from": None,
@@ -242,6 +245,51 @@ def test_vault_import_backup_normalizes_service_names(tmp_path: Path) -> None:
     imported = vault.import_backup(backup)
     assert len(imported) == 1
     assert imported[0].service == "openai"
+
+
+def test_vault_import_backup_blocks_foreign_key_payloads(tmp_path: Path) -> None:
+    """P1: a v1 backup whose payloads do not decrypt under this key is blocked.
+
+    The pre-P1 normalization pin used a literal "dummy" payload that cannot
+    decrypt under any key; with the P1 guard that fixture is now the
+    salt-mismatch class. Normalization is re-proven here with a real payload
+    encrypted under THIS vault's key.
+    """
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    secret = "sk-normalization-fixture"
+    # Payloads are CredentialSecret JSON envelopes, not raw secret strings.
+    payload = encrypt_secret_versioned(
+        CredentialSecret(secret=secret).model_dump_json(),
+        vault.key,
+        "aesgcm-v1",
+        None,
+    )
+    backup = {
+        "version": "hvbackup-v1",
+        "exported_at": "2026-01-01T00:00:00+00:00",
+        "credentials": [
+            {
+                "id": "test-1",
+                "service": "Open_AI",
+                "alias": "default",
+                "credential_type": "api_key",
+                "encrypted_payload": payload,
+                "status": "unknown",
+                "scopes": [],
+                "imported_from": None,
+                "expiry": None,
+                "crypto_version": "aesgcm-v1",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "last_verified_at": None,
+            }
+        ],
+    }
+    imported = vault.import_backup(backup)
+    assert len(imported) == 1
+    assert imported[0].service == "openai"
+    fetched = vault.get_secret(imported[0].id)
+    assert fetched is not None and fetched.secret == secret
 
 
 # ── Issue #2: Deterministic credential targeting ──────────────────────────
@@ -560,6 +608,11 @@ class TestLeases:
         revoked = vault.revoke_lease(lease.id, reason="expired-task")
 
         backup = vault.export_backup()
+        # Clone shares the source key material (same salt): the P1 restore
+        # guard blocks foreign-key imports with SaltMismatchError.
+        import shutil
+
+        shutil.copy(vault.salt_path, tmp_path / "clone-salt.bin")
         clone = Vault(tmp_path / "clone.db", tmp_path / "clone-salt.bin", "test-passphrase")
         imported = clone.import_backup(backup)
         restored = clone.get_lease(revoked.id)
@@ -583,6 +636,9 @@ class TestLeases:
 
         assert restored["scopes"] == ["models.read", "files.write"]
         assert restored["metadata"] == {"nested": {"ticket": 7}, "list": ["a", "b"]}
+        import shutil
+
+        shutil.copy(vault.salt_path, tmp_path / "mirror-salt.bin")
         mirror = Vault(tmp_path / "mirror.db", tmp_path / "mirror-salt.bin", "test-passphrase")
         mirror.import_backup(backup)
         assert mirror.get_lease(lease.id).metadata == lease.metadata
