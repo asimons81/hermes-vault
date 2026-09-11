@@ -121,6 +121,28 @@ def load_or_create_salt(path: Path, create_if_missing: bool = False) -> bytes:
     return salt
 
 
+# P1: the configured vault database filename used by the sibling-db probe.
+# Kept in one place so a future config change stays consistent.
+SIBLING_DB_FILENAME = "vault.db"
+
+
+def _refuse_salt_creation_over_database(salt_path: Path) -> None:
+    """P1 guard: refuse salt creation when a vault database sits beside the missing salt.
+
+    A fresh salt over an existing database silently bricks the vault (the
+    payloads no longer decrypt). ``Vault._prepare_storage`` is the primary
+    check; this probe covers callers that bypass ``Vault``.
+    """
+    sibling_db = salt_path.with_name(SIBLING_DB_FILENAME)
+    if sibling_db.exists():
+        raise MissingKeyMaterialError(
+            f"Vault database exists at {sibling_db} but the salt file {salt_path} is missing. "
+            "The vault is NOT re-initialized and no new salt was written. Restore the original "
+            "master_key_salt.bin that pairs with this database (check *.bak-* safety copies) "
+            "or, if the vault is genuinely new/empty, move the database file aside first."
+        )
+
+
 def load_or_create_master_key(
     salt_path: Path,
     passphrase: str,
@@ -166,7 +188,15 @@ def load_or_create_master_key(
         return derive_key(passphrase, salt)
 
     if not enable_dpapi:
-        # Legacy create path -- unchanged from load_or_create_salt.
+        # Legacy create path -- unchanged from load_or_create_salt, except
+        # for the P1 sibling-db probe below: when a vault database exists
+        # next to the missing salt path, salt creation is refused. Creating
+        # a fresh salt over a populated database silently bricks the vault
+        # (every payload fails to decrypt under the new key); the operator
+        # must restore the original salt instead. Vault._prepare_storage is
+        # the primary guard; this belt-and-braces check covers callers that
+        # bypass Vault.
+        _refuse_salt_creation_over_database(salt_path)
         return derive_key(passphrase, load_or_create_salt(salt_path, create_if_missing=True))
 
     # DPAPI create path. When the caller explicitly opted in
@@ -182,6 +212,8 @@ def load_or_create_master_key(
             "DPAPI is enabled but not available. Install pywin32 on Windows "
             "or pass enable_dpapi=False to fall back to the legacy path."
         )
+    # P1 sibling-db probe (same rule as the legacy create path above).
+    _refuse_salt_creation_over_database(salt_path)
     # Derive a key from a freshly-generated salt, then wrap the key
     # bytes with DPAPI. The salt embedded inside the envelope is
     # ephemeral; only the wrapped 32-byte key is persisted. This
