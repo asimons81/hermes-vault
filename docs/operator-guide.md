@@ -206,6 +206,19 @@ hermes-vault import --from-env ~/.hermes/.env --dry-run
 hermes-vault import --from-env ~/.hermes/.env --map CUSTOM_VENDOR_TOKEN=custom-vendor:personal_access_token
 ```
 
+### Bitwarden import
+
+Coming from Bitwarden, import an unencrypted JSON export directly (mapping rules and an honest comparison live in [bitwarden-comparison.md](bitwarden-comparison.md)):
+
+```bash
+bw export --format json --output bw-export.json
+hermes-vault import bitwarden --file bw-export.json --dry-run
+hermes-vault import bitwarden --file bw-export.json --yes   # audited; collision policy: --on-collision skip|rename|fail
+rm bw-export.json
+```
+
+Running several agents against one vault on one host? Read [multi-client.md](multi-client.md) first.
+
 ## From `.env` to a real agent workflow
 
 If you start with a normal `.env`, the fastest safe path is now the bootstrap command:
