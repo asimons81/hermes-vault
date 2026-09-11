@@ -2218,6 +2218,66 @@ def doctor(
     raise typer.Exit(code=report.exit_code)
 
 
+@_typer_app.command("run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def run_command(
+    ctx: typer.Context,
+    agent: str | None = typer.Option(None, "--agent", help="Agent ID the env is resolved for (defaults to HERMES_VAULT_MCP_DEFAULT_AGENT)."),
+    service: list[str] = typer.Option([], "--service", "-s", help="Service to inject (repeatable). Omit to inject every authorized service with a stored credential."),
+    alias: str | None = typer.Option(None, "--alias", help="Credential alias (requires exactly one --service)."),
+    ttl: int = typer.Option(900, "--ttl", help="Requested TTL in seconds for policy evaluation (clamped to the agent's max TTL)."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Print which variables (names only) were injected to stderr."),
+) -> None:
+    """Run a child process with vault-injected env (P8).
+
+    Secrets are injected ONLY into the child process environment for its
+    lifetime — never argv, never logs, never the audit record (audit rows
+    carry variable names only). Resolution follows the same broker path as
+    ``broker env`` (``get_ephemeral_env``), so policy, TTL ceilings, lease
+    ownership and expiry enforcement all apply. Deny-by-default; operator
+    authority bypass is a non-goal. All-or-nothing: any service denial
+    aborts before the child spawns.
+
+    Exit codes:
+      child's own exit code on success
+      1 = broker denial (or no authorized services to inject)
+      2 = usage error (no command, --alias without exactly one --service, no agent id)
+      126/127 = child not executable / not found
+
+    \b
+    Examples:
+      hermes-vault run --agent hermes -- python agent.py
+      hermes-vault run --agent hermes --service openai -- python agent.py
+      hermes-vault run --agent hermes --service openai --alias primary -- python agent.py
+      hermes-vault run --agent deploy-bot --service github --service openrouter -- npx some-tool
+    """
+    command = list(ctx.args or [])
+    agent_id = agent or os.environ.get("HERMES_VAULT_MCP_DEFAULT_AGENT") or ""
+    requested = [s for s in service if s] or None
+    if ttl <= 0:
+        console.print("[red]--ttl must be greater than zero[/red]")
+        raise typer.Exit(code=2)
+
+    from hermes_vault.runner import (
+        EXIT_DENIED,
+        EXIT_USAGE,
+        execute_run_and_report,
+    )
+
+    _, _, broker, _ = build_services(prompt=True)
+    code = execute_run_and_report(
+        broker,
+        command=command,
+        agent_id=agent_id,
+        requested_services=requested,
+        alias=alias,
+        ttl=ttl,
+        verbose=verbose,
+    )
+    if agent_id and code in (EXIT_DENIED, EXIT_USAGE):
+        _print_agent_policy_hint(agent_id)
+    raise typer.Exit(code=code)
+
+
 @_typer_app.command("maintain")
 def maintain(
     ctx: typer.Context,

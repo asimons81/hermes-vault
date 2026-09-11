@@ -249,6 +249,30 @@ What happens next is the important bit, and this is where the setup stops being 
 
 This is the concrete runtime path, not a vague `config.yml` hand wave.
 
+## Running a child process with vault env (P8)
+
+When a tool wants plain environment variables — CrewAI/LangChain `env:`
+blocks, an MCP stdio server, any one-shot CLI — `hermes-vault run` injects
+the vault-backed variables into that one child process for its lifetime
+only:
+
+```bash
+hermes-vault run --agent hermes --service openai -- python agent.py
+hermes-vault run --agent deploy-bot --service github --service openrouter -- npx some-tool
+hermes-vault run --service openai -- python agent.py   # agent from HERMES_VAULT_MCP_DEFAULT_AGENT
+```
+
+- Resolution follows the same broker path as `broker env`, so policy,
+  TTL ceilings, lease requirements, and expiry enforcement all apply;
+  denials abort before the child spawns (exit 1).
+- Secrets never appear in argv, logs, or the audit record (rows carry
+  variable names only), and vault passphrase variables are stripped from
+  the child environment.
+- The child's exit code is propagated (shell conventions: 128+N signal,
+  127 not-found, 126 not-executable).
+
+See `docs/run.md` for the full contract.
+
 ## Why this is better
 
 This setup gives you a few hard wins:
