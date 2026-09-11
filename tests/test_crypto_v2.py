@@ -170,8 +170,17 @@ def test_encrypt_versioned_v1_matches_legacy_and_v2_is_aad_bound() -> None:
 # ── Vault write/read paths ───────────────────────────────────────────────
 
 
-def test_default_writes_stay_v1(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_default_writes_v2(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("HERMES_VAULT_CRYPTO_VERSION", raising=False)
+    vault = _aad_vault_write_version(tmp_path, CRYPTO_VERSION_V2)
+    secret = vault.get_secret("openai")
+    assert secret is not None and secret.secret == "sk-secret-1"
+
+
+def test_env_override_downgrades_writes_to_v1(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """HERMES_VAULT_CRYPTO_VERSION=aesgcm-v1 keeps producing v1 rows for
+    fleets that must interoperate with older consumers."""
+    monkeypatch.setenv("HERMES_VAULT_CRYPTO_VERSION", CRYPTO_VERSION)
     vault = _aad_vault_write_version(tmp_path, CRYPTO_VERSION)
     secret = vault.get_secret("openai")
     assert secret is not None and secret.secret == "sk-secret-1"
@@ -216,8 +225,9 @@ def test_v2_write_relabel_id_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         vault.get_secret("openai")
 
 
-def test_v1_ciphertext_relabel_still_reads(tmp_path: Path) -> None:
+def test_v1_ciphertext_relabel_still_reads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Legacy v1 rows are not AAD-bound: relabeling metadata does not break reads."""
+    monkeypatch.setenv("HERMES_VAULT_CRYPTO_VERSION", CRYPTO_VERSION)
     vault = _aad_vault_write_version(tmp_path, CRYPTO_VERSION)
     record = vault.resolve_credential("openai")
     assert record is not None
@@ -387,5 +397,7 @@ def test_broker_denies_relabeled_v2_without_exception(
 # ── Explicit cutover point ───────────────────────────────────────────────
 
 
-def test_write_crypto_version_still_v1_by_default() -> None:
-    assert crypto_mod.WRITE_CRYPTO_VERSION == CRYPTO_VERSION
+def test_write_crypto_version_flipped_to_v2() -> None:
+    """v0.26.0 cutover: new writes are AAD-bound aesgcm-v2 by default; v1
+    rows stay readable via per-row version dispatch (tested above)."""
+    assert crypto_mod.WRITE_CRYPTO_VERSION == CRYPTO_VERSION_V2

@@ -34,6 +34,21 @@
 - **Clean typed cold-start on locked vaults (P4)**: `hermes-vault mcp` no longer dies at startup with a 53-line `MissingPassphraseError` traceback when no passphrase is available. Tool calls and resource reads now return a typed `MISSING_PASSPHRASE` envelope (`locked: true`, mirroring the desktop bridge's 423 MISSING_PASSPHRASE) or `VAULT_NOT_READY` for missing/corrupt key material; the CLI entrypoint prints a one-line typed error on stderr if startup ever raises.
 - **Lazy broker build (P4)**: the MCP server no longer builds the vault broker at startup. Capabilities-only sessions (`initialize`, `tools/list`, `resources/list`, `resources/templates/list`) never require a decryptable vault; the broker is built on the first vault-touching request.
 
+### P5: crypto v2 default + migrate-crypto
+
+#### Added
+
+- **`migrate-crypto` command (opt-in v1→v2 re-encryption)**: `Vault.migrate_crypto()` re-encrypts legacy `aesgcm-v1` credential rows as AAD-bound `aesgcm-v2` inside one `BEGIN EXCLUSIVE` transaction and verifies EVERY row decrypts under its post-migration version + authorization metadata *before* committing. Any failure rolls back completely — partial migrations are never committed and the vault stays fully readable in its pre-migration state. Undecryptable rows (wrong passphrase / corruption) and unknown `crypto_version` labels are refused up front with actionable errors. The CLI is explicit and opt-in (`--dry-run` reports eligibility, `--yes` skips the confirmation prompt); success, refusal, and dry-run outcomes are audited; refusal exits non-zero (2).
+- **Crypto version documentation**: README common-commands list and operator-guide section covering envelope versions, the v1-readability guarantee, `migrate-crypto` semantics, and the `HERMES_VAULT_CRYPTO_VERSION` downgrade override.
+
+#### Changed
+
+- **`WRITE_CRYPTO_VERSION` flipped to `aesgcm-v2`**: new credential writes now produce AAD-bound v2 envelopes by default (issue #60 write-side cutover). Existing v1 rows stay readable — decryption dispatches per-row on the stored `crypto_version`. Set `HERMES_VAULT_CRYPTO_VERSION=aesgcm-v1` to downgrade new writes (e.g. a fleet interoperating with an older consumer).
+
+#### Fixed
+
+- **OAuth normalize alias rename bricks v2 rows**: `oauth normalize`'s legacy refresh-alias rename was a raw SQL `alias` UPDATE; on AAD-bound v2 rows that leaves the row undecryptable (the alias is part of the canonical AAD). v2 rows are now decrypted with their pre-rename metadata and re-encrypted with the new alias bound in one atomic UPDATE; v1 rows keep the plain metadata rename. Exposed by the v2-default flip; regression tests cover both paths.
+
 ## 0.25.1 -- Patch: Desktop plugin fixes + mcp 2.x support (2026-09-10)
 
 ### Fixed

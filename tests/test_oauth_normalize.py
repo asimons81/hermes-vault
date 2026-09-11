@@ -90,3 +90,57 @@ def test_oauth_normalize_skips_ambiguous_legacy_refresh(tmp_path: Path) -> None:
 
     assert any(skip.action == "skip" and "ambiguous" in skip.detail for skip in report.skips)
     assert vault._find_by_service_alias("google", "refresh") is not None
+
+
+def test_oauth_normalize_rename_rebinds_v2_aad(tmp_path: Path) -> None:
+    """aesgcm-v2 rows are AAD-bound to their alias: the legacy-alias rename
+    must re-encrypt with the new alias, not raw-SQL the metadata (which
+    would brick decryption)."""
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential(
+        "google",
+        "access",
+        "oauth_access_token",
+        alias="work",
+        scopes=["openid"],
+    )
+    refresh = vault.add_credential(
+        "google",
+        "refresh-token-value",
+        "oauth_refresh_token",
+        alias="refresh",
+        metadata={"associated_access_token_alias": "work", "provider": "google"},
+    )
+    assert refresh.crypto_version == "aesgcm-v2"
+
+    report = normalize_oauth_records(vault, dry_run=False)
+    assert any(c.action == "rename_alias" for c in report.changes)
+
+    renamed = vault._find_by_service_alias("google", refresh_alias_for("work"))
+    assert renamed is not None
+    secret = vault.get_secret(renamed.id)
+    assert secret is not None
+    assert secret.secret == "refresh-token-value"
+
+
+def test_oauth_normalize_rename_v1_row_keeps_plain_update(tmp_path: Path, monkeypatch) -> None:
+    """Legacy v1 rows are not AAD-bound; the rename still must not break them."""
+    monkeypatch.setenv("HERMES_VAULT_CRYPTO_VERSION", "aesgcm-v1")
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-passphrase")
+    vault.add_credential("google", "access", "oauth_access_token", alias="work")
+    vault.add_credential(
+        "google",
+        "refresh-token-value",
+        "oauth_refresh_token",
+        alias="refresh",
+        metadata={"associated_access_token_alias": "work", "provider": "google"},
+    )
+
+    report = normalize_oauth_records(vault, dry_run=False)
+    assert any(c.action == "rename_alias" for c in report.changes)
+
+    renamed = vault._find_by_service_alias("google", refresh_alias_for("work"))
+    assert renamed is not None
+    secret = vault.get_secret(renamed.id)
+    assert secret is not None
+    assert secret.secret == "refresh-token-value"

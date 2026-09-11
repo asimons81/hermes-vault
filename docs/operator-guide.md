@@ -146,6 +146,28 @@ hermes-vault rotate-master-key
 - `policy doctor` catches drift, legacy grants, stale generated skills, and other lifecycle paper cuts.
 - `backup-verify` and `restore --dry-run` are the recovery proof path. Backup age is a clue, not evidence.
 - `rotate-master-key` is the deliberate rekey path, not a maintenance shortcut.
+- `migrate-crypto` is the deliberate crypto-envelope upgrade path (aesgcm-v1 → AAD-bound aesgcm-v2), also not a maintenance shortcut.
+
+### Crypto envelope versions (aesgcm-v1 / aesgcm-v2)
+
+Every credential row records its encryption envelope version. New writes use
+AAD-bound `aesgcm-v2` (the row's authorization metadata — id, service, alias,
+credential type, scopes — is authenticated with the ciphertext, so a relabeled
+row can never decrypt). Legacy `aesgcm-v1` rows remain readable forever; the
+vault dispatches decryption per row.
+
+`migrate-crypto` re-encrypts legacy rows as v2. It is opt-in and all-or-nothing:
+every row is verified to decrypt after re-encryption *before* the transaction
+commits, so a failure rolls back completely and the vault keeps working exactly
+as before. Nothing ever auto-migrates. Run `migrate-crypto --dry-run` first to
+see eligibility, then `--yes` (or answer the prompt). Outcomes — success,
+refusal, and dry-run — land in the audit log. Set `HERMES_VAULT_CRYPTO_VERSION=aesgcm-v1`
+to force new writes back to v1 (e.g. for an older consumer that re-exports rows).
+
+```bash
+hermes-vault migrate-crypto --dry-run
+hermes-vault migrate-crypto --yes
+```
 
 ## Recommended First Run
 

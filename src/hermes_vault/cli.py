@@ -3049,6 +3049,101 @@ def rotate_master_key(
     console.print("[yellow]Update HERMES_VAULT_PASSPHRASE to your new passphrase for future vault access.[/yellow]")
 
 
+@_typer_app.command("migrate-crypto")
+def migrate_crypto(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would migrate without re-encrypting anything."),
+    yes: bool = typer.Option(False, "--yes", help="Confirm the migration without prompting."),
+) -> None:
+    """Re-encrypt legacy aesgcm-v1 credential rows as AAD-bound aesgcm-v2.
+
+    Explicit and opt-in — nothing auto-migrates. All-or-nothing: every row
+    is verified to decrypt after re-encryption BEFORE the transaction
+    commits; any failure rolls back completely, leaving the vault fully
+    readable in its pre-migration state. Existing aesgcm-v2 rows are left
+    untouched (and re-verified); aesgcm-v1 rows stay readable forever
+    regardless — this command only hardens them.
+
+    Writes an audit event recording the outcome.
+
+    Example:
+      hermes-vault migrate-crypto --dry-run
+      hermes-vault migrate-crypto --yes
+    """
+    from hermes_vault.vault import CryptoMigrationError
+
+    settings = get_settings()
+    vault, _, _, _ = build_services(prompt=False)
+    audit = AuditLogger(settings.db_path, master_key=vault.key)
+
+    records = vault.list_credentials()
+    v1 = [r for r in records if r.crypto_version == "aesgcm-v1"]
+    v2 = [r for r in records if r.crypto_version == "aesgcm-v2"]
+    console.print("[bold]Crypto Migration (aesgcm-v1 → aesgcm-v2)[/bold]")
+    console.print(f"  Vault: {settings.db_path}")
+    console.print(f"  Credentials: {len(records)} ({len(v1)} aesgcm-v1, {len(v2)} aesgcm-v2)")
+
+    if dry_run:
+        would = len(v1)
+        console.print(
+            f"[yellow]Dry run:[/yellow] {would} credential(s) would be re-encrypted as aesgcm-v2; "
+            f"{len(v2)} already v2 and would be left untouched."
+        )
+        audit.record(AccessLogRecord(
+            agent_id="operator",
+            service="*",
+            action="migrate_crypto",
+            decision=Decision.allow,
+            reason=f"crypto migration dry-run: {would} row(s) eligible, {len(v2)} already v2",
+        ))
+        return
+
+    if not yes:
+        confirmed = typer.confirm(
+            f"Re-encrypt {len(v1)} credential(s) as AAD-bound aesgcm-v2? "
+            "All-or-nothing: any verification failure rolls back everything."
+        )
+        if not confirmed:
+            console.print("[yellow]Migration cancelled. Nothing was changed.[/yellow]")
+            audit.record(AccessLogRecord(
+                agent_id="operator",
+                service="*",
+                action="migrate_crypto",
+                decision=Decision.deny,
+                reason="operator declined confirmation; nothing changed",
+            ))
+            raise typer.Exit(code=1)
+
+    try:
+        result = vault.migrate_crypto()
+    except CryptoMigrationError as exc:
+        console.print(f"[red]Migration refused:[/red] {exc}")
+        console.print("[yellow]The vault is unchanged (all-or-nothing rollback state).[/yellow]")
+        audit.record(AccessLogRecord(
+            agent_id="operator",
+            service="*",
+            action="migrate_crypto",
+            decision=Decision.deny,
+            reason=f"migration refused and rolled back: {exc}",
+        ))
+        raise typer.Exit(code=2)
+
+    audit.record(AccessLogRecord(
+        agent_id="operator",
+        service="*",
+        action="migrate_crypto",
+        decision=Decision.allow,
+        reason=(
+            f"crypto migration v1->v2 complete: {result['migrated']} migrated, "
+            f"{result['already_v2']} already v2, {result['verified']} verified decryptable"
+        ),
+    ))
+    console.print(
+        f"[green]Migration complete.[/green] {result['migrated']} credential(s) re-encrypted as "
+        f"aesgcm-v2, {result['already_v2']} were already v2; all {result['verified']} verified decryptable."
+    )
+
+
 @_typer_app.command("generate-skill")
 def generate_skill(
     ctx: typer.Context,

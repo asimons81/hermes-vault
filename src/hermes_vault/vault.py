@@ -81,6 +81,15 @@ class RestoreCommittedCheckpointError(RuntimeError):
     """
 
 
+class CryptoMigrationError(RuntimeError):
+    """Raised when a v1→v2 crypto migration is refused or had to roll back.
+
+    The vault is always left in its pre-migration state when this is
+    raised: the migration is all-or-nothing, so a refusal or a mid-flight
+    failure means zero rows were changed.
+    """
+
+
 class SaltMismatchError(RuntimeError):
     """A backup's credentials do not decrypt under this vault's master key.
 
@@ -2257,3 +2266,114 @@ class Vault:
 
         self.key = new_key
         return {"re_encrypted": re_encrypted, "failed": 0}
+
+    def migrate_crypto(self) -> dict[str, int]:
+        """Re-encrypt every aesgcm-v1 credential row as AAD-bound aesgcm-v2.
+
+        Explicit, operator-initiated only — nothing in normal operation
+        auto-migrates. The migration is all-or-nothing:
+
+        1. Every row is decrypted with its *current* stored metadata (v1
+           rows carry no AAD; v2 rows keep their existing binding) inside
+           one ``BEGIN EXCLUSIVE`` transaction.
+        2. v1 rows are re-encrypted as v2 with the canonical AAD built
+           from the row's own authorization metadata.
+        3. Before commit, EVERY row (migrated or already-v2) is verified
+           to decrypt under its post-migration version + metadata. Any
+           failure rolls the whole transaction back — a partial migration
+           is never committed, so the vault is always left fully readable
+           in its pre-migration state.
+
+        Returns a dict with ``migrated`` (v1→v2 rows re-encrypted),
+        ``already_v2`` (rows left untouched), and ``verified`` (total rows
+        proven decryptable post-migration).
+
+        Raises CryptoMigrationError on refusal (corrupt row, wrong
+        passphrase) or post-migration verification failure; the vault is
+        unchanged in every case.
+        """
+        records = self.list_credentials()
+        v1_records = [r for r in records if r.crypto_version == CRYPTO_VERSION]
+        already_v2 = [r for r in records if r.crypto_version == CRYPTO_VERSION_V2]
+        unknown = [r for r in records if r.crypto_version not in (CRYPTO_VERSION, CRYPTO_VERSION_V2)]
+
+        if unknown:
+            detail = ", ".join(f"{r.service}:{r.alias}({r.crypto_version!r})" for r in unknown[:5])
+            raise CryptoMigrationError(
+                "Migration refused: unsupported crypto_version label(s) present — "
+                f"{detail}. Nothing was changed; fix or remove these rows first."
+            )
+
+        # Pre-flight: every v1 row must decrypt with the current key before
+        # anything is touched. A row that fails here means a wrong
+        # passphrase or pre-existing corruption — refuse rather than
+        # re-encrypting a vault we cannot fully read.
+        for rec in v1_records:
+            try:
+                decrypt_secret_versioned(
+                    rec.encrypted_payload, self.key, rec.crypto_version, _record_aad_metadata(rec),
+                )
+            except Exception as exc:
+                raise CryptoMigrationError(
+                    f"Migration refused: credential '{rec.service}:{rec.alias}' does not decrypt "
+                    f"with the current master key ({type(exc).__name__}). Nothing was changed — "
+                    "verify the passphrase / salt pairing before migrating."
+                ) from exc
+
+        migrated = 0
+        with self._connection() as conn:
+            conn.execute("BEGIN EXCLUSIVE")
+            try:
+                for rec in v1_records:
+                    payload_plain = decrypt_secret_versioned(
+                        rec.encrypted_payload, self.key, rec.crypto_version, _record_aad_metadata(rec),
+                    )
+                    new_encrypted = encrypt_secret_versioned(
+                        payload_plain, self.key, CRYPTO_VERSION_V2, _record_aad_metadata(rec),
+                    )
+                    conn.execute(
+                        "UPDATE credentials SET encrypted_payload = ?, crypto_version = ?, updated_at = ? WHERE id = ?",
+                        (new_encrypted, CRYPTO_VERSION_V2, utc_now().isoformat(), rec.id),
+                    )
+                    migrated += 1
+
+                # Post-verification before commit: EVERY row must decrypt
+                # under its post-migration version + AAD. Reading back
+                # through the same connection sees the uncommitted updates.
+                cursor = conn.execute("SELECT id FROM credentials")
+                all_ids = [row[0] for row in cursor.fetchall()]
+                post_records = {r.id: r for r in self._select_records_in(conn)}
+                for record_id in all_ids:
+                    post = post_records.get(record_id)
+                    if post is None:
+                        raise CryptoMigrationError(
+                            f"Post-migration verification failed: row {record_id} vanished mid-migration. "
+                            "Transaction rolled back; nothing was changed."
+                        )
+                    try:
+                        decrypt_secret_versioned(
+                            post.encrypted_payload,
+                            self.key,
+                            post.crypto_version,
+                            _record_aad_metadata(post),
+                        )
+                    except Exception as exc:
+                        raise CryptoMigrationError(
+                            f"Post-migration verification failed: credential "
+                            f"'{post.service}:{post.alias}' does not decrypt after re-encryption "
+                            f"({type(exc).__name__}). Transaction rolled back; nothing was changed — "
+                            "the vault remains fully readable on aesgcm-v1 rows."
+                        ) from exc
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+        return {"migrated": migrated, "already_v2": len(already_v2), "verified": len(records)}
+
+    def _select_records_in(self, conn: sqlite3.Connection) -> list[CredentialRecord]:
+        """List all credential records using an existing connection (sees
+        uncommitted writes in the caller's transaction)."""
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM credentials ORDER BY service, alias").fetchall()
+        return [self._row_to_record(row) for row in rows]
