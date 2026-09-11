@@ -2063,6 +2063,59 @@ def health(
         raise typer.Exit(code=1)
 
 
+@_typer_app.command("doctor")
+def doctor(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable findings (one JSON object) for agents."),
+    backup: Path | None = typer.Option(None, "--backup", help="Also prove this backup file decrypts under this vault's master key (P1 preflight primitive)."),
+    hermes_config: Path | None = typer.Option(None, "--hermes-config", help="Hermes config.yaml to inspect for MCP wiring (default ~/.hermes/config.yaml)."),
+    no_mcp_smoke: bool = typer.Option(False, "--no-mcp-smoke", help="Skip spawning the configured MCP server for the initialize handshake."),
+    smoke_timeout: float = typer.Option(10.0, "--smoke-timeout", help="Seconds to wait for the MCP initialize handshake."),
+) -> None:
+    """Guided install/recovery health check (P7).
+
+    One command for install and recovery health: binary integrity,
+    launcher/home layout, store integrity, salt/key pairing, audit chain
+    state, optional backup pairing, and MCP wiring. Read-only — doctor
+    never mutates the vault and never writes audit rows; every repair it
+    names is an existing P1 command (audit-checkpoint repair, the restore
+    preflight, the salt-migration guidance).
+
+    Exit codes:
+      0 = healthy
+      1 = degraded (warnings; safe to keep operating)
+      2 = broken (a check failed; follow the remediation before writing)
+
+    \\b
+    Examples:
+      hermes-vault doctor
+      hermes-vault doctor --json
+      hermes-vault doctor --backup ~/vault-backups/hermes-vault-20260910.json
+      hermes-vault doctor --no-mcp-smoke
+    """
+    from hermes_vault.doctor import run_doctor
+
+    if smoke_timeout <= 0:
+        console.print("[red]--smoke-timeout must be positive[/red]")
+        raise typer.Exit(code=2)
+
+    report = run_doctor(
+        hermes_config=hermes_config,
+        mcp_smoke=not no_mcp_smoke,
+        backup=backup,
+        smoke_timeout=smoke_timeout,
+    )
+
+    if json_output:
+        console.print_json(data=report.as_dict())
+    else:
+        from hermes_vault.doctor import render_doctor_report
+
+        render_doctor_report(console, report)
+
+    raise typer.Exit(code=report.exit_code)
+
+
 @_typer_app.command("maintain")
 def maintain(
     ctx: typer.Context,
