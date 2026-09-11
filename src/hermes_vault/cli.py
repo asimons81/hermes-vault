@@ -261,6 +261,19 @@ class HermesGroup(click.Group, typer.Typer):  # type: ignore[misc]
         return self._resolved_typer_group().get_command(ctx, cmd_name)
 
 
+# ── Version option ──────────────────────────────────────────────────────────
+
+
+def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
+    """Eager --version callback: print and exit 0 before any dispatch."""
+    if not value or ctx.resilient_parsing:
+        return
+    from hermes_vault import __version__
+
+    click.echo(f"hermes-vault {__version__}")
+    ctx.exit(0)
+
+
 _hermes_group = HermesGroup(
     params=[
         click.Option(
@@ -272,6 +285,14 @@ _hermes_group = HermesGroup(
             is_flag=True,
             is_eager=True,
             help="Suppress the vault splash banner.",
+        ),
+        click.Option(
+            ["--version"],
+            is_flag=True,
+            is_eager=True,
+            expose_value=False,
+            callback=_print_version,
+            help="Show the hermes-vault version and exit.",
         ),
     ],
     help="Hermes-native local-first credential vault, scanner, and broker.",
@@ -3553,7 +3574,14 @@ def oauth_normalize(
 def app() -> int:
     """Proxy that strips deprecated --banner, then delegates to _hermes_group."""
     argv = [arg for arg in sys.argv[1:] if arg != "--banner"]
-    if _targets_root_command(argv) and "--no-banner" not in argv and _should_show_banner():
+    root_only = _targets_root_command(argv)
+    # --version must print only the version line (no splash, no dispatch).
+    if root_only and "--version" in argv:
+        from hermes_vault import __version__
+
+        click.echo(f"hermes-vault {__version__}")
+        return 0
+    if root_only and "--no-banner" not in argv and _should_show_banner():
         _show_banner()
     return _hermes_group(args=argv, prog_name=Path(sys.argv[0]).name)
 
