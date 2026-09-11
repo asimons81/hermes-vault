@@ -2,6 +2,12 @@
 
 ## 0.26.0 -- Unreleased
 
+### P7 `doctor` — guided install/recovery health
+
+#### Added
+
+- **`hermes-vault doctor`**: one read-only command for install and recovery health — binary integrity (version, import, PYTHONPATH-poisoning signal), launcher/home layout (db/salt pairing, salt shape, key-material file permissions, passphrase source), store integrity (keyless `PRAGMA quick_integrity_check`), salt/key pairing (P1 `store_decryptability`), audit-chain state (P1 `verify()` + `classify_repairability` with the repair verdict and named P1 command), optional `--backup` pairing (P1 `prove_backup_decryptable`), and MCP wiring (config entry shape incl. the documented `args:`-string trap, resolvable command, JSON-RPC `initialize` smoke). Human-readable findings plus `--json` (`doctor-v1`) for agents. Exit codes: 0 healthy / 1 degraded / 2 broken. Doctor wraps P1's primitives as-is and owns no recovery logic; it never mutates the store, never writes audit rows (a wedged chain cannot crash it), never prompts, and never creates a vault where none exists. The two ops-skill bricking traps surface as named failures: trap #1 (audit wedge) → `repairable` + the exact `audit-checkpoint repair` command; trap #2 (rotated salt) → `KEY-MATERIAL MISMATCH` + `refuse_key_material`, never a cover-up repair. New `docs/doctor.md` operator guide; README common-commands and `docs/safe-recovery.md` link it.
+
 ### P1 Safe recovery
 
 #### Added

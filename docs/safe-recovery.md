@@ -92,6 +92,15 @@ Do **not** delete `vault.db` or `master_key_salt.bin`. Either:
 
 Run `hermes-vault backup-verify --input <path>` for the full per-entry report.
 
+## Doctor: the one-command sweep
+
+`hermes-vault doctor` runs every recovery-relevant check in one read-only
+pass — binary, launcher/home layout, store integrity, salt/key pairing, audit
+chain (with the repair verdict), optional `--backup` pairing, and MCP wiring —
+and exits 0 healthy / 1 degraded / 2 broken. It names the exact failure and
+the exact command that fixes it; `--json` emits `doctor-v1` for agents.
+See [doctor.md](doctor.md).
+
 ## Audit-chain repair
 
 ```

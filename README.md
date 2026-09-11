@@ -393,6 +393,9 @@ hermes-vault verify --all --report ~/.hermes/hermes-vault-data/reports/verify-la
 hermes-vault health
 hermes-vault health --format json
 hermes-vault health --verify-live --service openai
+hermes-vault doctor
+hermes-vault doctor --json
+hermes-vault doctor --backup ~/vault-backups/hermes-vault-latest.json
 hermes-vault maintain --dry-run
 hermes-vault maintain
 hermes-vault maintain --print-schedule
