@@ -2829,10 +2829,11 @@ def backup_vault(
       hermes-vault backup --include-audit --output ~/vault-full.json
     """
     vault, _, _, _ = build_services(prompt=True)
+    # Audit into the vault's own DB (vault.db_path): the vault under backup is
+    # the authority on where its audit rows live, not a re-resolved setting.
+    audit = AuditLogger(vault.db_path, master_key=vault.key)
     backup = vault.export_backup(metadata_only=metadata_only)
     if include_audit:
-        settings = get_settings()
-        audit = AuditLogger(settings.db_path)
         entries = audit.list_recent(limit=5000)
         backup["audit_log"] = entries
     content = json.dumps(backup, indent=2, sort_keys=True)
@@ -2840,6 +2841,31 @@ def backup_vault(
     output.chmod(0o600)
     console.print(f"[green]Backup written to {output}[/green]")
     console.print(f"  {len(backup['credentials'])} credential(s) exported")
+
+    # Audit row feeds the health report's "Days since last backup" and the
+    # broker's backup reminder (both scan for these actions via
+    # AuditLogger.last_backup_at). Without it, every CLI backup was invisible
+    # to health forever. The audit append must never fail the backup itself
+    # (an integrity wedge would otherwise block the recovery tool) — degrade
+    # to a visible warning instead.
+    try:
+        audit.record(AccessLogRecord(
+            agent_id=OPERATOR_AGENT_ID,
+            service="*",
+            action="export_backup",
+            decision=Decision.allow,
+            reason=(
+                f"backup written to {output.name}, "
+                f"{len(backup['credentials'])} credential(s)"
+                + (", metadata-only" if metadata_only else "")
+            ),
+            metadata={"path": str(output), "metadata_only": metadata_only},
+        ))
+    except Exception as exc:
+        console.print(
+            f"[yellow]Warning: backup succeeded but the audit row could not be "
+            f"written ({exc}). Health's backup age will not reflect this run.[/yellow]"
+        )
 
 
 @recovery_app.command("drill")

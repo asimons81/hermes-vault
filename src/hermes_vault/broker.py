@@ -392,27 +392,7 @@ class Broker:
 
         # ── backup reminder ──────────────────────────────────────────
         backup_days = int(os.environ.get("HERMES_VAULT_BACKUP_REMINDER_DAYS", "30"))
-        entries = self.audit.list_recent(limit=500, action="export_backup")
-        last_backup: datetime | None = None
-        for entry in entries:
-            ts_str = entry.get("timestamp")
-            if ts_str and isinstance(ts_str, str):
-                try:
-                    last_backup = datetime.fromisoformat(ts_str)
-                    break
-                except ValueError:
-                    continue
-        if last_backup is None:
-            entries = self.audit.list_recent(limit=500, action="backup")
-            for entry in entries:
-                ts_str = entry.get("timestamp")
-                if ts_str and isinstance(ts_str, str):
-                    try:
-                        last_backup = datetime.fromisoformat(ts_str)
-                        break
-                    except ValueError:
-                        continue
-
+        last_backup = self.audit.last_backup_at()
         if last_backup is not None:
             days_since = (now - last_backup.replace(tzinfo=timezone.utc)).days
             if days_since > backup_days:
