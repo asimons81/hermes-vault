@@ -650,6 +650,10 @@ def test_doctor_is_byte_identical_read_only(tmp_path: Path, monkeypatch: pytest.
 def test_e2e_doctor_names_wedge_p1_repairs_doctor_healthy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The C3 acceptance: the ops-skill reinstall scenario, end to end."""
     home = make_vault_home(tmp_path, credentials=2)
+    # Hermetic mcp-wiring: a fixture config, not the operator's real
+    # ~/.hermes/config.yaml (QA F-1 — suite greenness must not depend on the
+    # dev machine; CI runners have no Hermes config at all).
+    config = _write_hermes_config(tmp_path, {"command": _existing_executable(), "args": ["mcp"]})
     monkeypatch.setenv("HERMES_VAULT_HOME", str(home))
     monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", PASSPHRASE)
     monkeypatch.delenv("PYTHONPATH", raising=False)
@@ -657,12 +661,16 @@ def test_e2e_doctor_names_wedge_p1_repairs_doctor_healthy(tmp_path: Path, monkey
     runner = CliRunner()
 
     # 1. healthy
-    first = runner.invoke(_hermes_group, ["doctor", "--no-mcp-smoke"], catch_exceptions=False)
+    first = runner.invoke(
+        _hermes_group, ["doctor", "--no-mcp-smoke", "--hermes-config", str(config)], catch_exceptions=False
+    )
     assert first.exit_code == 0
 
     # 2. wedge (trap #1) → doctor names the exact P1 repair command
     wedge_audit(home)
-    wedged = runner.invoke(_hermes_group, ["doctor", "--no-mcp-smoke"], catch_exceptions=False)
+    wedged = runner.invoke(
+        _hermes_group, ["doctor", "--no-mcp-smoke", "--hermes-config", str(config)], catch_exceptions=False
+    )
     assert wedged.exit_code == 2
     assert "missing_integrity_record" in wedged.output or "not protected" in wedged.output
     assert "audit-checkpoint repair" in wedged.output
@@ -676,7 +684,9 @@ def test_e2e_doctor_names_wedge_p1_repairs_doctor_healthy(tmp_path: Path, monkey
     assert repaired.exit_code == 0, repaired.output
 
     # 4. doctor is healthy again — verdicts agree with audit-verify
-    after = runner.invoke(_hermes_group, ["doctor", "--no-mcp-smoke"], catch_exceptions=False)
+    after = runner.invoke(
+        _hermes_group, ["doctor", "--no-mcp-smoke", "--hermes-config", str(config)], catch_exceptions=False
+    )
     assert after.exit_code == 0, after.output
     assert "Verdict: healthy" in after.output
 
