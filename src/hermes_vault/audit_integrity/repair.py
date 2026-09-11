@@ -371,8 +371,10 @@ def run_repair(
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
                 ).fetchone()
                 if exists:
+                    # Identifier-quoted: the <ts> suffix contains '-' which is
+                    # not a bare-SQL identifier character.
                     conn.execute(
-                        f"CREATE TABLE quarantine_{table}_{quarantine_id} AS SELECT * FROM {table}"
+                        f'CREATE TABLE "quarantine_{table}_{quarantine_id}" AS SELECT * FROM {table}'
                     )
                 conn.execute(
                     f"INSERT INTO {MANIFEST_TABLE} (quarantine_id, quarantined_at, reason, source_command, table_name, row_count, safety_copy_path, prior_verify_reason) "

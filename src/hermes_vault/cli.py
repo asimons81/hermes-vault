@@ -3122,7 +3122,10 @@ def restore_vault(
                 outcome="dry-run-only",
             )
             receipt_path = write_restore_receipt(receipt, vault_home=vault.db_path.parent)
-            console.print(f"[dim]Recovery receipt: {receipt_path}[/dim]")
+            if format == "table":
+                # Keep --format json machine-parseable: the receipt path goes
+                # to stdout only in human mode (the file is always written).
+                console.print(f"[dim]Recovery receipt: {receipt_path}[/dim]")
         except ReceiptWriteError:
             raise
         except Exception as receipt_exc:  # pragma: no cover -- defensive

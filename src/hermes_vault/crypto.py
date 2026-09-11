@@ -124,6 +124,7 @@ def load_or_create_salt(path: Path, create_if_missing: bool = False) -> bytes:
 # P1: the configured vault database filename used by the sibling-db probe.
 # Kept in one place so a future config change stays consistent.
 SIBLING_DB_FILENAME = "vault.db"
+DEFAULT_SALT_FILENAME = "master_key_salt.bin"
 
 
 def _refuse_salt_creation_over_database(salt_path: Path) -> None:
@@ -131,8 +132,14 @@ def _refuse_salt_creation_over_database(salt_path: Path) -> None:
 
     A fresh salt over an existing database silently bricks the vault (the
     payloads no longer decrypt). ``Vault._prepare_storage`` is the primary
-    check; this probe covers callers that bypass ``Vault``.
+    check; this belt-and-braces probe covers callers that bypass ``Vault``.
+    It fires only for the fleet-default salt filename next to the
+    default-named database — a custom-named salt legitimately coexists with
+    other vaults in one directory (``Vault._prepare_storage`` still guards
+    each instance's own db/salt pairing).
     """
+    if salt_path.name != DEFAULT_SALT_FILENAME:
+        return
     sibling_db = salt_path.with_name(SIBLING_DB_FILENAME)
     if sibling_db.exists():
         raise MissingKeyMaterialError(

@@ -74,14 +74,16 @@ def prove_backup_decryptable(backup: dict[str, Any], key: bytes) -> DecryptProof
 
     findings: list[str] = []
     decryptable = 0
+    proved = 0  # entries with a payload that were proven (attempted)
     for entry in entries:
         payload = entry.get("encrypted_payload")
         if payload is None:
-            findings.append(
-                f"{entry.get('service', '?')}/{entry.get('alias', 'default')}: "
-                "entry has no encrypted_payload (metadata-only)"
-            )
+            # Metadata-only entries are the metadata-only backup class —
+            # the parse loop inside import_backup owns that rejection
+            # (ValueError); the decrypt proof must not claim it as a key
+            # mismatch. Skip: nothing to prove for an absent payload.
             continue
+        proved += 1
         try:
             decrypt_secret_versioned(
                 payload,
@@ -97,9 +99,18 @@ def prove_backup_decryptable(backup: dict[str, Any], key: bytes) -> DecryptProof
             continue
         decryptable += 1
 
-    if decryptable == len(entries):
+    if proved == 0:
+        # No payloads to prove (all metadata-only): vacuous pass; the
+        # import's metadata-only rejection fires downstream.
         return DecryptProof(
-            credential_count=len(entries),
+            credential_count=proved,
+            decryptable_count=0,
+            ok=True,
+        )
+
+    if decryptable == proved:
+        return DecryptProof(
+            credential_count=proved,
             decryptable_count=decryptable,
             ok=True,
         )
@@ -109,7 +120,7 @@ def prove_backup_decryptable(backup: dict[str, Any], key: bytes) -> DecryptProof
         else BLOCKED_PARTIAL_DECRYPT
     )
     return DecryptProof(
-        credential_count=len(entries),
+        credential_count=proved,
         decryptable_count=decryptable,
         ok=False,
         blocked_reason=blocked_reason,
