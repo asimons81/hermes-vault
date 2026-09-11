@@ -21,12 +21,15 @@ NONCE_SIZE = 12
 SALT_SIZE = 16
 PBKDF2_ITERATIONS = 390_000
 
-# Write-side cutover point for Issue #60. New credential writes use this
-# version label. Keeping it at ``CRYPTO_VERSION`` (aesgcm-v1) means every
-# decrypt path is versioned and v1-compatible before any v2 ciphertext is
-# produced by default. Flip to ``CRYPTO_VERSION_V2`` (or set the
-# HERMES_VAULT_CRYPTO_VERSION env var) to begin writing AAD-bound v2 rows.
-WRITE_CRYPTO_VERSION = CRYPTO_VERSION
+# Write-side cutover point for Issue #60 (flipped in v0.26.0). New
+# credential writes use AAD-bound aesgcm-v2 envelopes; existing aesgcm-v1
+# rows remain readable forever (decrypt dispatches per-row on the stored
+# crypto_version label). Set the HERMES_VAULT_CRYPTO_VERSION env var to
+# ``aesgcm-v1`` to downgrade new writes (e.g. a fleet that must keep
+# producing v1 rows for an older consumer). Re-encrypting existing rows
+# is opt-in via the explicit ``migrate-crypto`` command — nothing
+# auto-migrates.
+WRITE_CRYPTO_VERSION = CRYPTO_VERSION_V2
 
 # Canonical AAD domain/kind/version marker. Bound into every v2 AAD so the
 # same metadata bytes cannot be replayed as AAD for a different product,
