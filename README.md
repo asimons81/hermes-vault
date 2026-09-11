@@ -4,7 +4,7 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.26.0 is the current release — the **Trustworthy Under Failure** line. It makes recovery non-destructive and honest: mandatory restore preflights that prove a backup decrypts before mutating anything, a non-destructive `audit-checkpoint repair` (quarantine, never DROP), a typed salt-mismatch guard that names the two recovery paths, `hermes-vault doctor` for one-command install/recovery health, lease ownership + expiry enforcement in the broker, a truthful CLI (`--version`, honest exit codes, PYTHONPATH self-guard), MCP correctness (advertised `vault://` resources readable in unbound mode, clean typed cold-start on locked vaults), crypto v2 as the write default with an opt-in `migrate-crypto`, and CI release integrity (publish gated on green tests, lock-freshness + dependency-audit jobs). The Vault Intelligence surfaces from v0.25.x are unchanged; existing v1 credential rows stay readable.
+v0.26.0 is the current release — the **Trustworthy Under Failure** line. It makes recovery non-destructive and honest: mandatory restore preflights that prove a backup decrypts before mutating anything, a non-destructive `audit-checkpoint repair` (quarantine, never DROP), a typed salt-mismatch guard that names the two recovery paths, `hermes-vault doctor` for one-command install/recovery health, lease ownership + expiry enforcement in the broker, a truthful CLI (`--version`, honest exit codes, PYTHONPATH self-guard), MCP correctness (advertised `vault://` resources readable in unbound mode, clean typed cold-start on locked vaults), crypto v2 as the write default with an opt-in `migrate-crypto`, `hermes-vault run` for child-process env injection through the same policy-gated broker path, and CI release integrity (publish gated on green tests, lock-freshness + dependency-audit jobs). The Vault Intelligence surfaces from v0.25.x are unchanged; existing v1 credential rows stay readable.
 
 ## What's New in 0.26.0
 
@@ -17,6 +17,7 @@ v0.26.0 is a feature release focused on being **trustworthy under failure**.
 - **P5 Crypto v2 default (SHOULD)**: new credential writes produce AAD-bound `aesgcm-v2` envelopes by default; existing v1 rows stay readable; opt-in `hermes-vault migrate-crypto` re-encrypts v1→v2 in one all-or-nothing transaction with per-row post-verification; `HERMES_VAULT_CRYPTO_VERSION` downgrade override; fixed `oauth normalize` alias renames bricking v2 rows
 - **P6 Release & repo integrity (SHOULD)**: PyPI publish now requires a green test job; new lock-freshness (`uv lock --check`) and locked-set dependency-advisory CI jobs; repo hygiene — 0.23.1 release strays committed for archive parity, Windows-reader attribution corrected, `.worktrees/` ignored
 - **P7 `hermes-vault doctor` (SHOULD)**: one read-only command for install/recovery health — binary/launcher/store integrity, salt/key pairing, audit-chain state with the named repair command, optional backup pairing, MCP wiring; human + `--json` (`doctor-v1`) output; exit 0/1/2; wraps P1 primitives without owning recovery logic
+- **P8 `hermes-vault run` (SHOULD)**: child-process env injection — `hermes-vault run [--agent] [--service ...] -- <cmd>` injects secrets only into the child's env for its lifetime (never argv/logs/audit); same broker path as `broker env`, so policy, leases, TTL, and expiry enforcement all apply; deny-by-default
 
 - **Integrity stat fix**: the Desktop plugin header now derives its Integrity stat from the `/integrity` endpoint instead of `overview.health.integrity_status` (which the bridge never emits) — v0.25.0 showed a false red ✗ Check on healthy vaults
 - **Windows plugin adapter fix (#77/#76)**: the Windows-safe reader mechanism (timeout-bounded `communicate()` fallback, `ComSpec`/`USERPROFILE` safe-env entries, CRLF pipe normalization) shipped with v0.25.0; #77 completes it with the `HOMEDRIVE`/`HOMEPATH` launcher keys (so `.cmd` canonical launchers can expand user-profile paths) plus regression tests covering all four Windows crashes
@@ -392,6 +393,7 @@ hermes-vault add openai --alias primary
 hermes-vault list
 hermes-vault verify openai
 hermes-vault broker env openai --agent dwight --ttl 900
+hermes-vault run --agent hermes --service openai -- python agent.py
 hermes-vault audit --agent dwight --since 7d
 hermes-vault status
 hermes-vault status --stale 7d

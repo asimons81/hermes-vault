@@ -2,6 +2,12 @@
 
 ## 0.26.0 -- Unreleased
 
+### P8 `hermes-vault run` — child-process env injection
+
+#### Added
+
+- **`hermes-vault run [--agent ID] [--service S ...] [--alias A] [--ttl N] -- <cmd>`**: inject vault-backed env variables ONLY into the child process environment for its lifetime — the exact contract CrewAI/LangChain/MCP `env:` blocks speak. Resolution follows the same broker path as `broker env` (`get_ephemeral_env` verbatim), so policy deny-by-default, TTL clamping, lease ownership + expiry enforcement (P2), OAuth freshness, and expiry-at-handoff all apply unchanged; operator authority bypass is a NON-goal. All-or-nothing across multiple `--service` flags: the first denial aborts before the child spawns, and a target-variable collision between services fails closed instead of silently overwriting. With no `--service`, injects every policy-`get_env`-allowed service that has a stored credential. `--agent` falls back to `HERMES_VAULT_MCP_DEFAULT_AGENT` (the MCP default-binding mechanism); undefined agents get the actionable P3 stderr hint (defined agents listed). Secrets never appear in argv, logs, or the audit record — a `run_env_inject` audit row records service and variable NAMES plus the command name and TTL (denials carry the broker reason), and each injected service writes its own `get_ephemeral_env` row through the broker. Key material (`HERMES_VAULT_PASSPHRASE`/`HERMES_VAULT_PASSPHRASE_<PROFILE>`) is always stripped from the child env. Shell exit conventions preserved: child's exit code propagates, 128+N for signals, 127/126 for not-found/not-executable, 1 for denials, 2 for usage errors. New `docs/run.md` operator guide.
+
 ### P7 `doctor` — guided install/recovery health
 
 #### Added
