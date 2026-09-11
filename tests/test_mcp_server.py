@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import threading
 import urllib.parse
 from datetime import timedelta
 from typing import Any
@@ -182,6 +184,22 @@ def test_read_all_advertised_uris_without_agent_query(vault_with_policy, tmp_pat
         data = _resource_json(result)
         assert data.get("version") != "vault-resource-error-v1", f"{uri} errored: {data.get('error')}"
         assert "encrypted_payload" not in json.dumps(data)
+
+
+def test_read_bare_uri_returns_typed_missing_passphrase(tmp_path, monkeypatch):
+    # Locked vault (no passphrase) must surface a typed MISSING_PASSPHRASE
+    # envelope — never a traceback — mirroring the desktop bridge's 423.
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    monkeypatch.delenv("HERMES_VAULT_PASSPHRASE", raising=False)
+    monkeypatch.setenv("HERMES_VAULT_MCP_ALLOWED_AGENTS", "test-agent")
+    monkeypatch.setenv("HERMES_VAULT_MCP_DEFAULT_AGENT", "test-agent")
+    (tmp_path / "master_key_salt.bin").write_bytes(os.urandom(16))
+    result = _run_async(read_resource("vault://services"))
+    data = _resource_json(result)
+    assert data["version"] == "vault-resource-error-v1"
+    assert data["error_code"] == "MISSING_PASSPHRASE"
+    assert data["locked"] is True
+    assert "Traceback" not in json.dumps(data)
 
 
 def test_read_bare_uri_unbound_default_agent_resolves_through_policy(vault_with_policy, tmp_path, monkeypatch):
@@ -1384,3 +1402,89 @@ def test_vault_lease_detail_resource_returns_detail(vault_with_policy, tmp_path)
     assert data["lease"]["id"] == lease.metadata["lease"]["id"]
 
 
+# ── v0.26.0 P4: lazy broker build + typed locked errors ────────────────────────
+
+
+def test_call_tool_returns_typed_missing_passphrase(tmp_path, monkeypatch):
+    # Locked vault: tool calls surface a typed MISSING_PASSPHRASE envelope
+    # (desktop-bridge 423 shape) instead of an unhandled traceback.
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    monkeypatch.delenv("HERMES_VAULT_PASSPHRASE", raising=False)
+    result = _run_async(call_tool("list_services", {"agent_id": "test-agent"}))
+    data = _json(result)
+    assert data["error_code"] == "MISSING_PASSPHRASE"
+    assert data["locked"] is True
+    assert "Traceback" not in json.dumps(data)
+
+
+def test_call_tool_returns_typed_vault_not_ready(tmp_path, monkeypatch):
+    # DB exists but salt file missing → typed VAULT_NOT_READY (locked).
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    monkeypatch.setenv("HERMES_VAULT_PASSPHRASE", "test-passphrase")
+    (tmp_path / "vault.db").write_bytes(b"not-a-real-db")
+    result = _run_async(call_tool("list_services", {"agent_id": "test-agent"}))
+    data = _json(result)
+    assert data["error_code"] == "VAULT_NOT_READY"
+    assert data["locked"] is True
+    assert "Traceback" not in json.dumps(data)
+
+
+def test_main_does_not_build_broker_at_startup(tmp_path, monkeypatch):
+    # Lazy broker build: main() must start the stdio loop without touching
+    # the vault, so capabilities-only sessions never require a decryptable
+    # vault (engineering #16).
+    import hermes_vault.mcp_server as mcp_mod
+
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    monkeypatch.delenv("HERMES_VAULT_PASSPHRASE", raising=False)
+    monkeypatch.setenv("HERMES_VAULT_MCP_ALLOWED_AGENTS", "test-agent")
+
+    calls = {"build": 0}
+
+    def _fail_build(*args, **kwargs):
+        calls["build"] += 1
+        raise AssertionError("broker build attempted during startup")
+
+    monkeypatch.setattr(mcp_mod, "_build_broker", _fail_build)
+
+    started = threading.Event()
+
+    class _FakeStream:
+        async def receive(self):
+            await asyncio.sleep(3600)
+            return None
+
+        async def send(self, message):
+            return None
+
+    @contextlib.asynccontextmanager
+    async def _fake_stdio():
+        started.set()
+        yield _FakeStream(), _FakeStream()
+
+    async def _fake_run(read, write, opts):
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(mcp_mod, "stdio_server", _fake_stdio)
+    monkeypatch.setattr(mcp_mod.server, "run", _fake_run)
+
+    asyncio.run(mcp_mod.main())
+    assert started.is_set()
+    assert calls["build"] == 0
+
+
+def test_capabilities_only_session_needs_no_vault(tmp_path, monkeypatch):
+    # list_tools / list_resources / list_resource_templates must answer
+    # with no decryptable vault present (no passphrase, no salt).
+    os.environ["HERMES_VAULT_HOME"] = str(tmp_path)
+    monkeypatch.delenv("HERMES_VAULT_PASSPHRASE", raising=False)
+
+    tools = _run_async(list_tools())
+    assert len(tools) > 0
+    templates = _run_async(list_resource_templates())
+    assert len(templates) > 0
+    # resources/list swallows broker failure and returns the static list.
+    resources = _run_async(list_resources())
+    uris = {str(resource.uri) for resource in resources}
+    assert "vault://status" in uris
+    assert "vault://services" in uris

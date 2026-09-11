@@ -48,7 +48,12 @@ from hermes_vault import __version__
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings
-from hermes_vault.crypto import resolve_passphrase
+from hermes_vault.crypto import (
+    CorruptKeyMaterialError,
+    MissingKeyMaterialError,
+    MissingPassphraseError,
+    resolve_passphrase,
+)
 from hermes_vault.health import run_health
 from hermes_vault.models import AccessLogRecord, AgentCapability, CredentialSecret, Decision, ServiceAction
 from hermes_vault.mutations import OPERATOR_AGENT_ID, VaultMutations
@@ -538,6 +543,21 @@ def _resource_error(uri: Any, error: str, agent_id: str | None = None) -> dict[s
         "resource": str(uri).split("?", 1)[0],
         "agent_id": agent_id,
         "error": error,
+    }
+
+
+def _locked_error(code: str, message: str) -> dict[str, Any]:
+    """Typed locked-vault error envelope mirroring the desktop bridge (423 shape).
+
+    ``MISSING_PASSPHRASE`` when no unlock material is available in this
+    process; ``VAULT_NOT_READY`` when key material is missing or corrupt.
+    Both carry ``locked: true`` so hosts can distinguish lock-state from
+    policy denials without parsing prose.
+    """
+    return {
+        "error_code": code,
+        "message": str(message),
+        "locked": True,
     }
 
 
@@ -1381,7 +1401,12 @@ async def read_resource(uri: Any) -> Any:
     except ValueError as exc:
         return [_json_resource(uri, _resource_error(uri, str(exc), agent_id=None))]
 
-    broker = _get_broker()
+    try:
+        broker = _get_broker()
+    except MissingPassphraseError as exc:
+        return [_json_resource(uri, {**_resource_error(uri, str(exc), agent_id=binding.effective_agent_id), **_locked_error("MISSING_PASSPHRASE", str(exc))})]
+    except (MissingKeyMaterialError, CorruptKeyMaterialError) as exc:
+        return [_json_resource(uri, {**_resource_error(uri, "Vault key material is unavailable", agent_id=binding.effective_agent_id), **_locked_error("VAULT_NOT_READY", str(exc))})]
     agent_id = binding.effective_agent_id or ""
 
     try:
@@ -1429,7 +1454,12 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     except ValueError as exc:
         return [TextContent(type="text", text=f"Error: {sanitize_oauth_error_detail(exc)}")]
 
-    broker = _get_broker()
+    try:
+        broker = _get_broker()
+    except MissingPassphraseError as exc:
+        return [TextContent(type="text", text=_json_text(_locked_error("MISSING_PASSPHRASE", str(exc))))]
+    except (MissingKeyMaterialError, CorruptKeyMaterialError) as exc:
+        return [TextContent(type="text", text=_json_text(_locked_error("VAULT_NOT_READY", str(exc))))]
 
     try:
         if name == "list_services":
@@ -2063,8 +2093,11 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         filename=str(log_path),
     )
-    global _broker
-    _broker = _get_broker()
+    # v0.26.0 P4: the broker is built lazily on the first vault-touching
+    # request. Capabilities-only sessions (initialize / tools/list /
+    # resources/list) must not require a decryptable vault, and a missing
+    # passphrase surfaces as a typed MISSING_PASSPHRASE envelope per call
+    # instead of killing the server at cold start with a raw traceback.
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,

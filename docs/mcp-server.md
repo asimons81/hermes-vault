@@ -87,6 +87,8 @@ vault://policy
 
 Resource responses use `application/json`. Authorization and binding denials are returned as JSON content with `version: "vault-resource-error-v1"` so clients can parse them consistently.
 
+Locked-vault errors are typed: when no passphrase is available in the server process, tool calls and resource reads return an envelope with `error_code: "MISSING_PASSPHRASE"` and `locked: true` (mirroring the desktop bridge's 423 MISSING_PASSPHRASE); missing or corrupt key material returns `error_code: "VAULT_NOT_READY"` with `locked: true`. Hosts can distinguish lock-state from policy denials without parsing prose, and the server never emits a raw traceback on stdio. Capabilities-only sessions (`initialize`, `tools/list`, `resources/list`) never touch the vault: the broker is built lazily on the first vault-touching request, so a locked or absent vault does not block capability discovery.
+
 ## Available MCP Tools
 
 Once registered, tools are prefixed as `mcp_hermes_vault_*`:

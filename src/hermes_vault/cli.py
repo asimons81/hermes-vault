@@ -3178,11 +3178,16 @@ def mcp_command(ctx: typer.Context) -> None:
       hermes-vault mcp
     """
     import asyncio
+    from hermes_vault.crypto import MissingPassphraseError
     from hermes_vault.mcp_server import main as mcp_main
     try:
         asyncio.run(mcp_main())
     except KeyboardInterrupt:
         pass
+    except MissingPassphraseError as exc:
+        # Clean typed cold-start error — never a raw traceback on stdio.
+        print(f"MISSING_PASSPHRASE (locked): {exc}", file=sys.stderr)
+        raise typer.Exit(code=1) from None
 
 
 @_typer_app.command()
