@@ -34,12 +34,18 @@ from hermes_vault.models import AccessLogRecord, CredentialStatus, Decision
 from hermes_vault.mutations import VaultMutations, OPERATOR_AGENT_ID
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.policy_packs import get_policy_pack, list_policy_packs, render_policy_pack_yaml, write_policy_pack
+from hermes_vault.recovery import ReceiptWriteError
 from hermes_vault.scanner import Scanner
 from hermes_vault.service_ids import normalize
 from hermes_vault.skillgen import SkillGenerator
 from hermes_vault.update import UpdateError, UpdatePlan, perform_update, resolve_update_plan
 from hermes_vault.verifier import Verifier
-from hermes_vault.vault import AmbiguousTargetError, RestoreCommittedCheckpointError, Vault
+from hermes_vault.vault import (
+    AmbiguousTargetError,
+    RestoreCommittedCheckpointError,
+    SaltMismatchError,
+    Vault,
+)
 
 # â”€â”€ Banner helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -1074,24 +1080,49 @@ def audit_verify(
 @_typer_app.command("audit-checkpoint")
 def audit_checkpoint(
     ctx: typer.Context,
-    action: str = typer.Argument("show", help="Checkpoint action: show, establish, advance, recover."),
-    reason: str | None = typer.Option(None, "--reason", help="Required reason for establish/advance/recover."),
+    action: str = typer.Argument("show", help="Checkpoint action: show, establish, advance, recover, repair."),
+    reason: str | None = typer.Option(None, "--reason", help="Required reason for establish/advance/recover/repair."),
     yes: bool = typer.Option(False, "--yes", help="Confirm checkpoint mutation without prompting."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With 'repair': read-only self-check (same as no flags)."),
+    no_safety_copy: bool = typer.Option(False, "--no-safety-copy", help="With 'repair --yes': skip the pre-repair vault.db safety copy."),
 ) -> None:
     """Inspect or manage the authenticated audit checkpoint.
 
     'show' is read-only. Other actions are operator-only and require --yes.
+
+    'repair' (P1) is the non-destructive recovery for a wedged audit chain:
+    with no flags (or --dry-run) it runs a READ-ONLY self-check that names
+    the exact failure, proves store decryptability, and prints the repair
+    verdict; with --yes AND --reason it quarantines the old integrity
+    tables (quarantine_<table>_<ts> + audit_quarantine_manifest + safety
+    copy), re-establishes a fresh checkpoint, and appends an audit_repair
+    event to the new chain. Tamper-evidence failures and key-material
+    mismatches are refused — repair never destroys evidence or covers up
+    a salt-migration brick.
 
     \b
     Examples:
       hermes-vault audit checkpoint show
       hermes-vault audit checkpoint advance --yes
       hermes-vault audit checkpoint recover --reason "System migration" --yes
+      hermes-vault audit-checkpoint repair
+      hermes-vault audit-checkpoint repair --yes --reason "incident 2026-09-10 wedge"
     """
     settings = get_settings()
     vault, _, _, _ = build_services(prompt=False)
     from hermes_vault.audit_integrity.service import AuditIntegrityService
     service = AuditIntegrityService(settings.db_path, vault.key)
+
+    if action == "repair":
+        _run_audit_checkpoint_repair(
+            vault=vault,
+            service=service,
+            yes=yes,
+            dry_run=dry_run,
+            reason=reason,
+            safety_copy=not no_safety_copy,
+        )
+        return  # _run_audit_checkpoint_repair always exits
 
     if action == "show":
         result = service.verify()
@@ -1114,8 +1145,122 @@ def audit_checkpoint(
         _print_verification_result(result, full=True)
         raise typer.Exit(code=0 if result.status.value == "healthy" else 2)
 
-    console.print(f"[red]Unknown checkpoint action: {action}. Use show, establish, advance, or recover.[/red]")
+    console.print(f"[red]Unknown checkpoint action: {action}. Use show, establish, advance, recover, or repair.[/red]")
     raise typer.Exit(code=1)
+
+
+def _run_audit_checkpoint_repair(
+    *,
+    vault: Vault,
+    service: "object",
+    yes: bool,
+    dry_run: bool,
+    reason: str | None,
+    safety_copy: bool,
+) -> None:
+    """P1: the audit-checkpoint repair self-check + executed repair (design §3)."""
+    from hermes_vault.audit_integrity.repair import (
+        RepairClass,
+        RepairRefusedError,
+        classify_repairability,
+        quarantine_row_counts,
+        run_repair,
+        store_decryptability,
+    )
+    from hermes_vault.audit_integrity.service import AuditIntegrityService
+    from hermes_vault.vault import _salt_fingerprint_or_none
+
+    assert isinstance(service, AuditIntegrityService)
+    import sqlite3 as _sqlite3
+
+    result = service.verify()
+
+    # ── Read-only self-check (default / --dry-run) ─────────────────────
+    if not yes:
+        _print_verification_result(result, full=True)
+        decrypt = store_decryptability(vault)
+        fp = _salt_fingerprint_or_none(vault.salt_path)
+        if decrypt.ok:
+            console.print(f"[green]{decrypt.summary_line(salt_fingerprint=fp)}[/green]")
+        else:
+            console.print(f"[red]{decrypt.summary_line(salt_fingerprint=fp)}[/red]")
+            from hermes_vault.vault import _salt_mismatch_message
+
+            console.print(
+                _salt_mismatch_message(
+                    decryptable_count=decrypt.decryptable_count,
+                    credential_count=decrypt.credential_count,
+                    salt_fingerprint=fp,
+                    subject="store",
+                )
+            )
+        repair_class = classify_repairability(result)
+        conn = _sqlite3.connect(vault.db_path)
+        try:
+            counts = quarantine_row_counts(conn)
+        finally:
+            conn.close()
+        if repair_class is RepairClass.healthy_noop:
+            console.print("[green]Repair verdict: healthy — nothing to do.[/green]")
+            raise typer.Exit(code=0)
+        if repair_class is RepairClass.repairable:
+            console.print(
+                "[yellow]Repair verdict: REPAIRABLE by 'hermes-vault audit-checkpoint repair "
+                f"--yes --reason \"<text>\"' (would quarantine {sum(counts.values())} row(s) across "
+                f"{sum(1 for c in counts.values() if c)} table(s)).[/yellow]"
+            )
+            raise typer.Exit(code=2)
+        guidance = {
+            RepairClass.refuse_tamper: (
+                "REFUSED (evidence of tampering) — repairing would destroy the record of "
+                "alteration. Inspect 'hermes-vault audit-export --with-integrity', preserve the "
+                "evidence, and restore from a verified backup."
+            ),
+            RepairClass.refuse_key_material: (
+                "REFUSED (key-material mismatch) — the audit chain is signed under different "
+                "key material than this vault's master key (the salt-migration signature). "
+                "Fix the key material; see the salt guidance above."
+            ),
+            RepairClass.refuse_unsupported: (
+                "REFUSED (unsupported/unreadable) — this is an upgrade-path or database-level "
+                "diagnosis, not a repair target."
+            ),
+        }
+        console.print(f"[red]Repair verdict: {guidance[repair_class]}[/red]")
+        raise typer.Exit(code=2)
+
+    # ── Executed repair (--yes --reason required) ──────────────────────
+    if dry_run:
+        # explicit alias for the self-check
+        _run_audit_checkpoint_repair(
+            vault=vault, service=service, yes=False, dry_run=True,
+            reason=reason, safety_copy=safety_copy,
+        )
+        return
+    if not reason or not reason.strip():
+        console.print("[red]audit-checkpoint repair --yes requires --reason \"<text>\" (forced provenance).[/red]")
+        raise typer.Exit(code=2)
+    try:
+        report = run_repair(service, vault, reason=reason.strip(), safety_copy=safety_copy, command="cli")
+    except RepairRefusedError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2)
+    except Exception as exc:
+        console.print(f"[red]Repair failed: {exc}[/red]")
+        raise typer.Exit(code=1)
+    if not report.executed:
+        console.print("[green]Already healthy — nothing to repair.[/green]")
+        raise typer.Exit(code=0)
+    console.print(f"[green]Audit chain repaired (quarantine {report.quarantine_id}).[/green]")
+    for table, count in report.quarantined_tables.items():
+        console.print(f"  quarantined {table}: {count} row(s) -> quarantine_{table}_{report.quarantine_id}")
+    if report.safety_copy_path:
+        console.print(f"  safety copy: {report.safety_copy_path}")
+    console.print(f"  prior failure: {report.prior_verify_reason}")
+    if report.deferred_events:
+        console.print(f"  deferred recovery events folded into audit_repair: {len(report.deferred_events)}")
+    console.print_json(data=report.as_dict())
+    raise typer.Exit(code=0)
 
 
 @_typer_app.command("audit-export")
@@ -2954,6 +3099,34 @@ def restore_vault(
                 metadata=report.as_dict(exclude_none=False),
             )
         )
+        # P1: the dry-run also leaves a recovery receipt (mode: dry-run).
+        try:
+            from hermes_vault.backup import (
+                destination_salt_fingerprint as _dsf,
+            )
+            from hermes_vault.recovery import RestoreReceipt, sha256_file, write_restore_receipt
+
+            receipt = RestoreReceipt(
+                mode="dry-run",
+                backup_path=str(input.resolve()) if input.exists() else str(input),
+                backup_sha256=sha256_file(input) if input.exists() else "",
+                backup_version=report.backup_version,
+                credential_count=report.credential_count,
+                decryptable_credential_count=report.decryptable_credential_count,
+                integrity_status=(report.integrity_status if report.integrity_available else None),
+                destination_salt_fingerprint=_dsf(vault.salt_path),
+                backup_key_fingerprint=None,
+                decision="proceed" if report.decryptable else "blocked",
+                blocked_reason=(None if report.decryptable else "partial_decrypt_failure"),
+                findings=list(report.findings),
+                outcome="dry-run-only",
+            )
+            receipt_path = write_restore_receipt(receipt, vault_home=vault.db_path.parent)
+            console.print(f"[dim]Recovery receipt: {receipt_path}[/dim]")
+        except ReceiptWriteError:
+            raise
+        except Exception as receipt_exc:  # pragma: no cover -- defensive
+            console.print(f"[yellow]Warning: recovery receipt could not be written: {receipt_exc}[/yellow]")
         # Align the preflight exit code with backup-verify (fail closed on
         # invalid v2 evidence): exit 0 only when decryptable AND any present
         # integrity evidence is healthy.
@@ -2973,6 +3146,104 @@ def restore_vault(
         console.print(f"[red]Failed to read backup file: {exc}[/red]")
         raise typer.Exit(code=1)
 
+    # ── P1 mandatory preflight: prove decryptability + fingerprints BEFORE
+    #    any mutation, and leave a recovery receipt. import_backup re-runs
+    #    the same proof as the library-layer guard (two layers, one helper).
+    from hermes_vault.backup import (
+        BLOCKED_EVIDENCE_INVALID,
+        BLOCKED_SALT_MISMATCH,
+        backup_key_fingerprint,
+        destination_salt_fingerprint,
+        prove_backup_decryptable,
+    )
+    from hermes_vault.recovery import RestoreReceipt, sha256_file, write_restore_receipt
+
+    proof = prove_backup_decryptable(backup, vault.key)
+    dst_fp = destination_salt_fingerprint(vault.salt_path)
+    src_fp = backup_key_fingerprint(backup)
+    integrity_status: str | None = None
+    if backup.get("version") == "hvbackup-v2":
+        from hermes_vault.audit_integrity.detached import verify_detached_evidence
+
+        ev_status, _ev_reason = verify_detached_evidence(
+            backup.get("audit_integrity") or {}, vault.key
+        )
+        integrity_status = str(ev_status)
+
+    blocked_reason: str | None = None
+    if not proof.ok:
+        blocked_reason = proof.blocked_reason or BLOCKED_SALT_MISMATCH
+    elif integrity_status is not None and integrity_status != "healthy":
+        blocked_reason = BLOCKED_EVIDENCE_INVALID
+
+    receipt = RestoreReceipt(
+        mode="preflight",
+        backup_path=str(input.resolve()) if input.exists() else str(input),
+        backup_sha256=sha256_file(input) if input.exists() else "",
+        backup_version=backup.get("version"),
+        credential_count=proof.credential_count,
+        decryptable_credential_count=proof.decryptable_count,
+        integrity_status=integrity_status,
+        destination_salt_fingerprint=dst_fp,
+        backup_key_fingerprint=src_fp,
+        decision="blocked" if blocked_reason else "proceed",
+        blocked_reason=blocked_reason,
+        findings=list(proof.findings) if not proof.ok else (
+            [f"backup key fingerprint {src_fp} does not match this vault's key material"]
+            if blocked_reason == BLOCKED_EVIDENCE_INVALID and src_fp
+            else []
+        ),
+        outcome="blocked" if blocked_reason else "preflight-passed",
+    )
+    # Fail-closed receipt rule: unwritable recovery dir blocks the restore.
+    try:
+        receipt_path = write_restore_receipt(receipt, vault_home=vault.db_path.parent)
+    except ReceiptWriteError as exc:
+        console.print(f"[red]Restore blocked (receipt): {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    if blocked_reason:
+        console.print(f"[red]Restore blocked (salt mismatch): decryptable {proof.decryptable_count}/{proof.credential_count}.[/red]")
+        if not proof.ok:
+            console.print(
+                _render_salt_mismatch(
+                    decryptable_count=proof.decryptable_count,
+                    credential_count=proof.credential_count,
+                    salt_fingerprint=dst_fp,
+                    subject="backup",
+                )
+            )
+        else:
+            console.print(
+                "[red]The backup's audit integrity evidence does not verify under this "
+                "vault's key material. Run 'hermes-vault backup-verify --input <path>' for "
+                "the full report.[/red]"
+            )
+        console.print(f"Full report: hermes-vault backup-verify --input {input}")
+        console.print(f"Receipt: {receipt_path}")
+        _record_preflight_audit_event(
+            vault,
+            decision="deny",
+            proof=proof,
+            dst_fp=dst_fp,
+            src_fp=src_fp,
+            receipt_path=receipt_path,
+            blocked_reason=blocked_reason,
+            input_path=input,
+        )
+        raise typer.Exit(code=1)
+
+    _record_preflight_audit_event(
+        vault,
+        decision="allow",
+        proof=proof,
+        dst_fp=dst_fp,
+        src_fp=src_fp,
+        receipt_path=receipt_path,
+        blocked_reason=None,
+        input_path=input,
+    )
+
     # E2 v2 gate. import_backup runs the E1 preflight (version + evidence
     # contract + lease linkage + broker identity) and the single-transaction
     # restore with the protected audit event through the shared seam. The gate
@@ -2991,6 +3262,8 @@ def restore_vault(
         # checkpoint publication failed. Never report this as a blocked /
         # rolled-back restore (issue #62B / F6). Exit non-zero so automation
         # notices the degraded audit state, with an accurate remediation hint.
+        receipt.outcome = "failed:checkpoint-publication"
+        write_restore_receipt(receipt, vault_home=vault.db_path.parent, path=receipt_path)
         console.print(f"[yellow]Restore committed, but the audit checkpoint could not be published: {exc}[/yellow]")
         console.print(
             "[yellow]The vault data was restored. Audit integrity will report checkpoint_stale until the "
@@ -2998,14 +3271,28 @@ def restore_vault(
             "'hermes-vault audit checkpoint advance --yes'.[/yellow]"
         )
         raise typer.Exit(code=1)
-    except (ValueError, AuditIntegrityError, sqlite3.Error) as exc:
+    except (SaltMismatchError, ValueError, AuditIntegrityError, sqlite3.Error) as exc:
         error_class = _restore_error_class(exc)
+        receipt.outcome = f"failed:{error_class}"
+        try:
+            write_restore_receipt(receipt, vault_home=vault.db_path.parent, path=receipt_path)
+        except ReceiptWriteError:
+            pass
         console.print(f"[red]Restore blocked ({error_class}): {exc}[/red]")
         raise typer.Exit(code=1)
     except Exception as exc:
+        error_class = _restore_error_class(exc)
+        receipt.outcome = f"failed:{error_class}"
+        try:
+            write_restore_receipt(receipt, vault_home=vault.db_path.parent, path=receipt_path)
+        except ReceiptWriteError:
+            pass
         console.print(f"[red]Restore failed: {exc}[/red]")
         raise typer.Exit(code=1)
+    receipt.outcome = "restored"
+    write_restore_receipt(receipt, vault_home=vault.db_path.parent, path=receipt_path)
     console.print(f"[green]Restored {len(imported)} credential(s) from {input}[/green]")
+    console.print(f"[dim]Recovery receipt: {receipt_path}[/dim]")
 
 
 def _count_active_leases(backup: dict) -> int:
@@ -3020,10 +3307,81 @@ def _count_active_leases(backup: dict) -> int:
     )
 
 
+def _render_salt_mismatch(
+    *,
+    decryptable_count: int,
+    credential_count: int,
+    salt_fingerprint: str | None,
+    subject: str = "backup",
+) -> str:
+    """Render the canonical P1 salt-migration block (design §4.2) for the CLI."""
+    from hermes_vault.vault import _salt_mismatch_message
+
+    return _salt_mismatch_message(
+        decryptable_count=decryptable_count,
+        credential_count=credential_count,
+        salt_fingerprint=salt_fingerprint,
+        subject=subject,
+    )
+
+
+def _record_preflight_audit_event(
+    vault: Vault,
+    *,
+    decision: str,
+    proof: object,
+    dst_fp: str | None,
+    src_fp: str | None,
+    receipt_path: Path,
+    blocked_reason: str | None,
+    input_path: Path,
+) -> None:
+    """Record the protected ``restore_preflight`` audit event (P1 §1.3).
+
+    Edge rule: when the audit chain itself is broken (the state we are
+    recovering from), an audit append raises AuditIntegrityError — the
+    event facts already live in the receipt and are folded into the
+    post-repair ``audit_repair`` event instead; nothing is silently lost.
+    """
+    counts = {
+        "credential_count": getattr(proof, "credential_count", 0),
+        "decryptable_credential_count": getattr(proof, "decryptable_count", 0),
+    }
+    try:
+        audit = AuditLogger(get_settings().db_path, master_key=vault.key)
+        audit.record(
+            AccessLogRecord(
+                agent_id=OPERATOR_AGENT_ID,
+                service="*",
+                action="restore_preflight",
+                decision=Decision.allow if decision == "allow" else Decision.deny,
+                reason=(
+                    f"restore preflight for {input_path}: "
+                    f"{'proceed' if decision == 'allow' else f'blocked ({blocked_reason})'}"
+                ),
+                metadata={
+                    "decision": decision,
+                    "blocked_reason": blocked_reason,
+                    **counts,
+                    "destination_salt_fingerprint": dst_fp,
+                    "backup_key_fingerprint": src_fp,
+                    "receipt_path": str(receipt_path),
+                },
+            )
+        )
+    except AuditIntegrityError:
+        # Chain unappendable (the incident state P1 repairs): the receipt and
+        # the repair manifest carry these facts; run_repair folds deferred
+        # events into the audit_repair event post-repair.
+        pass
+
+
 def _restore_error_class(exc: Exception) -> str:
     """Classify an E1 restore failure into a distinct operator-facing class."""
     if isinstance(exc, AuditIntegrityError):
         return "audit failure"
+    if isinstance(exc, SaltMismatchError):
+        return "salt mismatch"
     if isinstance(exc, sqlite3.Error):
         return "transaction failure"
     lowered = str(exc).lower()
