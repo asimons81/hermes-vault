@@ -2,6 +2,18 @@
 
 ## 0.26.0 -- Unreleased
 
+### P9 Interop on-ramp (answers #84/#85)
+
+#### Added
+
+- **`hermes-vault import bitwarden --file <bw-export.json>`**: import bridge for unencrypted `bw export --format json` files. Logins → credentials (username→alias with intra-import dedup, password→secret, TOTP seed preserved as a `totp:` line inside the secret, custom fields → encrypted secret metadata, item notes → plaintext notes, folders → service-name prefixes); secure notes → note credentials; card/identity/no-password items are counted and skipped with explicit reasons — nothing silently dropped. `--dry-run` previews the full plan without a passphrase or vault and never prints a secret; `--json` emits a clean machine payload (warnings go to stderr); apply goes through the audited `VaultMutations.add_credential` path with `imported_from=bitwarden` provenance, `imported`/`bitwarden` tags, and a summary `import_bitwarden` audit event. Collision policy `--on-collision skip|rename|fail` is resolved against the live vault before any write; encrypted exports are rejected with guidance; exit codes 2 (usage/parse) / 1 (collision-fail, cancel, denied) / 0. `import` is now a Typer group — the legacy `--from-env/--from-file/--from-csv` flat flags work unchanged.
+- **`docs/multi-client.md`**: single-host multi-client deployment guide — the supported topology (N clients, one OS user, one vault home), per-agent policy identities, MCP binding launchers, leases/concurrency semantics, backup/monitoring, the five "what NOT to do" patterns (no network-shared stores, no cross-OS-user homes, no concurrent key-material ops, no db-without-salt copies, no baked passphrases), and the explicit non-goals (server mode, multi-tenant RBAC, OIDC/SSO #85).
+- **`docs/bitwarden-comparison.md`**: verifiable, dated comparison table — every Bitwarden claim sourced to their public help center (verified 2026-09-11), every Hermes Vault claim cited to file paths at v0.26.0; sections for where each wins and where neither does; the import mapping rules; and the #85 SSO/OIDC answer (docs-first, build on repeated demand).
+
+#### Docs
+
+- README: Bitwarden import quickstart + links to both new guides; operator guide: Bitwarden import section.
+
 ### P7 `doctor` — guided install/recovery health
 
 #### Added

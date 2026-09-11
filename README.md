@@ -171,6 +171,8 @@ Helpful docs:
 - [Detailed architecture notes](docs/architecture.md)
 - [Operator guide](docs/operator-guide.md)
 - [MCP server guide](docs/mcp-server.md)
+- [Multi-client deployment (single host)](docs/multi-client.md)
+- [Bitwarden comparison & import](docs/bitwarden-comparison.md)
 - [Threat model](docs/threat-model.md)
 - [Credential lifecycle](docs/credential-lifecycle.md)
 
@@ -256,6 +258,19 @@ hermes-vault import --from-env .env --map DATABASE_URL=postgres:connection_url
 ```
 
 When `--redact-source` is used, only successfully imported env lines are commented out. Skipped lines remain unchanged and are counted in the summary. `--dry-run --redact-source` never changes the source file.
+
+### Importing from Bitwarden
+
+Migrating from Bitwarden or feeding agents from an existing human vault:
+
+```bash
+bw export --format json --output bw-export.json
+hermes-vault import bitwarden --file bw-export.json --dry-run
+hermes-vault import bitwarden --file bw-export.json --yes
+rm bw-export.json   # plaintext export — delete it after import
+```
+
+Logins, secure notes, custom fields, and TOTP seeds map onto vault credentials (see the [Bitwarden comparison](docs/bitwarden-comparison.md) for the mapping rules and an honest feature comparison). See also: [single-host multi-client deployment guide](docs/multi-client.md).
 
 ## Hermes Vault Console
 

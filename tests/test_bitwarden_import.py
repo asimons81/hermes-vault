@@ -15,7 +15,6 @@ import pytest
 from click.testing import CliRunner
 
 from hermes_vault.bitwarden import (
-    ApplyPlan,
     BitwardenExportError,
     BitwardenPlan,
     _custom_fields,
