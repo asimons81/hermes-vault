@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+from hermes_vault._envguard import sanitize_poisoned_sys_path
+
+# Scrub hermes-agent PYTHONPATH leakage from sys.path BEFORE any third-party
+# import (pydantic et al. crash with ModuleNotFoundError against the agent
+# venv's incompatible wheels). No-op in a clean environment; dev/editable
+# installs whose checkout path merely contains the marker are preserved
+# (see hermes_vault/_envguard.py).
+sanitize_poisoned_sys_path(__file__)
+
 import json
 import os
 import shutil
