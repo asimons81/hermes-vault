@@ -3,14 +3,13 @@
 **Prepared by**: Hermes (docs lane, kanban task t_7a1eb405)
 **Date**: 2026-09-11
 **Candidate**: `release/v0.26.0` at e382377 (all nine packs P1–P9 merged; version bumped to 0.26.0 by a70718d)
-**Version**: 0.26.0 (feature) — **PENDING Tony's confirmation**
+**Version**: 0.26.0 (feature) — CONFIRMED by Tony 2026-09-11
 **Line**: Trustworthy Under Failure — reliability/assurance release on the Vault Intelligence line (v0.25.x surfaces unchanged)
 
-## Decision: PENDING (gates: QA + Tony)
+## Decision: RELEASED (gates cleared 2026-09-11)
 
-Not released. Two gates stand between the candidate and GO:
-
-1. **Tony**: confirm version 0.26.0 (feature) and approve release.
+All gates cleared:
+1. **Tony**: confirmed version 0.26.0 (feature) and approved release ("GOGOGO", 2026-09-11).
 2. **QA**: independent acceptance — the orchestrator's post-merge suite
    re-run was in flight when this report was drafted; QA must PASS the
    candidate before tag.
