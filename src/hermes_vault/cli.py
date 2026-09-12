@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+from hermes_vault._envguard import sanitize_poisoned_sys_path
+
+# Scrub hermes-agent PYTHONPATH leakage from sys.path BEFORE any third-party
+# import (pydantic et al. crash with ModuleNotFoundError against the agent
+# venv's incompatible wheels). No-op in a clean environment; dev/editable
+# installs whose checkout path merely contains the marker are preserved
+# (see hermes_vault/_envguard.py).
+sanitize_poisoned_sys_path(__file__)
+
 import json
 import os
 import shutil
@@ -8,7 +17,7 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import click
 import typer
@@ -19,6 +28,14 @@ from rich.table import Table
 from hermes_vault import _platform
 from hermes_vault.audit import AuditLogger
 from hermes_vault.audit_integrity.service import AuditIntegrityError
+from hermes_vault.bitwarden import (
+    ApplyPlan,
+    BitwardenExportError,
+    BitwardenPlan,
+    load_bitwarden_export,
+    plan_bitwarden_import,
+    resolve_collisions,
+)
 from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings, reset_active_profile, set_active_profile
 from hermes_vault.crypto import MissingPassphraseError, resolve_passphrase
@@ -34,12 +51,18 @@ from hermes_vault.models import AccessLogRecord, CredentialStatus, Decision
 from hermes_vault.mutations import VaultMutations, OPERATOR_AGENT_ID
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.policy_packs import get_policy_pack, list_policy_packs, render_policy_pack_yaml, write_policy_pack
+from hermes_vault.recovery import ReceiptWriteError
 from hermes_vault.scanner import Scanner
 from hermes_vault.service_ids import normalize
 from hermes_vault.skillgen import SkillGenerator
 from hermes_vault.update import UpdateError, UpdatePlan, perform_update, resolve_update_plan
-from hermes_vault.verifier import Verifier
-from hermes_vault.vault import AmbiguousTargetError, RestoreCommittedCheckpointError, Vault
+from hermes_vault.verifier import UNSUPPORTED_VERIFIER_REASON, Verifier
+from hermes_vault.vault import (
+    AmbiguousTargetError,
+    RestoreCommittedCheckpointError,
+    SaltMismatchError,
+    Vault,
+)
 
 # â”€â”€ Banner helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -93,6 +116,7 @@ _typer_app.add_typer(recovery_app, name="recovery")
 incident_app = typer.Typer(help="Redacted incident bundle operations.")
 _typer_app.add_typer(incident_app, name="incident")
 console = Console()
+console_err = Console(stderr=True)
 
 
 @_typer_app.command("setup")
@@ -252,6 +276,19 @@ class HermesGroup(click.Group, typer.Typer):  # type: ignore[misc]
         return self._resolved_typer_group().get_command(ctx, cmd_name)
 
 
+# ── Version option ──────────────────────────────────────────────────────────
+
+
+def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
+    """Eager --version callback: print and exit 0 before any dispatch."""
+    if not value or ctx.resilient_parsing:
+        return
+    from hermes_vault import __version__
+
+    click.echo(f"hermes-vault {__version__}")
+    ctx.exit(0)
+
+
 _hermes_group = HermesGroup(
     params=[
         click.Option(
@@ -263,6 +300,14 @@ _hermes_group = HermesGroup(
             is_flag=True,
             is_eager=True,
             help="Suppress the vault splash banner.",
+        ),
+        click.Option(
+            ["--version"],
+            is_flag=True,
+            is_eager=True,
+            expose_value=False,
+            callback=_print_version,
+            help="Show the hermes-vault version and exit.",
         ),
     ],
     help="Hermes-native local-first credential vault, scanner, and broker.",
@@ -308,6 +353,51 @@ def _handle_mutation_error(result, success_msg: str | None = None) -> None:
         raise typer.Exit(code=1)
     if success_msg:
         console.print(success_msg)
+
+
+_AGENT_NOT_DEFINED_MARKER = "is not defined in policy"
+
+
+def _print_agent_policy_hint(agent: str, decision=None) -> None:
+    """Append an actionable hint to stderr after an agent_id-shaped failure.
+
+    ``--agent`` failures used to print only the bare denial JSON
+    ("agent 'x' is not defined in policy") with no way to discover valid
+    ids. This lists the agents defined in the active policy and surfaces the
+    default-binding mechanism. It goes to stderr so the JSON on stdout
+    stays parseable for scripts.
+
+    Fires when ``decision`` is a denied BrokerDecision whose reason names an
+    undefined agent. With ``decision=None`` (``broker list`` returns a bare
+    empty list, never a decision) it fires only when the agent is genuinely
+    absent from the policy — an empty listing for a defined agent has a
+    different cause and must not be mislabeled.
+    """
+    if decision is not None:
+        if decision.allowed or _AGENT_NOT_DEFINED_MARKER not in decision.reason:
+            return
+    defined: list[str] = []
+    policy_path = None
+    try:
+        settings = get_settings()
+        policy_path = settings.effective_policy_path
+        defined = sorted(PolicyEngine.from_yaml(policy_path).config.agents)
+    except Exception:
+        pass
+    if decision is None and agent in defined:
+        return
+    err = Console(stderr=True)
+    err.print(f"[yellow]agent '{agent}' is not defined in policy.[/yellow]")
+    if policy_path is not None:
+        err.print(f"[dim]Policy file: {policy_path}[/dim]")
+    if defined:
+        err.print(f"[dim]Defined agents: {', '.join(defined)}[/dim]")
+    else:
+        err.print("[dim]No agents defined in policy — add one under 'agents:'.[/dim]")
+    err.print(
+        "[dim]Add the agent under 'agents:' or pass an existing id via --agent; "
+        "MCP sessions bind via ?agent_id= or HERMES_VAULT_MCP_DEFAULT_AGENT.[/dim]"
+    )
 
 
 def _parse_tags(values: list[str] | None) -> list[str]:
@@ -431,7 +521,20 @@ def bootstrap(
         console.print(f"- {step}")
 
 
-@_typer_app.command("import")
+# ── `import` command group ─────────────────────────────────────────────
+#
+# `import` is a Typer group with `invoke_without_command=True` so both
+# syntaxes work:
+#   hermes-vault import --from-env .env           (legacy flat command)
+#   hermes-vault import bitwarden --file bw.json  (P9 interop on-ramp)
+#
+# The group callback re-declares every legacy option; when a subcommand is
+# invoked the callback returns immediately and the subcommand owns the run.
+import_app = typer.Typer(help="Import credentials from env files, JSON, CSV, or Bitwarden.", invoke_without_command=True)
+_typer_app.add_typer(import_app, name="import")
+
+
+@import_app.callback()
 def import_credentials(
     ctx: typer.Context,
     from_env: Path | None = typer.Option(None, "--from-env", help="Import from a .env file (KEY=value format)."),
@@ -450,6 +553,8 @@ def import_credentials(
 
     Service names are normalized to canonical IDs automatically.
 
+    To import from Bitwarden, use: hermes-vault import bitwarden --file <bw-export.json>
+
     \\b
     Examples:
       hermes-vault import --from-env ~/.hermes/.env --dry-run
@@ -458,6 +563,9 @@ def import_credentials(
       hermes-vault import --from-file secrets.json
       hermes-vault import --from-csv creds.csv --service-column provider --secret-column key
     """
+    if ctx.invoked_subcommand is not None:
+        return
+
     if not from_env and not from_file and not from_csv:
         console.print("[red]Provide --from-env, --from-file, or --from-csv[/red]")
         raise typer.Exit(code=1)
@@ -711,6 +819,223 @@ def import_credentials(
         console.print("[yellow]--redact-source only applies to --from-env files.[/yellow]")
     else:
         console.print("Review plaintext source removal separately.")
+
+
+@import_app.command("bitwarden")
+def import_bitwarden(
+    ctx: typer.Context,
+    file: Path = typer.Option(..., "--file", help="Path to an unencrypted `bw export --format json` file."),
+    collision: str = typer.Option(
+        "skip",
+        "--on-collision",
+        help="What to do when a service+alias pair already exists in the vault: skip (keep vault row), rename (import under a -bwN alias), or fail (abort before writing).",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview the import plan without touching the vault."),
+    yes: bool = typer.Option(False, "--yes", help="Apply the import without the confirmation prompt."),
+    json_output: bool = typer.Option(False, "--json", help="Emit a machine-readable import report."),
+) -> None:
+    """Import credentials from an unencrypted Bitwarden JSON export.
+
+    Reads a `bw export --format json` file (bw CLI or web vault "JSON (
+    plaintext)" export) and maps logins, secure notes, custom fields, and
+    TOTP seeds onto vault credentials. Secrets never appear in output.
+
+    \\b
+    Examples:
+      hermes-vault import bitwarden --file bw-export.json --dry-run
+      hermes-vault import bitwarden --file bw-export.json --yes
+      hermes-vault import bitwarden --file bw-export.json --on-collision rename --yes
+    """
+    del ctx  # unused; subcommand context is not needed
+
+    if collision not in ("skip", "rename", "fail"):
+        console.print(f"[red]Invalid --on-collision policy: {collision!r} (expected skip, rename, or fail)[/red]")
+        raise typer.Exit(code=2)
+
+    try:
+        data = load_bitwarden_export(file)
+    except BitwardenExportError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    except OSError as exc:
+        console.print(f"[red]Could not read {file}: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    plan = plan_bitwarden_import(data)
+
+    if dry_run:
+        # Warn on stderr so --json stdout stays a clean machine payload.
+        console_err.print(
+            f"[yellow]Warning:[/yellow] {file} is a PLAINTEXT Bitwarden export. "
+            "Delete it after import; never commit or sync it."
+        )
+        _print_bitwarden_preview(plan, json_output)
+        return
+
+    vault, _, _, mutations = build_services(prompt=True)
+
+    existing_pairs = {(r.service, r.alias) for r in vault.list_credentials()}
+    apply_plan = resolve_collisions(plan, existing_pairs, collision)
+
+    if collision == "fail" and apply_plan.collisions:
+        colliding = ", ".join(f"{c.service}:{c.alias}" for c in apply_plan.collisions[:10])
+        more = f" (and {len(apply_plan.collisions) - 10} more)" if len(apply_plan.collisions) > 10 else ""
+        console.print(
+            f"[red]Collision policy 'fail': {len(apply_plan.collisions)} credential(s) already exist: "
+            f"{colliding}{more}. Nothing was written.[/red]"
+        )
+        _audit_bitwarden_import(vault=vault, applied=0, skipped=len(apply_plan.collisions), policy=collision,
+                                source=str(file), outcome="failed-collision", json_output=json_output)
+        raise typer.Exit(code=1)
+
+    _print_bitwarden_preview(plan, json_output, apply_plan=apply_plan, policy=collision)
+
+    if not yes:
+        confirmed = typer.confirm(
+            f"Import {len(apply_plan.to_write)} credential(s) into the vault?"
+        )
+        if not confirmed:
+            console.print("[yellow]Import cancelled. Nothing was written.[/yellow]")
+            _audit_bitwarden_import(vault=vault, applied=0, skipped=0, policy=collision,
+                                    source=str(file), outcome="cancelled", json_output=json_output)
+            raise typer.Exit(code=1)
+
+    imported, denied = 0, 0
+    for cred in apply_plan.to_write:
+        result = mutations.add_credential(
+            agent_id=OPERATOR_AGENT_ID,
+            service=cred.service,
+            secret=cred.secret,
+            credential_type=cred.credential_type,
+            alias=cred.alias,
+            imported_from="bitwarden",
+            tags=["imported", "bitwarden"],
+            notes=cred.notes,
+            metadata=cred.metadata,
+        )
+        if not result.allowed:
+            denied += 1
+            console.print(f"[red]Denied importing {cred.describe()}: {result.reason}[/red]")
+            continue
+        imported += 1
+
+    renames = sum(1 for c in apply_plan.collisions if c.action == "rename")
+    skips = sum(1 for c in apply_plan.collisions if c.action == "skip")
+    if json_output:
+        console.print_json(data={
+            "outcome": "applied",
+            "applied": imported,
+            "renamed": renames,
+            "skipped_collisions": skips,
+            "skipped_items": len(plan.skipped),
+            "denied": denied,
+        })
+    else:
+        console.print(
+            f"[green]Imported {imported} credential(s) from Bitwarden[/green] "
+            f"({renames} renamed on collision, {skips} skipped on collision, {denied} denied)."
+        )
+        console.print(f"[yellow]Delete the plaintext export file now:[/yellow] {file}")
+
+    _audit_bitwarden_import(
+        vault=vault, applied=imported, skipped=skips + len(plan.skipped), policy=collision,
+        source=str(file), outcome="applied", json_output=json_output,
+        renames=renames, denied=denied,
+    )
+
+
+def _print_bitwarden_preview(
+    plan: BitwardenPlan,
+    json_output: bool,
+    apply_plan: ApplyPlan | None = None,
+    policy: str | None = None,
+) -> None:
+    """Print the dry-run/apply preview without ever printing a secret."""
+    if json_output:
+        payload: dict[str, Any] = {
+            "importable": plan.importable_count,
+            "skipped_items": len(plan.skipped),
+            "folders": plan.folders,
+            "items_seen": plan.items_seen,
+            "planned": [
+                {
+                    "service": c.service,
+                    "alias": c.alias,
+                    "credential_type": c.credential_type,
+                    "origin": c.origin,
+                }
+                for c in plan.planned
+            ],
+            "skips": [{"item": s.item_name, "reason": s.reason} for s in plan.skipped],
+        }
+        if apply_plan is not None:
+            payload["collisions"] = [
+                {"service": c.service, "alias": c.alias, "action": c.action} for c in apply_plan.collisions
+            ]
+        console.print_json(data=payload)
+        return
+
+    # Which planned credentials survive collision resolution, and under what
+    # final alias. resolve_collisions already mutated cred.alias for renames.
+    if apply_plan is not None:
+        skip_pairs = {(c.service, c.alias) for c in apply_plan.collisions if c.action == "skip"}
+    else:
+        skip_pairs = set()
+
+    table = Table(title="Bitwarden Import Preview")
+    table.add_column("Action")
+    table.add_column("Service")
+    table.add_column("Alias")
+    table.add_column("Type")
+    table.add_column("Origin")
+    for cred in plan.planned:
+        if (cred.service, cred.alias) in skip_pairs:
+            table.add_row("skip (exists)", cred.service, cred.alias, cred.credential_type, cred.origin or "-")
+        else:
+            table.add_row("import", cred.service, cred.alias, cred.credential_type, cred.origin or "-")
+    console.print(table)
+
+    if apply_plan is not None:
+        for c in apply_plan.collisions:
+            console.print(f"[yellow]Collision ({policy}):[/yellow] {c.service}:{c.alias} -> {c.action}")
+    for s in plan.skipped:
+        console.print(f"[yellow]Skipped[/yellow] '{s.item_name}': {s.reason}")
+    console.print(
+        f"[green]Plan:[/green] {len(apply_plan.to_write) if apply_plan is not None else plan.importable_count} "
+        f"to import, {len(plan.skipped)} skipped item(s), {plan.folders} folder(s) used as service prefixes."
+    )
+
+
+def _audit_bitwarden_import(
+    *,
+    vault: Vault | None,
+    applied: int,
+    skipped: int,
+    policy: str,
+    source: str,
+    outcome: str,
+    json_output: bool,
+    renames: int = 0,
+    denied: int = 0,
+) -> None:
+    """Record the summary ``import_bitwarden`` audit event (best-effort)."""
+    try:
+        settings = get_settings()
+        audit = AuditLogger(settings.db_path, master_key=getattr(vault, "key", None))
+        audit.record(AccessLogRecord(
+            agent_id=OPERATOR_AGENT_ID,
+            service="*",
+            action="import_bitwarden",
+            decision=Decision.allow if outcome == "applied" else Decision.deny,
+            reason=(
+                f"bitwarden import {outcome}: {applied} applied, {skipped} skipped, "
+                f"{renames} renamed, {denied} denied (collision policy={policy}, source={source})"
+            ),
+        ))
+    except Exception as exc:  # pragma: no cover - audit must not crash the import
+        console_err.print(f"[yellow]Warning: could not write audit event: {exc}[/yellow]")
+        if json_output:
+            pass  # stdout stays a clean payload; the warning went to stderr
 
 
 @_typer_app.command()
@@ -1074,24 +1399,49 @@ def audit_verify(
 @_typer_app.command("audit-checkpoint")
 def audit_checkpoint(
     ctx: typer.Context,
-    action: str = typer.Argument("show", help="Checkpoint action: show, establish, advance, recover."),
-    reason: str | None = typer.Option(None, "--reason", help="Required reason for establish/advance/recover."),
+    action: str = typer.Argument("show", help="Checkpoint action: show, establish, advance, recover, repair."),
+    reason: str | None = typer.Option(None, "--reason", help="Required reason for establish/advance/recover/repair."),
     yes: bool = typer.Option(False, "--yes", help="Confirm checkpoint mutation without prompting."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With 'repair': read-only self-check (same as no flags)."),
+    no_safety_copy: bool = typer.Option(False, "--no-safety-copy", help="With 'repair --yes': skip the pre-repair vault.db safety copy."),
 ) -> None:
     """Inspect or manage the authenticated audit checkpoint.
 
     'show' is read-only. Other actions are operator-only and require --yes.
+
+    'repair' (P1) is the non-destructive recovery for a wedged audit chain:
+    with no flags (or --dry-run) it runs a READ-ONLY self-check that names
+    the exact failure, proves store decryptability, and prints the repair
+    verdict; with --yes AND --reason it quarantines the old integrity
+    tables (quarantine_<table>_<ts> + audit_quarantine_manifest + safety
+    copy), re-establishes a fresh checkpoint, and appends an audit_repair
+    event to the new chain. Tamper-evidence failures and key-material
+    mismatches are refused — repair never destroys evidence or covers up
+    a salt-migration brick.
 
     \b
     Examples:
       hermes-vault audit checkpoint show
       hermes-vault audit checkpoint advance --yes
       hermes-vault audit checkpoint recover --reason "System migration" --yes
+      hermes-vault audit-checkpoint repair
+      hermes-vault audit-checkpoint repair --yes --reason "incident 2026-09-10 wedge"
     """
     settings = get_settings()
     vault, _, _, _ = build_services(prompt=False)
     from hermes_vault.audit_integrity.service import AuditIntegrityService
     service = AuditIntegrityService(settings.db_path, vault.key)
+
+    if action == "repair":
+        _run_audit_checkpoint_repair(
+            vault=vault,
+            service=service,
+            yes=yes,
+            dry_run=dry_run,
+            reason=reason,
+            safety_copy=not no_safety_copy,
+        )
+        return  # _run_audit_checkpoint_repair always exits
 
     if action == "show":
         result = service.verify()
@@ -1114,8 +1464,128 @@ def audit_checkpoint(
         _print_verification_result(result, full=True)
         raise typer.Exit(code=0 if result.status.value == "healthy" else 2)
 
-    console.print(f"[red]Unknown checkpoint action: {action}. Use show, establish, advance, or recover.[/red]")
+    console.print(f"[red]Unknown checkpoint action: {action}. Use show, establish, advance, recover, or repair.[/red]")
     raise typer.Exit(code=1)
+
+
+def _run_audit_checkpoint_repair(
+    *,
+    vault: Vault,
+    service: "object",
+    yes: bool,
+    dry_run: bool,
+    reason: str | None,
+    safety_copy: bool,
+) -> None:
+    """P1: the audit-checkpoint repair self-check + executed repair (design §3)."""
+    from hermes_vault.audit_integrity.repair import (
+        RepairClass,
+        RepairPostCommitError,
+        RepairRefusedError,
+        classify_repairability,
+        quarantine_row_counts,
+        run_repair,
+        store_decryptability,
+    )
+    from hermes_vault.audit_integrity.service import AuditIntegrityService
+    from hermes_vault.vault import _salt_fingerprint_or_none
+
+    assert isinstance(service, AuditIntegrityService)
+    import sqlite3 as _sqlite3
+
+    result = service.verify()
+
+    # ── Read-only self-check (default / --dry-run) ─────────────────────
+    if not yes:
+        _print_verification_result(result, full=True)
+        decrypt = store_decryptability(vault)
+        fp = _salt_fingerprint_or_none(vault.salt_path)
+        if decrypt.ok:
+            console.print(f"[green]{decrypt.summary_line(salt_fingerprint=fp)}[/green]")
+        else:
+            console.print(f"[red]{decrypt.summary_line(salt_fingerprint=fp)}[/red]")
+            from hermes_vault.vault import _salt_mismatch_message
+
+            console.print(
+                _salt_mismatch_message(
+                    decryptable_count=decrypt.decryptable_count,
+                    credential_count=decrypt.credential_count,
+                    salt_fingerprint=fp,
+                    subject="store",
+                )
+            )
+        repair_class = classify_repairability(result)
+        conn = _sqlite3.connect(vault.db_path)
+        try:
+            counts = quarantine_row_counts(conn)
+        finally:
+            conn.close()
+        if repair_class is RepairClass.healthy_noop:
+            console.print("[green]Repair verdict: healthy — nothing to do.[/green]")
+            raise typer.Exit(code=0)
+        if repair_class is RepairClass.repairable:
+            console.print(
+                "[yellow]Repair verdict: REPAIRABLE by 'hermes-vault audit-checkpoint repair "
+                f"--yes --reason \"<text>\"' (would quarantine {sum(counts.values())} row(s) across "
+                f"{sum(1 for c in counts.values() if c)} table(s)).[/yellow]"
+            )
+            raise typer.Exit(code=2)
+        guidance = {
+            RepairClass.refuse_tamper: (
+                "REFUSED (evidence of tampering) — repairing would destroy the record of "
+                "alteration. Inspect 'hermes-vault audit-export --with-integrity', preserve the "
+                "evidence, and restore from a verified backup."
+            ),
+            RepairClass.refuse_key_material: (
+                "REFUSED (key-material mismatch) — the audit chain is signed under different "
+                "key material than this vault's master key (the salt-migration signature). "
+                "Fix the key material; see the salt guidance above."
+            ),
+            RepairClass.refuse_unsupported: (
+                "REFUSED (unsupported/unreadable) — this is an upgrade-path or database-level "
+                "diagnosis, not a repair target."
+            ),
+        }
+        console.print(f"[red]Repair verdict: {guidance[repair_class]}[/red]")
+        raise typer.Exit(code=2)
+
+    # ── Executed repair (--yes --reason required) ──────────────────────
+    if dry_run:
+        # explicit alias for the self-check
+        _run_audit_checkpoint_repair(
+            vault=vault, service=service, yes=False, dry_run=True,
+            reason=reason, safety_copy=safety_copy,
+        )
+        return
+    if not reason or not reason.strip():
+        console.print("[red]audit-checkpoint repair --yes requires --reason \"<text>\" (forced provenance).[/red]")
+        raise typer.Exit(code=2)
+    try:
+        report = run_repair(service, vault, reason=reason.strip(), safety_copy=safety_copy, command="cli")
+    except RepairRefusedError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2)
+    except RepairPostCommitError as exc:
+        # The quarantine + purge committed; only a post-commit step failed.
+        # Distinct exit 3 per design §3.3 — never reported as refused/rolled-back.
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(code=3)
+    except Exception as exc:
+        console.print(f"[red]Repair failed: {exc}[/red]")
+        raise typer.Exit(code=1)
+    if not report.executed:
+        console.print("[green]Already healthy — nothing to repair.[/green]")
+        raise typer.Exit(code=0)
+    console.print(f"[green]Audit chain repaired (quarantine {report.quarantine_id}).[/green]")
+    for table, count in report.quarantined_tables.items():
+        console.print(f"  quarantined {table}: {count} row(s) -> quarantine_{table}_{report.quarantine_id}")
+    if report.safety_copy_path:
+        console.print(f"  safety copy: {report.safety_copy_path}")
+    console.print(f"  prior failure: {report.prior_verify_reason}")
+    if report.deferred_events:
+        console.print(f"  deferred recovery events folded into audit_repair: {len(report.deferred_events)}")
+    console.print_json(data=report.as_dict())
+    raise typer.Exit(code=0)
 
 
 @_typer_app.command("audit-export")
@@ -1574,6 +2044,21 @@ def verify(
         console.print("[red]--format must be 'table' or 'json'[/red]")
         raise typer.Exit(code=1)
 
+    def _verification_failure(result) -> bool:
+        """Truthful failure test for exit-code purposes.
+
+        - Not-found / decrypt-denied results (no verification_result payload)
+          are failures.
+        - A verification that ran and reported success=False is a failure
+          (invalid, network, rate-limit — the pipeline must not read "fine").
+        - The one exemption: an unsupported verifier (no provider-specific
+          verifier configured) is a configured no-op, not a failed check.
+        """
+        success, category, reason, _, _ = _verification_payload(result)
+        if category == "unknown" and reason == UNSUPPORTED_VERIFIER_REASON:
+            return False
+        return not success
+
     vault, _, broker, _ = build_services(prompt=True)
     targets: list[tuple[str, str | None]]
     if all:
@@ -1605,7 +2090,11 @@ def verify(
     output_results = [r.model_dump(mode="json") for r in results]
 
     if format == "json":
-        console.print_json(data=json.dumps(output_results))
+        # data= must receive the OBJECT, not a pre-encoded string — rich's
+        # print_json re-encodes strings, which double-encoded the payload
+        # (E#4: `verify x --format json` printed a JSON string containing
+        # JSON, a parse trap for the exact scripting audience this targets).
+        console.print_json(data=output_results)
     else:
         table = Table(title="Verification Results")
         table.add_column("SERVICE")
@@ -1639,6 +2128,14 @@ def verify(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(output_results, indent=2, sort_keys=True), encoding="utf-8")
         report_path.chmod(0o600)
+
+    # Truthful exit code: cron/agent pipelines branch on it. A denied /
+    # not-found / invalid verification must not exit 0 (E#3 live probe:
+    # `verify nonexistent-svc` printed allowed:false and exited 0). The one
+    # exemption is a service with no configured verifier — a no-op, not a
+    # failure. Mixed batches fail if any target failed.
+    if any(_verification_failure(r) for r in results):
+        raise typer.Exit(code=1)
 
 
 @_typer_app.command("export")
@@ -1910,6 +2407,119 @@ def health(
         raise typer.Exit(code=0)
     else:
         raise typer.Exit(code=1)
+
+
+@_typer_app.command("doctor")
+def doctor(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable findings (one JSON object) for agents."),
+    backup: Path | None = typer.Option(None, "--backup", help="Also prove this backup file decrypts under this vault's master key (P1 preflight primitive)."),
+    hermes_config: Path | None = typer.Option(None, "--hermes-config", help="Hermes config.yaml to inspect for MCP wiring (default ~/.hermes/config.yaml)."),
+    no_mcp_smoke: bool = typer.Option(False, "--no-mcp-smoke", help="Skip spawning the configured MCP server for the initialize handshake."),
+    smoke_timeout: float = typer.Option(10.0, "--smoke-timeout", help="Seconds to wait for the MCP initialize handshake."),
+) -> None:
+    """Guided install/recovery health check (P7).
+
+    One command for install and recovery health: binary integrity,
+    launcher/home layout, store integrity, salt/key pairing, audit chain
+    state, optional backup pairing, and MCP wiring. Read-only — doctor
+    never mutates the vault and never writes audit rows; every repair it
+    names is an existing P1 command (audit-checkpoint repair, the restore
+    preflight, the salt-migration guidance).
+
+    Exit codes:
+      0 = healthy
+      1 = degraded (warnings; safe to keep operating)
+      2 = broken (a check failed; follow the remediation before writing)
+
+    \\b
+    Examples:
+      hermes-vault doctor
+      hermes-vault doctor --json
+      hermes-vault doctor --backup ~/vault-backups/hermes-vault-20260910.json
+      hermes-vault doctor --no-mcp-smoke
+    """
+    from hermes_vault.doctor import run_doctor
+
+    if smoke_timeout <= 0:
+        console.print("[red]--smoke-timeout must be positive[/red]")
+        raise typer.Exit(code=2)
+
+    report = run_doctor(
+        hermes_config=hermes_config,
+        mcp_smoke=not no_mcp_smoke,
+        backup=backup,
+        smoke_timeout=smoke_timeout,
+    )
+
+    if json_output:
+        console.print_json(data=report.as_dict())
+    else:
+        from hermes_vault.doctor import render_doctor_report
+
+        render_doctor_report(console, report)
+
+    raise typer.Exit(code=report.exit_code)
+
+
+@_typer_app.command("run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def run_command(
+    ctx: typer.Context,
+    agent: str | None = typer.Option(None, "--agent", help="Agent ID the env is resolved for (defaults to HERMES_VAULT_MCP_DEFAULT_AGENT)."),
+    service: list[str] = typer.Option([], "--service", "-s", help="Service to inject (repeatable). Omit to inject every authorized service with a stored credential."),
+    alias: str | None = typer.Option(None, "--alias", help="Credential alias (requires exactly one --service)."),
+    ttl: int = typer.Option(900, "--ttl", help="Requested TTL in seconds for policy evaluation (clamped to the agent's max TTL)."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Print which variables (names only) were injected to stderr."),
+) -> None:
+    """Run a child process with vault-injected env (P8).
+
+    Secrets are injected ONLY into the child process environment for its
+    lifetime — never argv, never logs, never the audit record (audit rows
+    carry variable names only). Resolution follows the same broker path as
+    ``broker env`` (``get_ephemeral_env``), so policy, TTL ceilings, lease
+    ownership and expiry enforcement all apply. Deny-by-default; operator
+    authority bypass is a non-goal. All-or-nothing: any service denial
+    aborts before the child spawns.
+
+    Exit codes:
+      child's own exit code on success
+      1 = broker denial (or no authorized services to inject)
+      2 = usage error (no command, --alias without exactly one --service, no agent id)
+      126/127 = child not executable / not found
+
+    \b
+    Examples:
+      hermes-vault run --agent hermes -- python agent.py
+      hermes-vault run --agent hermes --service openai -- python agent.py
+      hermes-vault run --agent hermes --service openai --alias primary -- python agent.py
+      hermes-vault run --agent deploy-bot --service github --service openrouter -- npx some-tool
+    """
+    command = list(ctx.args or [])
+    agent_id = agent or os.environ.get("HERMES_VAULT_MCP_DEFAULT_AGENT") or ""
+    requested = [s for s in service if s] or None
+    if ttl <= 0:
+        console.print("[red]--ttl must be greater than zero[/red]")
+        raise typer.Exit(code=2)
+
+    from hermes_vault.runner import (
+        EXIT_DENIED,
+        EXIT_USAGE,
+        execute_run_and_report,
+    )
+
+    _, _, broker, _ = build_services(prompt=True)
+    code = execute_run_and_report(
+        broker,
+        command=command,
+        agent_id=agent_id,
+        requested_services=requested,
+        alias=alias,
+        ttl=ttl,
+        verbose=verbose,
+    )
+    if agent_id and code in (EXIT_DENIED, EXIT_USAGE):
+        _print_agent_policy_hint(agent_id)
+    raise typer.Exit(code=code)
 
 
 @_typer_app.command("maintain")
@@ -2377,10 +2987,10 @@ def broker_get(
     _, _, broker, _ = build_services(prompt=True)
     canonical = normalize(service)
     decision = broker.get_credential(service=canonical, purpose=purpose, agent_id=agent)
+    console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
-        console.print_json(data=decision.model_dump_json())
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
-    console.print_json(data=json.dumps(decision.model_dump(mode="json")))
 
 
 @broker_app.command("env")
@@ -2400,10 +3010,10 @@ def broker_env(
     _, _, broker, _ = build_services(prompt=True)
     canonical = normalize(service)
     decision = broker.get_ephemeral_env(service=canonical, agent_id=agent, ttl=ttl)
-    if not decision.allowed:
-        console.print_json(data=decision.model_dump(mode="json"))
-        raise typer.Exit(code=1)
     console.print_json(data=decision.model_dump(mode="json"))
+    if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
+        raise typer.Exit(code=1)
 
 
 @secret_source_app.command("fetch", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -2477,6 +3087,7 @@ def lease_issue(
     )
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2491,6 +3102,7 @@ def lease_list(
     decision = broker.list_leases(agent_id=agent, service=service, status=status)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2504,6 +3116,7 @@ def lease_show(
     decision = broker.show_lease(agent_id=agent, lease_id=lease_id)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2518,6 +3131,7 @@ def lease_renew(
     decision = broker.renew_lease(agent_id=agent, lease_id=lease_id, ttl_seconds=ttl)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2532,6 +3146,7 @@ def lease_revoke(
     decision = broker.revoke_lease(agent_id=agent, lease_id=lease_id, reason=reason)
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2555,6 +3170,7 @@ def lease_checkout(
     )
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2580,6 +3196,7 @@ def request_access(
     )
     console.print_json(data=decision.model_dump(mode="json"))
     if not decision.allowed:
+        _print_agent_policy_hint(agent, decision)
         raise typer.Exit(code=1)
 
 
@@ -2651,7 +3268,10 @@ def broker_list(
       hermes-vault broker list --agent hermes
     """
     _, _, broker, _ = build_services(prompt=True)
-    console.print_json(data=json.dumps(broker.list_available_credentials(agent)))
+    credentials = broker.list_available_credentials(agent)
+    console.print_json(data=credentials)
+    if not credentials:
+        _print_agent_policy_hint(agent, decision=None)
 
 
 
@@ -2731,6 +3351,101 @@ def rotate_master_key(
 
     console.print(f"[green]Master key rotated successfully.[/green] {result['re_encrypted']} credential(s) re-encrypted.")
     console.print("[yellow]Update HERMES_VAULT_PASSPHRASE to your new passphrase for future vault access.[/yellow]")
+
+
+@_typer_app.command("migrate-crypto")
+def migrate_crypto(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would migrate without re-encrypting anything."),
+    yes: bool = typer.Option(False, "--yes", help="Confirm the migration without prompting."),
+) -> None:
+    """Re-encrypt legacy aesgcm-v1 credential rows as AAD-bound aesgcm-v2.
+
+    Explicit and opt-in — nothing auto-migrates. All-or-nothing: every row
+    is verified to decrypt after re-encryption BEFORE the transaction
+    commits; any failure rolls back completely, leaving the vault fully
+    readable in its pre-migration state. Existing aesgcm-v2 rows are left
+    untouched (and re-verified); aesgcm-v1 rows stay readable forever
+    regardless — this command only hardens them.
+
+    Writes an audit event recording the outcome.
+
+    Example:
+      hermes-vault migrate-crypto --dry-run
+      hermes-vault migrate-crypto --yes
+    """
+    from hermes_vault.vault import CryptoMigrationError
+
+    settings = get_settings()
+    vault, _, _, _ = build_services(prompt=False)
+    audit = AuditLogger(settings.db_path, master_key=vault.key)
+
+    records = vault.list_credentials()
+    v1 = [r for r in records if r.crypto_version == "aesgcm-v1"]
+    v2 = [r for r in records if r.crypto_version == "aesgcm-v2"]
+    console.print("[bold]Crypto Migration (aesgcm-v1 → aesgcm-v2)[/bold]")
+    console.print(f"  Vault: {settings.db_path}")
+    console.print(f"  Credentials: {len(records)} ({len(v1)} aesgcm-v1, {len(v2)} aesgcm-v2)")
+
+    if dry_run:
+        would = len(v1)
+        console.print(
+            f"[yellow]Dry run:[/yellow] {would} credential(s) would be re-encrypted as aesgcm-v2; "
+            f"{len(v2)} already v2 and would be left untouched."
+        )
+        audit.record(AccessLogRecord(
+            agent_id="operator",
+            service="*",
+            action="migrate_crypto",
+            decision=Decision.allow,
+            reason=f"crypto migration dry-run: {would} row(s) eligible, {len(v2)} already v2",
+        ))
+        return
+
+    if not yes:
+        confirmed = typer.confirm(
+            f"Re-encrypt {len(v1)} credential(s) as AAD-bound aesgcm-v2? "
+            "All-or-nothing: any verification failure rolls back everything."
+        )
+        if not confirmed:
+            console.print("[yellow]Migration cancelled. Nothing was changed.[/yellow]")
+            audit.record(AccessLogRecord(
+                agent_id="operator",
+                service="*",
+                action="migrate_crypto",
+                decision=Decision.deny,
+                reason="operator declined confirmation; nothing changed",
+            ))
+            raise typer.Exit(code=1)
+
+    try:
+        result = vault.migrate_crypto()
+    except CryptoMigrationError as exc:
+        console.print(f"[red]Migration refused:[/red] {exc}")
+        console.print("[yellow]The vault is unchanged (all-or-nothing rollback state).[/yellow]")
+        audit.record(AccessLogRecord(
+            agent_id="operator",
+            service="*",
+            action="migrate_crypto",
+            decision=Decision.deny,
+            reason=f"migration refused and rolled back: {exc}",
+        ))
+        raise typer.Exit(code=2)
+
+    audit.record(AccessLogRecord(
+        agent_id="operator",
+        service="*",
+        action="migrate_crypto",
+        decision=Decision.allow,
+        reason=(
+            f"crypto migration v1->v2 complete: {result['migrated']} migrated, "
+            f"{result['already_v2']} already v2, {result['verified']} verified decryptable"
+        ),
+    ))
+    console.print(
+        f"[green]Migration complete.[/green] {result['migrated']} credential(s) re-encrypted as "
+        f"aesgcm-v2, {result['already_v2']} were already v2; all {result['verified']} verified decryptable."
+    )
 
 
 @_typer_app.command("generate-skill")
@@ -2820,10 +3535,11 @@ def backup_vault(
       hermes-vault backup --include-audit --output ~/vault-full.json
     """
     vault, _, _, _ = build_services(prompt=True)
+    # Audit into the vault's own DB (vault.db_path): the vault under backup is
+    # the authority on where its audit rows live, not a re-resolved setting.
+    audit = AuditLogger(vault.db_path, master_key=vault.key)
     backup = vault.export_backup(metadata_only=metadata_only)
     if include_audit:
-        settings = get_settings()
-        audit = AuditLogger(settings.db_path)
         entries = audit.list_recent(limit=5000)
         backup["audit_log"] = entries
     content = json.dumps(backup, indent=2, sort_keys=True)
@@ -2831,6 +3547,31 @@ def backup_vault(
     output.chmod(0o600)
     console.print(f"[green]Backup written to {output}[/green]")
     console.print(f"  {len(backup['credentials'])} credential(s) exported")
+
+    # Audit row feeds the health report's "Days since last backup" and the
+    # broker's backup reminder (both scan for these actions via
+    # AuditLogger.last_backup_at). Without it, every CLI backup was invisible
+    # to health forever. The audit append must never fail the backup itself
+    # (an integrity wedge would otherwise block the recovery tool) — degrade
+    # to a visible warning instead.
+    try:
+        audit.record(AccessLogRecord(
+            agent_id=OPERATOR_AGENT_ID,
+            service="*",
+            action="export_backup",
+            decision=Decision.allow,
+            reason=(
+                f"backup written to {output.name}, "
+                f"{len(backup['credentials'])} credential(s)"
+                + (", metadata-only" if metadata_only else "")
+            ),
+            metadata={"path": str(output), "metadata_only": metadata_only},
+        ))
+    except Exception as exc:
+        console.print(
+            f"[yellow]Warning: backup succeeded but the audit row could not be "
+            f"written ({exc}). Health's backup age will not reflect this run.[/yellow]"
+        )
 
 
 @recovery_app.command("drill")
@@ -2954,6 +3695,37 @@ def restore_vault(
                 metadata=report.as_dict(exclude_none=False),
             )
         )
+        # P1: the dry-run also leaves a recovery receipt (mode: dry-run).
+        try:
+            from hermes_vault.backup import (
+                destination_salt_fingerprint as _dsf,
+            )
+            from hermes_vault.recovery import RestoreReceipt, sha256_file, write_restore_receipt
+
+            receipt = RestoreReceipt(
+                mode="dry-run",
+                backup_path=str(input.resolve()) if input.exists() else str(input),
+                backup_sha256=sha256_file(input) if input.exists() else "",
+                backup_version=report.backup_version,
+                credential_count=report.credential_count,
+                decryptable_credential_count=report.decryptable_credential_count,
+                integrity_status=(report.integrity_status if report.integrity_available else None),
+                destination_salt_fingerprint=_dsf(vault.salt_path),
+                backup_key_fingerprint=None,
+                decision="proceed" if report.decryptable else "blocked",
+                blocked_reason=(None if report.decryptable else "partial_decrypt_failure"),
+                findings=list(report.findings),
+                outcome="dry-run-only",
+            )
+            receipt_path = write_restore_receipt(receipt, vault_home=vault.db_path.parent)
+            if format == "table":
+                # Keep --format json machine-parseable: the receipt path goes
+                # to stdout only in human mode (the file is always written).
+                console.print(f"[dim]Recovery receipt: {receipt_path}[/dim]")
+        except ReceiptWriteError:
+            raise
+        except Exception as receipt_exc:  # pragma: no cover -- defensive
+            console.print(f"[yellow]Warning: recovery receipt could not be written: {receipt_exc}[/yellow]")
         # Align the preflight exit code with backup-verify (fail closed on
         # invalid v2 evidence): exit 0 only when decryptable AND any present
         # integrity evidence is healthy.
@@ -2973,6 +3745,104 @@ def restore_vault(
         console.print(f"[red]Failed to read backup file: {exc}[/red]")
         raise typer.Exit(code=1)
 
+    # ── P1 mandatory preflight: prove decryptability + fingerprints BEFORE
+    #    any mutation, and leave a recovery receipt. import_backup re-runs
+    #    the same proof as the library-layer guard (two layers, one helper).
+    from hermes_vault.backup import (
+        BLOCKED_EVIDENCE_INVALID,
+        BLOCKED_SALT_MISMATCH,
+        backup_key_fingerprint,
+        destination_salt_fingerprint,
+        prove_backup_decryptable,
+    )
+    from hermes_vault.recovery import RestoreReceipt, sha256_file, write_restore_receipt
+
+    proof = prove_backup_decryptable(backup, vault.key)
+    dst_fp = destination_salt_fingerprint(vault.salt_path)
+    src_fp = backup_key_fingerprint(backup)
+    integrity_status: str | None = None
+    if backup.get("version") == "hvbackup-v2":
+        from hermes_vault.audit_integrity.detached import verify_detached_evidence
+
+        ev_status, _ev_reason = verify_detached_evidence(
+            backup.get("audit_integrity") or {}, vault.key
+        )
+        integrity_status = str(ev_status)
+
+    blocked_reason: str | None = None
+    if not proof.ok:
+        blocked_reason = proof.blocked_reason or BLOCKED_SALT_MISMATCH
+    elif integrity_status is not None and integrity_status != "healthy":
+        blocked_reason = BLOCKED_EVIDENCE_INVALID
+
+    receipt = RestoreReceipt(
+        mode="preflight",
+        backup_path=str(input.resolve()) if input.exists() else str(input),
+        backup_sha256=sha256_file(input) if input.exists() else "",
+        backup_version=backup.get("version"),
+        credential_count=proof.credential_count,
+        decryptable_credential_count=proof.decryptable_count,
+        integrity_status=integrity_status,
+        destination_salt_fingerprint=dst_fp,
+        backup_key_fingerprint=src_fp,
+        decision="blocked" if blocked_reason else "proceed",
+        blocked_reason=blocked_reason,
+        findings=list(proof.findings) if not proof.ok else (
+            [f"backup key fingerprint {src_fp} does not match this vault's key material"]
+            if blocked_reason == BLOCKED_EVIDENCE_INVALID and src_fp
+            else []
+        ),
+        outcome="blocked" if blocked_reason else "preflight-passed",
+    )
+    # Fail-closed receipt rule: unwritable recovery dir blocks the restore.
+    try:
+        receipt_path = write_restore_receipt(receipt, vault_home=vault.db_path.parent)
+    except ReceiptWriteError as exc:
+        console.print(f"[red]Restore blocked (receipt): {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    if blocked_reason:
+        console.print(f"[red]Restore blocked (salt mismatch): decryptable {proof.decryptable_count}/{proof.credential_count}.[/red]")
+        if not proof.ok:
+            console.print(
+                _render_salt_mismatch(
+                    decryptable_count=proof.decryptable_count,
+                    credential_count=proof.credential_count,
+                    salt_fingerprint=dst_fp,
+                    subject="backup",
+                )
+            )
+        else:
+            console.print(
+                "[red]The backup's audit integrity evidence does not verify under this "
+                "vault's key material. Run 'hermes-vault backup-verify --input <path>' for "
+                "the full report.[/red]"
+            )
+        console.print(f"Full report: hermes-vault backup-verify --input {input}")
+        console.print(f"Receipt: {receipt_path}")
+        _record_preflight_audit_event(
+            vault,
+            decision="deny",
+            proof=proof,
+            dst_fp=dst_fp,
+            src_fp=src_fp,
+            receipt_path=receipt_path,
+            blocked_reason=blocked_reason,
+            input_path=input,
+        )
+        raise typer.Exit(code=1)
+
+    _record_preflight_audit_event(
+        vault,
+        decision="allow",
+        proof=proof,
+        dst_fp=dst_fp,
+        src_fp=src_fp,
+        receipt_path=receipt_path,
+        blocked_reason=None,
+        input_path=input,
+    )
+
     # E2 v2 gate. import_backup runs the E1 preflight (version + evidence
     # contract + lease linkage + broker identity) and the single-transaction
     # restore with the protected audit event through the shared seam. The gate
@@ -2991,6 +3861,8 @@ def restore_vault(
         # checkpoint publication failed. Never report this as a blocked /
         # rolled-back restore (issue #62B / F6). Exit non-zero so automation
         # notices the degraded audit state, with an accurate remediation hint.
+        receipt.outcome = "failed:checkpoint-publication"
+        write_restore_receipt(receipt, vault_home=vault.db_path.parent, path=receipt_path)
         console.print(f"[yellow]Restore committed, but the audit checkpoint could not be published: {exc}[/yellow]")
         console.print(
             "[yellow]The vault data was restored. Audit integrity will report checkpoint_stale until the "
@@ -2998,14 +3870,28 @@ def restore_vault(
             "'hermes-vault audit checkpoint advance --yes'.[/yellow]"
         )
         raise typer.Exit(code=1)
-    except (ValueError, AuditIntegrityError, sqlite3.Error) as exc:
+    except (SaltMismatchError, ValueError, AuditIntegrityError, sqlite3.Error) as exc:
         error_class = _restore_error_class(exc)
+        receipt.outcome = f"failed:{error_class}"
+        try:
+            write_restore_receipt(receipt, vault_home=vault.db_path.parent, path=receipt_path)
+        except ReceiptWriteError:
+            pass
         console.print(f"[red]Restore blocked ({error_class}): {exc}[/red]")
         raise typer.Exit(code=1)
     except Exception as exc:
+        error_class = _restore_error_class(exc)
+        receipt.outcome = f"failed:{error_class}"
+        try:
+            write_restore_receipt(receipt, vault_home=vault.db_path.parent, path=receipt_path)
+        except ReceiptWriteError:
+            pass
         console.print(f"[red]Restore failed: {exc}[/red]")
         raise typer.Exit(code=1)
+    receipt.outcome = "restored"
+    write_restore_receipt(receipt, vault_home=vault.db_path.parent, path=receipt_path)
     console.print(f"[green]Restored {len(imported)} credential(s) from {input}[/green]")
+    console.print(f"[dim]Recovery receipt: {receipt_path}[/dim]")
 
 
 def _count_active_leases(backup: dict) -> int:
@@ -3020,10 +3906,81 @@ def _count_active_leases(backup: dict) -> int:
     )
 
 
+def _render_salt_mismatch(
+    *,
+    decryptable_count: int,
+    credential_count: int,
+    salt_fingerprint: str | None,
+    subject: str = "backup",
+) -> str:
+    """Render the canonical P1 salt-migration block (design §4.2) for the CLI."""
+    from hermes_vault.vault import _salt_mismatch_message
+
+    return _salt_mismatch_message(
+        decryptable_count=decryptable_count,
+        credential_count=credential_count,
+        salt_fingerprint=salt_fingerprint,
+        subject=subject,
+    )
+
+
+def _record_preflight_audit_event(
+    vault: Vault,
+    *,
+    decision: str,
+    proof: object,
+    dst_fp: str | None,
+    src_fp: str | None,
+    receipt_path: Path,
+    blocked_reason: str | None,
+    input_path: Path,
+) -> None:
+    """Record the protected ``restore_preflight`` audit event (P1 §1.3).
+
+    Edge rule: when the audit chain itself is broken (the state we are
+    recovering from), an audit append raises AuditIntegrityError — the
+    event facts already live in the receipt and are folded into the
+    post-repair ``audit_repair`` event instead; nothing is silently lost.
+    """
+    counts = {
+        "credential_count": getattr(proof, "credential_count", 0),
+        "decryptable_credential_count": getattr(proof, "decryptable_count", 0),
+    }
+    try:
+        audit = AuditLogger(get_settings().db_path, master_key=vault.key)
+        audit.record(
+            AccessLogRecord(
+                agent_id=OPERATOR_AGENT_ID,
+                service="*",
+                action="restore_preflight",
+                decision=Decision.allow if decision == "allow" else Decision.deny,
+                reason=(
+                    f"restore preflight for {input_path}: "
+                    f"{'proceed' if decision == 'allow' else f'blocked ({blocked_reason})'}"
+                ),
+                metadata={
+                    "decision": decision,
+                    "blocked_reason": blocked_reason,
+                    **counts,
+                    "destination_salt_fingerprint": dst_fp,
+                    "backup_key_fingerprint": src_fp,
+                    "receipt_path": str(receipt_path),
+                },
+            )
+        )
+    except AuditIntegrityError:
+        # Chain unappendable (the incident state P1 repairs): the receipt and
+        # the repair manifest carry these facts; run_repair folds deferred
+        # events into the audit_repair event post-repair.
+        pass
+
+
 def _restore_error_class(exc: Exception) -> str:
     """Classify an E1 restore failure into a distinct operator-facing class."""
     if isinstance(exc, AuditIntegrityError):
         return "audit failure"
+    if isinstance(exc, SaltMismatchError):
+        return "salt mismatch"
     if isinstance(exc, sqlite3.Error):
         return "transaction failure"
     lowered = str(exc).lower()
@@ -3178,11 +4135,16 @@ def mcp_command(ctx: typer.Context) -> None:
       hermes-vault mcp
     """
     import asyncio
+    from hermes_vault.crypto import MissingPassphraseError
     from hermes_vault.mcp_server import main as mcp_main
     try:
         asyncio.run(mcp_main())
     except KeyboardInterrupt:
         pass
+    except MissingPassphraseError as exc:
+        # Clean typed cold-start error — never a raw traceback on stdio.
+        print(f"MISSING_PASSPHRASE (locked): {exc}", file=sys.stderr)
+        raise typer.Exit(code=1) from None
 
 
 @_typer_app.command()
@@ -3518,7 +4480,14 @@ def oauth_normalize(
 def app() -> int:
     """Proxy that strips deprecated --banner, then delegates to _hermes_group."""
     argv = [arg for arg in sys.argv[1:] if arg != "--banner"]
-    if _targets_root_command(argv) and "--no-banner" not in argv and _should_show_banner():
+    root_only = _targets_root_command(argv)
+    # --version must print only the version line (no splash, no dispatch).
+    if root_only and "--version" in argv:
+        from hermes_vault import __version__
+
+        click.echo(f"hermes-vault {__version__}")
+        return 0
+    if root_only and "--no-banner" not in argv and _should_show_banner():
         _show_banner()
     return _hermes_group(args=argv, prog_name=Path(sys.argv[0]).name)
 

@@ -146,6 +146,28 @@ hermes-vault rotate-master-key
 - `policy doctor` catches drift, legacy grants, stale generated skills, and other lifecycle paper cuts.
 - `backup-verify` and `restore --dry-run` are the recovery proof path. Backup age is a clue, not evidence.
 - `rotate-master-key` is the deliberate rekey path, not a maintenance shortcut.
+- `migrate-crypto` is the deliberate crypto-envelope upgrade path (aesgcm-v1 → AAD-bound aesgcm-v2), also not a maintenance shortcut.
+
+### Crypto envelope versions (aesgcm-v1 / aesgcm-v2)
+
+Every credential row records its encryption envelope version. New writes use
+AAD-bound `aesgcm-v2` (the row's authorization metadata — id, service, alias,
+credential type, scopes — is authenticated with the ciphertext, so a relabeled
+row can never decrypt). Legacy `aesgcm-v1` rows remain readable forever; the
+vault dispatches decryption per row.
+
+`migrate-crypto` re-encrypts legacy rows as v2. It is opt-in and all-or-nothing:
+every row is verified to decrypt after re-encryption *before* the transaction
+commits, so a failure rolls back completely and the vault keeps working exactly
+as before. Nothing ever auto-migrates. Run `migrate-crypto --dry-run` first to
+see eligibility, then `--yes` (or answer the prompt). Outcomes — success,
+refusal, and dry-run — land in the audit log. Set `HERMES_VAULT_CRYPTO_VERSION=aesgcm-v1`
+to force new writes back to v1 (e.g. for an older consumer that re-exports rows).
+
+```bash
+hermes-vault migrate-crypto --dry-run
+hermes-vault migrate-crypto --yes
+```
 
 ## Recommended First Run
 
@@ -183,6 +205,19 @@ The lower-level importer remains available when you only want import behavior wi
 hermes-vault import --from-env ~/.hermes/.env --dry-run
 hermes-vault import --from-env ~/.hermes/.env --map CUSTOM_VENDOR_TOKEN=custom-vendor:personal_access_token
 ```
+
+### Bitwarden import
+
+Coming from Bitwarden, import an unencrypted JSON export directly (mapping rules and an honest comparison live in [bitwarden-comparison.md](bitwarden-comparison.md)):
+
+```bash
+bw export --format json --output bw-export.json
+hermes-vault import bitwarden --file bw-export.json --dry-run
+hermes-vault import bitwarden --file bw-export.json --yes   # audited; collision policy: --on-collision skip|rename|fail
+rm bw-export.json
+```
+
+Running several agents against one vault on one host? Read [multi-client.md](multi-client.md) first.
 
 ## From `.env` to a real agent workflow
 
@@ -226,6 +261,30 @@ What happens next is the important bit, and this is where the setup stops being 
 - broker calls hand out ephemeral env vars instead of raw secrets
 
 This is the concrete runtime path, not a vague `config.yml` hand wave.
+
+## Running a child process with vault env (P8)
+
+When a tool wants plain environment variables — CrewAI/LangChain `env:`
+blocks, an MCP stdio server, any one-shot CLI — `hermes-vault run` injects
+the vault-backed variables into that one child process for its lifetime
+only:
+
+```bash
+hermes-vault run --agent hermes --service openai -- python agent.py
+hermes-vault run --agent deploy-bot --service github --service openrouter -- npx some-tool
+hermes-vault run --service openai -- python agent.py   # agent from HERMES_VAULT_MCP_DEFAULT_AGENT
+```
+
+- Resolution follows the same broker path as `broker env`, so policy,
+  TTL ceilings, lease requirements, and expiry enforcement all apply;
+  denials abort before the child spawns (exit 1).
+- Secrets never appear in argv, logs, or the audit record (rows carry
+  variable names only), and vault passphrase variables are stripped from
+  the child environment.
+- The child's exit code is propagated (shell conventions: 128+N signal,
+  127 not-found, 126 not-executable).
+
+See `docs/run.md` for the full contract.
 
 ## Why this is better
 
@@ -355,6 +414,25 @@ agents:
     ephemeral_env_only: true
     raw_secret_access: false
 ```
+
+**Expired credentials are denied at env handoff.** If a credential has an
+expiry timestamp in the past, `broker env` refuses to materialize it — the
+expiry is enforced, not advisory. OAuth access tokens are still refreshed
+first when possible; only credentials that remain expired after any refresh
+are denied. To deliberately allow an expired credential for a service (e.g.
+a long-lived partner key whose provider never enforces the date), set
+`allow_expired_env: true` on that service entry:
+
+```yaml
+  coder:
+    services:
+      legacy-partner:
+        actions: [get_env]
+        allow_expired_env: true
+```
+
+A service-level `allow_expired_env` (either value) overrides the
+agent-level default of the same name; the default is `false` everywhere.
 
 Use the narrowest profile that still gets the job done. If an auditor can verify the thing, don't hand it mutation rights just because it's convenient. If the coder only needs `github` and `openai`, don't give it every other service in the vault.
 
@@ -577,6 +655,14 @@ Some actions aren't service-scoped. They are controlled by the
 | `scan_secrets` | `scan`, scan the filesystem for plaintext secrets |
 | `export_backup` | `backup`, export an encrypted backup of the vault |
 | `import_credentials` | `import`, add credentials from env files or JSON |
+| `manage_leases` | Cross-agent lease administration: view/renew/revoke leases issued to *other* agents, and list all leases without the ownership filter |
+
+**Note on `manage_leases`:** unlike other capabilities, it is never granted
+implicitly to legacy agents (an agent with no `capabilities` field gets all
+*other* capabilities for backward compatibility, but not this one). Lease
+ownership is the security default: an agent may only list, show, renew, or
+revoke leases issued to itself. Grant `manage_leases` only to operator or
+auditor agents that genuinely administer other agents' leases.
 
 **Backward compatibility:** If an agent has no `capabilities` field, all capabilities are implicitly granted for backward compatibility.
 

@@ -112,25 +112,12 @@ class HealthReport:
 
 
 def _query_last_backup(audit: AuditLogger) -> datetime | None:
-    """Return the timestamp of the most recent backup-related audit entry."""
-    entries = audit.list_recent(limit=500, action="export_backup")
-    for entry in entries:
-        ts_str = entry.get("timestamp")
-        if ts_str and isinstance(ts_str, str):
-            try:
-                return datetime.fromisoformat(ts_str)
-            except ValueError:
-                continue
-    # Also check for CLI-style backups (backup_vault action, if any exist)
-    entries = audit.list_recent(limit=500, action="backup")
-    for entry in entries:
-        ts_str = entry.get("timestamp")
-        if ts_str and isinstance(ts_str, str):
-            try:
-                return datetime.fromisoformat(ts_str)
-            except ValueError:
-                continue
-    return None
+    """Return the timestamp of the most recent backup-related audit entry.
+
+    Thin alias over the shared ``AuditLogger.last_backup_at`` scanner; kept as
+    a module-level function for existing callers/tests.
+    """
+    return audit.last_backup_at()
 
 
 def _cred_staleness(

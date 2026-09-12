@@ -1,19 +1,19 @@
 # v0.25.1 — Patch: Desktop plugin fixes + mcp 2.x support
 
 Patch release on the **Vault Intelligence** line's Desktop Mutation Surface
-(v0.25.0). It fixes the false ✗ Integrity stat in the Desktop plugin, makes the
-plugin adapter Windows-safe (#77, fixing #76), fixes master's stale `uv.lock`
-(silently broken for lock-based installs since #81), widens the MCP SDK
-constraint to mcp 2.x (#81), hardens two flaky tests (#82, #83), refreshes the
-README hero (#86), and lands the site's black/white/red Studio branding with
-the hero asset now tracked in git. No vault schema, backup-format, encryption,
-or policy changes; the read-only surface from v0.24.0 and the opt-in mutation
-surface from v0.25.0 are unchanged.
+(v0.25.0). It fixes the false ✗ Integrity stat in the Desktop plugin, completes
+the plugin adapter's Windows safety (#77, fixing #76), fixes master's stale
+`uv.lock` (silently broken for lock-based installs since #81), widens the MCP
+SDK constraint to mcp 2.x (#81), hardens two flaky tests (#82, #83), refreshes
+the README hero (#86), and lands the site's black/white/red Studio branding
+with the hero asset now tracked in git. No vault schema, backup-format,
+encryption, or policy changes; the read-only surface from v0.24.0 and the
+opt-in mutation surface from v0.25.0 are unchanged.
 
 ## Fixed
 
 - **False ✗ Integrity stat (Desktop plugin)**: the plugin header derived its Integrity stat from `overview.health.integrity_status`, which the bridge never emits — v0.25.0 rendered a false red ✗ Check on healthy vaults. The header now derives it from the `/integrity` endpoint, with fixtures mirroring the real bridge payload and an explicit regression assertion. Found during post-approval live verification of v0.25.0; content landed on master via #80 (squash of the fix-branch work) with the UTF-8 node-harness decode for Windows.
-- **Windows plugin adapter crashes (#77, fixes #76)**: `os.set_blocking` is absent on Windows and `selectors.select()` rejects anonymous pipe fds (WinError 10093) — the bounded child reader now routes Windows children to the timeout-bounded `communicate()` fallback; `_SAFE_ENV_KEYS` adds `ComSpec`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH` so `.cmd` canonical launchers spawn and expand user-profile paths; `_parse_response` normalizes CRLF before the strict single-line framing check (cmd.exe converts LF to CRLF on pipes) while embedded newlines and bare CR stay rejected. Regression tests cover all four Windows crashes.
+- **Windows plugin adapter crashes (#77, fixes #76)**: the Windows-safe reader mechanism — routing children to the timeout-bounded `communicate()` fallback instead of the POSIX-only `os.set_blocking`/`selectors.select()` path (`os.set_blocking` is absent on Windows and `selectors.select()` rejects anonymous pipe fds, WinError 10093), the `ComSpec`/`USERPROFILE` safe-env entries, and CRLF normalization before the strict single-line framing check — shipped with v0.25.0 (4d95bf3). #77's delta completes it: `_SAFE_ENV_KEYS` adds `HOMEDRIVE`/`HOMEPATH` so `.cmd` canonical launchers can expand user-profile paths, and regression tests cover all four Windows crashes (launcher keys, CRLF acceptance, embedded-newline/bare-CR rejection, no POSIX-only pipe primitives in the bridge path).
 - **Broken `uv.lock` inherited from master**: #81 widened pyproject's mcp constraint to `>=1.0.0,<3.0.0` but never regenerated `uv.lock`, whose `requires-dist` mirror still said `<2.0.0` while resolving mcp 1.27.0 — but post-#81 `mcp_server.py` registers handlers via the 2.x-only `add_request_handler` API, so **any lock-based install of master tip crashed at import** (`AttributeError`). CI stayed green only because ci.yml installs without the lock. This release regenerates the lock: mcp 2.2.0 (adds httpx2/httpcore2/mcp-types/truststore/opentelemetry-api; drops mcp-1.x-only httpx-sse/pydantic-settings/python-dotenv, none imported by hermes_vault). If you installed from master's lock since #81 (2026-09-04), reinstall from this release.
 
 ## Changed

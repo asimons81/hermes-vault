@@ -25,8 +25,8 @@ def test_release_version_surfaces_align() -> None:
     from hermes_vault.mcp_server import list_resources, list_tools, server
     import asyncio
 
-    assert pyproject["project"]["version"] == "0.25.1"
-    assert hermes_vault.__version__ == "0.25.1"
+    assert pyproject["project"]["version"] == "0.26.0"
+    assert hermes_vault.__version__ == "0.26.0"
     assert server.version == hermes_vault.__version__
     tool_names = {tool.name for tool in asyncio.run(list_tools())}
     assert {
@@ -53,11 +53,11 @@ def test_release_story_mentions_agent_control_plane() -> None:
     dashboard_html = (repo_root / "src" / "hermes_vault" / "dashboard_static" / "index.html").read_text(encoding="utf-8")
 
     assert "Vault Intelligence" in changelog
-    assert "What's New in 0.25.1" in readme
+    assert "What's New in 0.26.0" in readme
     assert "secret-source fetch" in operator_guide
     assert "Vault Intelligence" in readme
-    assert "v0.25.1" in site
-    assert "git@v0.25.1" in site
+    assert "v0.26.0" in site
+    assert "git@v0.26.0" in site
     assert "Command Center" in dashboard_html
 
     assert "policy-explain" in dashboard_html
@@ -203,6 +203,11 @@ def test_backup_round_trip_preserves_aliases(tmp_path: Path) -> None:
     vault_a.add_credential("github", "ghp_personal", "personal_access_token", alias="personal")
 
     backup = vault_a.export_backup()
+    # Destination shares the source key material (same salt): the P1 restore
+    # guard blocks foreign-key imports with SaltMismatchError.
+    import shutil
+
+    shutil.copy(tmp_path / "a_salt.bin", tmp_path / "b_salt.bin")
     vault_b = Vault(tmp_path / "b.db", tmp_path / "b_salt.bin", "test-pass")
     vault_b.import_backup(backup)
 

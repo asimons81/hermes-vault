@@ -50,5 +50,8 @@ incident-bundles/
 /specs/
 /surveys/
 
+# Pack-worker worktrees (kanban implementation board protocol)
+/.worktrees/
+
 # Local hardproof tool state (never a deliverable)
 .hardproof/

@@ -586,7 +586,12 @@ def test_dashboard_verify_all_keeps_unsupported_provider_as_result(tmp_path: Pat
     assert "internal-secret" not in json.dumps(payload)
 
 
-def test_dashboard_verify_all_handles_legacy_stored_service_alias(tmp_path: Path) -> None:
+def test_dashboard_verify_all_handles_legacy_stored_service_alias(tmp_path: Path, monkeypatch) -> None:
+    # The relabeled-service scenario this test simulates can only exist for
+    # legacy aesgcm-v1 rows: v2 rows are AAD-bound to their authorization
+    # metadata, so a relabeled v2 row fails authenticated decryption by
+    # design. Pin the write version so this stays a service-resolution test.
+    monkeypatch.setenv("HERMES_VAULT_CRYPTO_VERSION", "aesgcm-v1")
     ctx = _context(tmp_path)
     ctx.vault.add_credential("google", "gmail-secret", "app_password", alias="primary")
     import sqlite3

@@ -818,7 +818,11 @@ def test_broker_import_allowed_with_capability(tmp_path: Path) -> None:
     vault.add_credential("openai", "sk-test", "api_key")
     backup = vault.export_backup()
 
-    # Fresh vault for import target
+    # Fresh vault for import target, sharing the source key material (same
+    # salt): the P1 restore guard blocks foreign-key imports.
+    import shutil
+
+    shutil.copy(tmp_path / "salt.bin", tmp_path / "salt2.bin")
     vault2 = Vault(tmp_path / "vault2.db", tmp_path / "salt2.bin", "test-passphrase")
     policy = PolicyEngine(
         PolicyConfig(
@@ -842,6 +846,11 @@ def test_broker_import_allowed_legacy_agent(tmp_path: Path) -> None:
     vault.add_credential("openai", "sk-test", "api_key")
     backup = vault.export_backup()
 
+    # Destination shares the source key material (same salt): the P1 restore
+    # guard blocks foreign-key imports.
+    import shutil
+
+    shutil.copy(tmp_path / "salt.bin", tmp_path / "salt2.bin")
     vault2 = Vault(tmp_path / "vault2.db", tmp_path / "salt2.bin", "test-passphrase")
     policy = PolicyEngine(
         PolicyConfig(
@@ -873,6 +882,11 @@ def test_broker_import_protected_event_attributes_real_agent(tmp_path: Path) -> 
     vault.add_credential("openai", "sk-test", "api_key")
     backup = vault.export_backup()
 
+    # Destination shares the source key material (same salt): the P1 restore
+    # guard blocks foreign-key imports.
+    import shutil
+
+    shutil.copy(tmp_path / "salt.bin", tmp_path / "salt2.bin")
     vault2 = Vault(tmp_path / "vault2.db", tmp_path / "salt2.bin", "test-passphrase")
     policy = PolicyEngine(
         PolicyConfig(

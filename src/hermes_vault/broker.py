@@ -31,7 +31,7 @@ from hermes_vault.oauth.oauth_refresh import (
 )
 from hermes_vault.policy import PolicyEngine
 from hermes_vault.service_ids import get_env_var_map, normalize
-from hermes_vault.verifier import Verifier
+from hermes_vault.verifier import UNSUPPORTED_VERIFIER_REASON, Verifier
 from hermes_vault.vault import AmbiguousTargetError, Vault
 
 OAUTH_REFRESH_MARGIN_SECONDS = 300  # 5 minutes
@@ -41,7 +41,7 @@ OAUTH_REFRESH_COOLDOWN_SECONDS = 30  # seconds between refresh attempts
 def _verification_is_unsupported(result: VerificationResult) -> bool:
     return (
         result.category is VerificationCategory.unknown
-        and result.reason == "No provider-specific verifier is configured for this service."
+        and result.reason == UNSUPPORTED_VERIFIER_REASON
     )
 
 
@@ -196,6 +196,32 @@ class Broker:
                 )
             if not secret:
                 return self._deny(agent_id, canonical, "get_ephemeral_env", "credential not found after OAuth refresh", ttl_seconds=effective_ttl)
+        # ── F-03: expiry enforced at final materialization ────────────────
+        # Whatever happened above (plain credential, warning-only near-expiry,
+        # or a successful OAuth refresh), the record is now final. A credential
+        # whose expiry <= now must never be materialized into env unless the
+        # operator explicitly set allow_expired_env in policy.
+        if record.expiry is not None:
+            expiry = (
+                record.expiry.replace(tzinfo=timezone.utc)
+                if record.expiry.tzinfo is None
+                else record.expiry
+            )
+            if expiry <= datetime.now(timezone.utc) and not self.policy.allow_expired_env(agent_id, canonical):
+                return self._deny(
+                    agent_id,
+                    canonical,
+                    "get_ephemeral_env",
+                    f"credential expired at {expiry.isoformat()} — env handoff denied; "
+                    "rotate the credential or set allow_expired_env in policy",
+                    ttl_seconds=effective_ttl,
+                    metadata={
+                        "credential_id": record.id,
+                        "alias": record.alias,
+                        "expired_at": expiry.isoformat(),
+                        "allow_expired_env": False,
+                    },
+                )
         env_template = get_env_var_map(canonical)
         env = {key: value.format(secret=secret.secret) for key, value in env_template.items()}
         warnings = self._governance_warnings(canonical, alias)
@@ -392,27 +418,7 @@ class Broker:
 
         # ── backup reminder ──────────────────────────────────────────
         backup_days = int(os.environ.get("HERMES_VAULT_BACKUP_REMINDER_DAYS", "30"))
-        entries = self.audit.list_recent(limit=500, action="export_backup")
-        last_backup: datetime | None = None
-        for entry in entries:
-            ts_str = entry.get("timestamp")
-            if ts_str and isinstance(ts_str, str):
-                try:
-                    last_backup = datetime.fromisoformat(ts_str)
-                    break
-                except ValueError:
-                    continue
-        if last_backup is None:
-            entries = self.audit.list_recent(limit=500, action="backup")
-            for entry in entries:
-                ts_str = entry.get("timestamp")
-                if ts_str and isinstance(ts_str, str):
-                    try:
-                        last_backup = datetime.fromisoformat(ts_str)
-                        break
-                    except ValueError:
-                        continue
-
+        last_backup = self.audit.last_backup_at()
         if last_backup is not None:
             days_since = (now - last_backup.replace(tzinfo=timezone.utc)).days
             if days_since > backup_days:
@@ -983,7 +989,15 @@ class Broker:
         service: str | None = None,
         status: str | LeaseStatus | None = None,
     ) -> BrokerDecision:
-        leases = self.vault.list_leases(service=service, status=status)
+        # F-01: lease ownership — non-operator callers only ever see their own
+        # leases. The agent_id filter is applied in the DB query itself (never
+        # a post-fetch filter); operators/auditors holding the explicit
+        # manage_leases capability escape the ownership filter and see all.
+        can_manage, manage_reason = self.policy.can_manage_leases(agent_id)
+        if not can_manage:
+            leases = self.vault.list_leases(agent_id=agent_id, service=service, status=status)
+        else:
+            leases = self.vault.list_leases(service=service, status=status)
         visible = []
         for lease in leases:
             allowed, policy_reason = self.policy.can(agent_id, lease.service, ServiceAction.list_leases)
@@ -1014,6 +1028,19 @@ class Broker:
         lease = self.vault.get_lease(lease_id)
         if lease is None:
             return self._deny(agent_id, "*", "show_lease", f"lease '{lease_id}' not found")
+        # F-01: lease ownership — non-operator callers may only view their own
+        # leases. Checked before the service-policy check so a cross-agent
+        # attempt fails on ownership grounds.
+        if lease.agent_id != agent_id:
+            can_manage, manage_reason = self.policy.can_manage_leases(agent_id)
+            if not can_manage:
+                return self._deny(
+                    agent_id,
+                    lease.service,
+                    "show_lease",
+                    manage_reason,
+                    metadata={"lease_id": lease.id, "owner_agent_id": lease.agent_id},
+                )
         allowed, policy_reason = self.policy.can(agent_id, lease.service, ServiceAction.show_lease)
         if not allowed:
             return self._deny(agent_id, lease.service, "show_lease", policy_reason)
@@ -1044,6 +1071,19 @@ class Broker:
         lease = self.vault.get_lease(lease_id)
         if lease is None:
             return self._deny(agent_id, "*", "renew_lease", f"lease '{lease_id}' not found", ttl_seconds=ttl_seconds)
+        # F-01: lease ownership — non-operator callers may only renew their own
+        # leases. Checked before the service-policy check and before any write.
+        if lease.agent_id != agent_id:
+            can_manage, manage_reason = self.policy.can_manage_leases(agent_id)
+            if not can_manage:
+                return self._deny(
+                    agent_id,
+                    lease.service,
+                    "renew_lease",
+                    manage_reason,
+                    ttl_seconds=ttl_seconds,
+                    metadata={"lease_id": lease.id, "owner_agent_id": lease.agent_id},
+                )
         allowed, policy_reason = self.policy.can(agent_id, lease.service, ServiceAction.renew_lease)
         if not allowed:
             return self._deny(agent_id, lease.service, "renew_lease", policy_reason, ttl_seconds=ttl_seconds)
@@ -1083,6 +1123,18 @@ class Broker:
         lease = self.vault.get_lease(lease_id)
         if lease is None:
             return self._deny(agent_id, "*", "revoke_lease", f"lease '{lease_id}' not found")
+        # F-01: lease ownership — non-operator callers may only revoke their own
+        # leases. Checked before the service-policy check and before any write.
+        if lease.agent_id != agent_id:
+            can_manage, manage_reason = self.policy.can_manage_leases(agent_id)
+            if not can_manage:
+                return self._deny(
+                    agent_id,
+                    lease.service,
+                    "revoke_lease",
+                    manage_reason,
+                    metadata={"lease_id": lease.id, "owner_agent_id": lease.agent_id},
+                )
         allowed, policy_reason = self.policy.can(agent_id, lease.service, ServiceAction.revoke_lease)
         if not allowed:
             return self._deny(agent_id, lease.service, "revoke_lease", policy_reason)

@@ -192,11 +192,51 @@ def _rewrite_secret(
 
 
 def _rename_alias(vault: Vault, credential_id: str, alias: str) -> None:
+    """Rename a credential alias, rebinding the v2 AAD when required.
+
+    aesgcm-v2 rows authenticate the alias as part of the canonical AAD, so
+    renaming without re-encrypting would brick the row (authenticated
+    decryption fails after the metadata change). The payload is decrypted
+    with the row's current (pre-rename) metadata and re-encrypted with the
+    new alias bound, then alias + payload update atomically. Legacy
+    aesgcm-v1 rows are not AAD-bound and keep the plain metadata UPDATE.
+    """
+    from hermes_vault.crypto import CRYPTO_VERSION
+
+    record = vault.get_credential(credential_id)
+    if record is None:
+        return
+    if record.crypto_version == CRYPTO_VERSION:
+        now = utc_now().isoformat()
+        with sqlite3.connect(vault.db_path) as conn:
+            conn.execute(
+                "UPDATE credentials SET alias = ?, updated_at = ? WHERE id = ?",
+                (alias, now, credential_id),
+            )
+            conn.commit()
+        return
+    secret = vault.get_secret(record.id)
+    if secret is None:
+        # Cannot rebind an undecryptable row; leave it untouched rather
+        # than renaming it into a guaranteed-bricked state.
+        return
+    encrypted = encrypt_secret_versioned(
+        CredentialSecret(secret=secret.secret, metadata=secret.metadata).model_dump_json(),
+        vault.key,
+        record.crypto_version,
+        credential_aad_metadata(
+            record.id,
+            record.service,
+            alias,
+            record.credential_type,
+            record.scopes,
+        ),
+    )
     now = utc_now().isoformat()
     with sqlite3.connect(vault.db_path) as conn:
         conn.execute(
-            "UPDATE credentials SET alias = ?, updated_at = ? WHERE id = ?",
-            (alias, now, credential_id),
+            "UPDATE credentials SET alias = ?, encrypted_payload = ?, updated_at = ? WHERE id = ?",
+            (alias, encrypted, now, credential_id),
         )
         conn.commit()
 

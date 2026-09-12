@@ -76,6 +76,32 @@ class AuditLogger:
             )
             conn.commit()
 
+    def last_backup_at(self) -> datetime | None:
+        """Return the timestamp of the most recent backup-related audit entry.
+
+        Single shared scanner for the health report's "Days since last backup"
+        and the broker's backup reminder — previously two duplicated
+        implementations (health.py ``_query_last_backup`` and the inline scan
+        in ``Broker.get_ephemeral_env``). Recognizes both the broker-gated
+        ``export_backup`` action and the CLI ``backup`` command's audit row,
+        returning whichever entry is genuinely most recent.
+        """
+        best: datetime | None = None
+        for action in ("export_backup", "backup"):
+            entries = self.list_recent(limit=500, action=action)
+            for entry in entries:
+                ts_str = entry.get("timestamp")
+                if not (ts_str and isinstance(ts_str, str)):
+                    continue
+                try:
+                    ts = datetime.fromisoformat(ts_str)
+                except ValueError:
+                    continue
+                if best is None or ts > best:
+                    best = ts
+                break  # entries are DESC — first parseable is newest for this action
+        return best
+
     def list_recent(self, limit: int = 100, agent_id: str | None = None, service: str | None = None, action: str | None = None, decision: str | None = None, since: datetime | None = None, until: datetime | None = None) -> list[dict[str, object]]:
         self.initialize()
         conditions: list[str] = []

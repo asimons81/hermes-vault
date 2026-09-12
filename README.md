@@ -4,14 +4,23 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.25.1 is the current release — a patch on the **Vault Intelligence** line's **Desktop Mutation Surface** (v0.25.0) that fixes the false ✗ Integrity stat in the Desktop plugin, makes the plugin adapter Windows-safe, widens the MCP SDK constraint to accept 2.x, hardens two flaky tests, refreshes the README hero, and lands the site's black/white/red Studio branding. The read-only surface from v0.24.0 and the mutation surface from v0.25.0 are unchanged. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
+v0.26.0 is the current release — the **Trustworthy Under Failure** line. It makes recovery non-destructive and honest: mandatory restore preflights that prove a backup decrypts before mutating anything, a non-destructive `audit-checkpoint repair` (quarantine, never DROP), a typed salt-mismatch guard that names the two recovery paths, `hermes-vault doctor` for one-command install/recovery health, lease ownership + expiry enforcement in the broker, a truthful CLI (`--version`, honest exit codes, PYTHONPATH self-guard), MCP correctness (advertised `vault://` resources readable in unbound mode, clean typed cold-start on locked vaults), crypto v2 as the write default with an opt-in `migrate-crypto`, `hermes-vault run` for child-process env injection through the same policy-gated broker path, and CI release integrity (publish gated on green tests, lock-freshness + dependency-audit jobs). The Vault Intelligence surfaces from v0.25.x are unchanged; existing v1 credential rows stay readable.
 
-## What's New in 0.25.1
+## What's New in 0.26.0
 
-v0.25.1 is a patch release fixing Desktop plugin defects and widening dependency compatibility.
+v0.26.0 is a feature release focused on being **trustworthy under failure**.
+
+- **P1 Safe recovery (MUST)**: mandatory restore preflight — every `restore --yes` proves every credential payload in the backup decrypts under the live master key before any mutation, and writes a `restore-receipt-v1` receipt; `audit-checkpoint repair` performs non-destructive quarantine repair of a wedged audit chain (no DROP, no VACUUM, safety copy, single transaction); typed `SaltMismatchError` with actionable guidance (hermes-vault never auto-rotates the salt); `recover` no longer rebuilds on key mismatch (F-06) and foreign-key restores fail closed
+- **P2 Authorization enforcement (MUST)**: lease ownership is enforced on list/show/renew/revoke (F-01) and expired credentials are denied at final env materialization (F-03); new `manage_leases` policy capability and `allow_expired_env` override
+- **P3 CLI truth (MUST)**: `--version` flag; truthful verify exit codes (verify failures no longer exit 0); single-encoded verify JSON; actionable agent_id errors; broker get/list JSON encoding fix; the CLI entrypoint scrubs hermes-agent PYTHONPATH leakage
+- **P4 MCP correctness (MUST)**: advertised `vault://` resources are readable in unbound mode (bare reads resolve to `HERMES_VAULT_MCP_DEFAULT_AGENT` or the operator's metadata-only default — never secrets); clean typed cold-start (`MISSING_PASSPHRASE` / `VAULT_NOT_READY` envelopes) instead of a 53-line traceback on locked vaults; lazy broker build so capability-only sessions never need a decryptable vault
+- **P5 Crypto v2 default (SHOULD)**: new credential writes produce AAD-bound `aesgcm-v2` envelopes by default; existing v1 rows stay readable; opt-in `hermes-vault migrate-crypto` re-encrypts v1→v2 in one all-or-nothing transaction with per-row post-verification; `HERMES_VAULT_CRYPTO_VERSION` downgrade override; fixed `oauth normalize` alias renames bricking v2 rows
+- **P6 Release & repo integrity (SHOULD)**: PyPI publish now requires a green test job; new lock-freshness (`uv lock --check`) and locked-set dependency-advisory CI jobs; repo hygiene — 0.23.1 release strays committed for archive parity, Windows-reader attribution corrected, `.worktrees/` ignored
+- **P7 `hermes-vault doctor` (SHOULD)**: one read-only command for install/recovery health — binary/launcher/store integrity, salt/key pairing, audit-chain state with the named repair command, optional backup pairing, MCP wiring; human + `--json` (`doctor-v1`) output; exit 0/1/2; wraps P1 primitives without owning recovery logic
+- **P8 `hermes-vault run` (SHOULD)**: child-process env injection — `hermes-vault run [--agent] [--service ...] -- <cmd>` injects secrets only into the child's env for its lifetime (never argv/logs/audit); same broker path as `broker env`, so policy, leases, TTL, and expiry enforcement all apply; deny-by-default
 
 - **Integrity stat fix**: the Desktop plugin header now derives its Integrity stat from the `/integrity` endpoint instead of `overview.health.integrity_status` (which the bridge never emits) — v0.25.0 showed a false red ✗ Check on healthy vaults
-- **Windows plugin adapter fix (#77/#76)**: the bounded child reader no longer assumes POSIX — Windows children route to a timeout-bounded `communicate()` fallback, `.cmd` canonical launchers get `ComSpec`/`USERPROFILE`/`HOMEDRIVE`/`HOMEPATH` in the safe env, and CRLF pipe output is normalized before strict line framing
+- **Windows plugin adapter fix (#77/#76)**: the Windows-safe reader mechanism (timeout-bounded `communicate()` fallback, `ComSpec`/`USERPROFILE` safe-env entries, CRLF pipe normalization) shipped with v0.25.0; #77 completes it with the `HOMEDRIVE`/`HOMEPATH` launcher keys (so `.cmd` canonical launchers can expand user-profile paths) plus regression tests covering all four Windows crashes
 - **MCP SDK floor raised to 2.x (#81 follow-up)**: `mcp>=2.0.0,<3.0.0` (runtime + dev deps) — `mcp_server.py` registers handlers via the mcp 2.x low-level `add_request_handler` API; mcp 1.x lacks that API and is excluded by the floor
 - **Test hardening (#82/#83)**: the concurrent OAuth refresh test no longer trips barrier timeouts and the audit-integrity TOCTOU test no longer races Windows file locks
 - **README hero (#86)**: architecture diagram replaces the promo image
@@ -101,10 +110,10 @@ Hermes Vault runs natively on Windows -- no WSL required.
 
 ```powershell
 # Install with uv (recommended)
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.25.1
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.26.0
 
 # Or with pipx
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.25.1
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.26.0
 
 # Or with pip (editable dev install)
 python -m venv .venv
@@ -163,6 +172,8 @@ Helpful docs:
 - [Detailed architecture notes](docs/architecture.md)
 - [Operator guide](docs/operator-guide.md)
 - [MCP server guide](docs/mcp-server.md)
+- [Multi-client deployment (single host)](docs/multi-client.md)
+- [Bitwarden comparison & import](docs/bitwarden-comparison.md)
 - [Threat model](docs/threat-model.md)
 - [Credential lifecycle](docs/credential-lifecycle.md)
 
@@ -249,9 +260,22 @@ hermes-vault import --from-env .env --map DATABASE_URL=postgres:connection_url
 
 When `--redact-source` is used, only successfully imported env lines are commented out. Skipped lines remain unchanged and are counted in the summary. `--dry-run --redact-source` never changes the source file.
 
+### Importing from Bitwarden
+
+Migrating from Bitwarden or feeding agents from an existing human vault:
+
+```bash
+bw export --format json --output bw-export.json
+hermes-vault import bitwarden --file bw-export.json --dry-run
+hermes-vault import bitwarden --file bw-export.json --yes
+rm bw-export.json   # plaintext export — delete it after import
+```
+
+Logins, secure notes, custom fields, and TOTP seeds map onto vault credentials (see the [Bitwarden comparison](docs/bitwarden-comparison.md) for the mapping rules and an honest feature comparison). See also: [single-host multi-client deployment guide](docs/multi-client.md).
+
 ## Hermes Vault Console
 
-Hermes Vault Console, introduced in v0.8.0 and expanded through v0.25.1, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
+Hermes Vault Console, introduced in v0.8.0 and expanded through v0.26.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
 
 Launch it from the same machine that owns the vault:
 
@@ -308,6 +332,8 @@ Configure your MCP host (Claude Desktop, Cursor, etc.) to run:
 ```
 
 If the MCP server is started without an allowed-agent binding, every tool call still requires a caller-supplied `agent_id`. When the server is launched with both `HERMES_VAULT_MCP_ALLOWED_AGENTS` and `HERMES_VAULT_MCP_DEFAULT_AGENT`, the host may omit `agent_id` and the server uses the configured default agent within that allowed set.
+
+Since v0.26.0, bare MCP resource reads (the exact URIs the server advertises, with no `?agent_id=` query — what generic hosts send after `resources/list`) also succeed in unbound mode: they resolve to `HERMES_VAULT_MCP_DEFAULT_AGENT` when set, otherwise to the operator's metadata-only view (`binding_mode: "operator_default"`). Payloads remain metadata-only and audit-logged; tool calls stay agent-scoped. A locked vault no longer crashes the server at startup: capabilities answer immediately, and vault-touching calls return a typed `MISSING_PASSPHRASE` / `VAULT_NOT_READY` envelope with `locked: true` instead of a traceback.
 
 Example bound launch:
 
@@ -382,6 +408,7 @@ hermes-vault add openai --alias primary
 hermes-vault list
 hermes-vault verify openai
 hermes-vault broker env openai --agent dwight --ttl 900
+hermes-vault run --agent hermes --service openai -- python agent.py
 hermes-vault audit --agent dwight --since 7d
 hermes-vault status
 hermes-vault status --stale 7d
@@ -393,6 +420,9 @@ hermes-vault verify --all --report ~/.hermes/hermes-vault-data/reports/verify-la
 hermes-vault health
 hermes-vault health --format json
 hermes-vault health --verify-live --service openai
+hermes-vault doctor
+hermes-vault doctor --json
+hermes-vault doctor --backup ~/vault-backups/hermes-vault-latest.json
 hermes-vault maintain --dry-run
 hermes-vault maintain
 hermes-vault maintain --print-schedule
@@ -405,6 +435,8 @@ hermes-vault sync-skill --check
 hermes-vault backup --metadata-only --output ~/meta-backup.json
 hermes-vault diff --against ~/meta-backup.json
 hermes-vault rotate-master-key
+hermes-vault migrate-crypto --dry-run
+hermes-vault migrate-crypto --yes
 hermes-vault oauth login google --alias work
 hermes-vault oauth login google --alias work --headless
 hermes-vault oauth doctor google

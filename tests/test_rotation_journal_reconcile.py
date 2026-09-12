@@ -322,7 +322,10 @@ def test_reconcile_never_invokes_destructive_rebuild(tmp_path: Path, monkeypatch
     def _boom(*args: object, **kwargs: object) -> None:
         raise AssertionError("destructive rebuild must not be invoked")
 
-    monkeypatch.setattr(service, "_rebuild_integrity_for_key_mismatch", _boom)
+    # P1 deleted _rebuild_integrity_for_key_mismatch outright (F-06); the
+    # assertion is now structural — patch only when the method still exists.
+    if hasattr(service, "_rebuild_integrity_for_key_mismatch"):
+        monkeypatch.setattr(service, "_rebuild_integrity_for_key_mismatch", _boom)
     monkeypatch.setattr(service, "recover_checkpoint", _boom)
 
     result = service.recover_pending_rotation(journal, old_master_key=vault.key)

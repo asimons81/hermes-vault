@@ -582,10 +582,13 @@ def test_backup_preserves_expiry(tmp_path: Path) -> None:
     assert len(backup["credentials"]) == 1
     assert backup["credentials"][0]["expiry"] is not None
 
-    # Create a second vault and import
+    # Import into a second vault sharing the source key material (same salt):
+    # the P1 restore guard blocks foreign-key imports with SaltMismatchError.
+    import shutil
+
     db_path2 = tmp_path / "vault2.db"
-    salt_path2 = tmp_path / "salt2.bin"
-    vault2 = Vault(db_path2, salt_path2, "test")
+    shutil.copy(tmp_path / "salt.bin", tmp_path / "salt2.bin")
+    vault2 = Vault(db_path2, tmp_path / "salt2.bin", "test")
     imported = vault2.import_backup(backup)
     assert len(imported) == 1
     assert imported[0].expiry is not None

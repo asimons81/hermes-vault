@@ -21,12 +21,15 @@ NONCE_SIZE = 12
 SALT_SIZE = 16
 PBKDF2_ITERATIONS = 390_000
 
-# Write-side cutover point for Issue #60. New credential writes use this
-# version label. Keeping it at ``CRYPTO_VERSION`` (aesgcm-v1) means every
-# decrypt path is versioned and v1-compatible before any v2 ciphertext is
-# produced by default. Flip to ``CRYPTO_VERSION_V2`` (or set the
-# HERMES_VAULT_CRYPTO_VERSION env var) to begin writing AAD-bound v2 rows.
-WRITE_CRYPTO_VERSION = CRYPTO_VERSION
+# Write-side cutover point for Issue #60 (flipped in v0.26.0). New
+# credential writes use AAD-bound aesgcm-v2 envelopes; existing aesgcm-v1
+# rows remain readable forever (decrypt dispatches per-row on the stored
+# crypto_version label). Set the HERMES_VAULT_CRYPTO_VERSION env var to
+# ``aesgcm-v1`` to downgrade new writes (e.g. a fleet that must keep
+# producing v1 rows for an older consumer). Re-encrypting existing rows
+# is opt-in via the explicit ``migrate-crypto`` command — nothing
+# auto-migrates.
+WRITE_CRYPTO_VERSION = CRYPTO_VERSION_V2
 
 # Canonical AAD domain/kind/version marker. Bound into every v2 AAD so the
 # same metadata bytes cannot be replayed as AAD for a different product,
@@ -121,6 +124,35 @@ def load_or_create_salt(path: Path, create_if_missing: bool = False) -> bytes:
     return salt
 
 
+# P1: the configured vault database filename used by the sibling-db probe.
+# Kept in one place so a future config change stays consistent.
+SIBLING_DB_FILENAME = "vault.db"
+DEFAULT_SALT_FILENAME = "master_key_salt.bin"
+
+
+def _refuse_salt_creation_over_database(salt_path: Path) -> None:
+    """P1 guard: refuse salt creation when a vault database sits beside the missing salt.
+
+    A fresh salt over an existing database silently bricks the vault (the
+    payloads no longer decrypt). ``Vault._prepare_storage`` is the primary
+    check; this belt-and-braces probe covers callers that bypass ``Vault``.
+    It fires only for the fleet-default salt filename next to the
+    default-named database — a custom-named salt legitimately coexists with
+    other vaults in one directory (``Vault._prepare_storage`` still guards
+    each instance's own db/salt pairing).
+    """
+    if salt_path.name != DEFAULT_SALT_FILENAME:
+        return
+    sibling_db = salt_path.with_name(SIBLING_DB_FILENAME)
+    if sibling_db.exists():
+        raise MissingKeyMaterialError(
+            f"Vault database exists at {sibling_db} but the salt file {salt_path} is missing. "
+            "The vault is NOT re-initialized and no new salt was written. Restore the original "
+            "master_key_salt.bin that pairs with this database (check *.bak-* safety copies) "
+            "or, if the vault is genuinely new/empty, move the database file aside first."
+        )
+
+
 def load_or_create_master_key(
     salt_path: Path,
     passphrase: str,
@@ -166,7 +198,15 @@ def load_or_create_master_key(
         return derive_key(passphrase, salt)
 
     if not enable_dpapi:
-        # Legacy create path -- unchanged from load_or_create_salt.
+        # Legacy create path -- unchanged from load_or_create_salt, except
+        # for the P1 sibling-db probe below: when a vault database exists
+        # next to the missing salt path, salt creation is refused. Creating
+        # a fresh salt over a populated database silently bricks the vault
+        # (every payload fails to decrypt under the new key); the operator
+        # must restore the original salt instead. Vault._prepare_storage is
+        # the primary guard; this belt-and-braces check covers callers that
+        # bypass Vault.
+        _refuse_salt_creation_over_database(salt_path)
         return derive_key(passphrase, load_or_create_salt(salt_path, create_if_missing=True))
 
     # DPAPI create path. When the caller explicitly opted in
@@ -182,6 +222,8 @@ def load_or_create_master_key(
             "DPAPI is enabled but not available. Install pywin32 on Windows "
             "or pass enable_dpapi=False to fall back to the legacy path."
         )
+    # P1 sibling-db probe (same rule as the legacy create path above).
+    _refuse_salt_creation_over_database(salt_path)
     # Derive a key from a freshly-generated salt, then wrap the key
     # bytes with DPAPI. The salt embedded inside the envelope is
     # ephemeral; only the wrapped 32-byte key is persisted. This
