@@ -495,6 +495,7 @@ def test_run_command_not_found_is_127(tmp_path: Path) -> None:
     assert code == EXIT_NOT_FOUND
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX exec semantics: Windows launch raises WinError 193 instead of EACCES/126")
 def test_run_command_not_executable_is_126(tmp_path: Path) -> None:
     vault, broker, _ = _make_services(
         tmp_path, {"hermes": _agent(["openai"])}, [("openai", "default", "sk-x")]

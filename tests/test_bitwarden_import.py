@@ -8,6 +8,7 @@ CliRunner against isolated vault homes. Fixture secrets are fake test values
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -508,5 +509,10 @@ class TestLegacyImportCompat:
         runner = CliRunner()
         result = runner.invoke(_hermes_group, ["import", "--help"])
         assert result.exit_code == 0
-        assert "bitwarden" in result.output
-        assert "--from-env" in result.output
+        # Strip ANSI SGR sequences before asserting: CI runners set FORCE_COLOR
+        # (and GITHUB_ACTIONS, which rich treats as color-forcing), so option
+        # names render with embedded SGR spans (--from-e\x1b[0m\x1b[1;36m-env)
+        # and the contiguous "--from-env" never appears in the raw output.
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert "bitwarden" in plain
+        assert "--from-env" in plain

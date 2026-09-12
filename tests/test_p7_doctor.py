@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import subprocess
 from pathlib import Path
 
@@ -210,6 +211,7 @@ def test_corrupt_salt_shape_is_broken(tmp_path: Path, monkeypatch: pytest.Monkey
     assert report.verdict == "broken"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits: Windows has no world-readable bit to trigger the warn path")
 def test_world_readable_key_material_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = make_vault_home(tmp_path)
     os.chmod(home / "vault.db", 0o644)

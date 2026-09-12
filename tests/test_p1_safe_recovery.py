@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import shutil
 import sqlite3
 from pathlib import Path
@@ -499,6 +500,7 @@ def test_t9_happy_path_receipt_and_audit_events(tmp_path: Path) -> None:
     assert "restore" in actions
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX dir write bits: chmod 0o500 cannot make a dir unwritable on Windows")
 def test_t10_unwritable_receipt_dir_blocks_restore(tmp_path: Path) -> None:
     """T10: fail-closed receipt rule — unwritable recovery dir blocks restore."""
     _set_cli_env(tmp_path)
@@ -679,6 +681,7 @@ def test_t16_post_commit_failure_exits_three_at_cli(tmp_path: Path, monkeypatch)
     assert service.verify().status == AuditIntegrityStatus.healthy
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX dir write bits: chmod 0o500 cannot make a dir unwritable on Windows")
 def test_receipt_write_fail_closed(tmp_path: Path) -> None:
     """The receipt writer itself raises ReceiptWriteError on an unwritable dir."""
     home = tmp_path / "home"
