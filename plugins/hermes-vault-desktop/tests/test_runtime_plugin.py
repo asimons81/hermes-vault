@@ -10,7 +10,7 @@ ROOT = Path(__file__).parents[3]
 PLUGIN = ROOT / "plugins" / "hermes-vault-desktop" / "desktop" / "plugin.js"
 
 
-SDK_STUB = r'''
+SDK_STUB = r"""
 const values = {
   overview: { profile: 'default', credential_count: 1, lease_count: 0, active_lease_count: 0, services: ['demo'], recent_audit: [], health: { health_score: 100, healthy: true } },
   credentials: { credential_count: 1, credentials: [{ id: 'cred-1', service: 'demo', alias: 'metadata', status: 'unknown', credential_type: 'api_key' }] },
@@ -64,22 +64,22 @@ export const useMutation = () => [{}, () => {}]
 export const useQuery = ({ queryKey }) => ({ data: values[queryKey[1]], error: null, isError: false, isFetching: false, isLoading: false, refetch: async () => ({ error: null, isError: false }) })
 export const useQueryClient = () => ({ invalidateQueries() {} })
 export const useValue = () => 'default'
-'''
+"""
 
-JSX_STUB = r'''
+JSX_STUB = r"""
 export const jsx = (type, props) => typeof type === 'function' ? type(props || {}) : ({ type, props })
 export const jsxs = (type, props) => typeof type === 'function' ? type(props || {}) : ({ type, props })
-'''
+"""
 
-REACT_STUB = r'''
+REACT_STUB = r"""
 export const useEffect = () => {}
 export const useState = initial => [initial, () => {}]
 export const useCallback = fn => fn
 export const useMemo = fn => fn()
 export const useRef = initial => ({ current: initial })
-'''
+"""
 
-LOADER = r'''
+LOADER = r"""
 import { pathToFileURL } from 'node:url'
 const sdk = pathToFileURL(process.env.SDK_STUB).href
 const jsx = pathToFileURL(process.env.JSX_STUB).href
@@ -90,9 +90,9 @@ export async function resolve(specifier, context, nextResolve) {
   if (specifier === 'react') return { url: react, shortCircuit: true }
   return nextResolve(specifier, context)
 }
-'''
+"""
 
-HARNESS = r'''
+HARNESS = r"""
 import assert from 'node:assert/strict'
 import { pathToFileURL } from 'node:url'
 const { default: plugin } = await import(pathToFileURL(process.env.PLUGIN).href)
@@ -110,7 +110,7 @@ assert.equal(contributions[1].data.path, '/hermes-vault')
 assert.equal(contributions[2].data.id, 'hermes-vault.open')
 assert.ok(contributions[0].render())
 console.log(JSON.stringify({ id: plugin.id, route: contributions[0].data.path, contributions: contributions.map(item => item.id) }))
-'''
+"""
 
 
 def test_runtime_plugin_contract_and_render(tmp_path: Path) -> None:
@@ -174,6 +174,48 @@ def test_runtime_plugin_is_bounded_and_metadata_only() -> None:
     assert "record.ciphertext" not in source
     assert "lease.value" not in source
     assert "request.value" not in source
+
+
+def test_runtime_plugin_editing_dialogs_are_metadata_only() -> None:
+    """Issue #90 dialog static contract: the Edit metadata and Rebind origin
+    dialogs never render, prefill, or transmit secret material, and the row
+    dropdown dispatches both new actions."""
+    source = PLUGIN.read_text(encoding="utf-8")
+
+    # Both dialogs exist and are dispatched from the row dropdown + VaultPage.
+    assert "function EditMetadataDialog" in source
+    assert "function RebindOriginDialog" in source
+    assert "'edit-metadata'" in source
+    assert "'rebind-origin'" in source
+    assert "onEditMetadata" in source
+    assert "onRebindOrigin" in source
+    assert "/mutations/update-metadata" in source
+    assert "/mutations/rebind-origin" in source
+
+    # No secret-shaped fields anywhere in the editing dialogs: the secret is
+    # never prefilled and cannot be replaced from these surfaces.
+    forbidden = [
+        "type: 'password'",
+        "new_secret",
+        "record.secret",
+    ]
+    edit_slice = source[source.index("function EditMetadataDialog") : source.index("// -- credential inventory table")]
+    for needle in forbidden:
+        assert needle not in edit_slice, f"EditMetadataDialog must not contain {needle}"
+
+    rebind_slice = source[
+        source.index("function RebindOriginDialog") : source.index("// -- credential inventory table")
+    ]
+    for needle in forbidden:
+        assert needle not in rebind_slice, f"RebindOriginDialog must not contain {needle}"
+
+    # Rebind type-to-confirm targets the NEW origin (the bridge rejects the
+    # old origin / id as a confirmation: desktop_bridge.py #90 gate).
+    assert "confirmation: confirmText" in source
+    assert "new_service: normalizedNew" in source
+
+    # The busy step keeps the rebind dialog mounted (no unmount mid-flight).
+    assert "step === 'typeConfirm' || step === 'busy'" in source
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +686,257 @@ export async function resolve(specifier, context, nextResolve) {
 """
 
 
+# Issue #90 editing-flows SDK stub: success-phase data with a tagged, noted,
+# aliased credential so the EditMetadataDialog prefills alias+tags (the no-op
+# regression) and shows the notes-clear affordance. ctx.rest captures every
+# mutation call (path + body) instead of returning an empty object.
+SDK_EDITING_STUB = r"""
+export const ROUTES_AREA = 'routes'
+export const SIDEBAR_NAV_AREA = 'sidebar.nav'
+export const PALETTE_AREA = 'palette'
+export const host = { navigate() {}, notify() {}, state: { profile: { get: () => 'default' } } }
+export const Badge = (p) => ({ tag: 'Badge', props: p })
+export const Button = (p) => ({ tag: 'Button', props: p })
+export const Checkbox = (p) => ({ tag: 'Checkbox', props: p })
+export const Codicon = (p) => ({ tag: 'Codicon', props: p })
+export const ConfirmDialog = (p) => ({ tag: 'ConfirmDialog', props: p })
+export const Dialog = (p) => ({ tag: 'Dialog', props: p })
+export const DialogContent = (p) => ({ tag: 'DialogContent', props: p })
+export const DialogDescription = (p) => ({ tag: 'DialogDescription', props: p })
+export const DialogFooter = (p) => ({ tag: 'DialogFooter', props: p })
+export const DialogHeader = (p) => ({ tag: 'DialogHeader', props: p })
+export const DialogTitle = (p) => ({ tag: 'DialogTitle', props: p })
+export const DialogTrigger = (p) => ({ tag: 'DialogTrigger', props: p })
+export const DropdownMenu = (p) => ({ tag: 'DropdownMenu', props: p })
+export const DropdownMenuContent = (p) => ({ tag: 'DropdownMenuContent', props: p })
+export const DropdownMenuItem = (p) => ({ tag: 'DropdownMenuItem', props: p })
+export const DropdownMenuSeparator = (p) => ({ tag: 'DropdownMenuSeparator', props: p })
+export const DropdownMenuTrigger = (p) => ({ tag: 'DropdownMenuTrigger', props: p })
+export const EmptyState = (p) => ({ tag: 'EmptyState', props: p })
+export const ErrorState = (p) => ({ tag: 'ErrorState', props: p })
+export const Input = (p) => ({ tag: 'Input', props: p })
+export const SearchField = (p) => ({ tag: 'SearchField', props: p })
+export const SegmentedControl = (p) => ({ tag: 'SegmentedControl', props: p })
+export const Select = (p) => ({ tag: 'Select', props: p })
+export const SelectContent = (p) => ({ tag: 'SelectContent', props: p })
+export const SelectItem = (p) => ({ tag: 'SelectItem', props: p })
+export const SelectTrigger = (p) => ({ tag: 'SelectTrigger', props: p })
+export const SelectValue = (p) => ({ tag: 'SelectValue', props: p })
+export const Separator = (p) => ({ tag: 'Separator', props: p })
+export const Skeleton = (p) => ({ tag: 'Skeleton', props: p })
+export const StatusDot = (p) => ({ tag: 'StatusDot', props: p })
+export const Switch = (p) => ({ tag: 'Switch', props: p })
+export const Tabs = (p) => ({ tag: 'Tabs', props: p })
+export const TabsList = (p) => ({ tag: 'TabsList', props: p })
+export const TabsTrigger = (p) => ({ tag: 'TabsTrigger', props: p })
+export const cn = (...items) => items.filter(Boolean).join(' ')
+export const profileColor = () => 'color'
+export const queryClient = { invalidateQueries() {} }
+export const useMutation = () => [{}, () => {}]
+const values = {
+  overview: { profile: 'default', credential_count: 1, lease_count: 0, active_lease_count: 0, services: ['demo'], recent_audit: [], health: { health_score: 100, healthy: true } },
+  credentials: { credential_count: 1, credentials: [{ id: 'cred-1', service: 'demo', alias: 'metadata', status: 'unknown', credential_type: 'api_key', tags: ['prod'], has_notes: true, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' }] },
+  leases: { lease_count: 0, leases: [] },
+  policy: { policy_exists: true, agents: {}, doctor: { status: 'healthy' } },
+  requests: { request_count: 0, requests: [] },
+  integrity: { status: 'healthy', reason_code: 'ok', verified_count: 1, legacy_count: 0, recommended_next_step: 'none' },
+  hello: { status: 'ok', mutations: true }
+}
+export const useQuery = ({ queryKey }) => ({ data: values[queryKey[1]], error: null, isError: false, isFetching: false, isLoading: false, refetch: async () => ({ error: null, isError: false }) })
+export const useQueryClient = () => ({ invalidateQueries() {} })
+export const useValue = (atom) => (atom && typeof atom.get === 'function' ? atom.get() : 'default')
+"""
+
+# Issue #90 editing-flows harness: mounts the plugin ONCE and drives the REAL
+# click path through both new dialogs with the stateful hook stub:
+#   Edit metadata: open -> prefilled Continue DISABLED (no-op guard) ->
+#     edit tags -> Continue -> ConfirmDialog onConfirm -> captured body has
+#     ONLY changed fields, no secret keys, no ?profile= query -> success ->
+#     reopen -> clear tags -> captured body carries tags: [] (clear).
+#   Rebind origin: open -> type new origin (normalization) -> Continue ->
+#     type-to-confirm NEW origin -> Rebind -> busy step STAYS MOUNTED (the
+#     pre-fix dialog returned null mid-flight) -> captured body carries
+#     confirmation === normalized new_service.
+HARNESS_EDITING_FLOWS = r"""
+import { pathToFileURL } from 'node:url'
+const pluginMod = await import(pathToFileURL(process.env.PLUGIN).href)
+const plugin = pluginMod.default
+const contributions = []
+const calls = []
+const ctx = {
+  registerMany(items) { contributions.push(...items); return () => {} },
+  rest: async (path, opts) => { calls.push({ path, opts: opts || {} }); return {} },
+  i18n: { register() {}, t(key) { return key } },
+  storage: { get(k, f) { return f }, set() {} }
+}
+plugin.register(ctx)
+const page = contributions.find(c => c.id === 'page')
+
+function nodeText(node) {
+  if (node === null || node === undefined || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(nodeText).join('')
+  if (typeof node === 'object' && node.props) return nodeText(node.props.children)
+  return ''
+}
+
+function findNodes(root, tag, needle) {
+  const out = []
+  function walk(node) {
+    if (node === null || node === undefined || typeof node === 'boolean') return
+    if (Array.isArray(node)) { for (const k of node) walk(k); return }
+    if (typeof node === 'object' && node.tag && node.props) {
+      if (String(node.tag) === tag && nodeText(node).includes(needle)) out.push(node)
+      walk(node.props.children)
+    }
+  }
+  walk(root)
+  return out
+}
+
+function inputByPlaceholder(root, placeholder) {
+  const inputs = []
+  function walk(node) {
+    if (node === null || node === undefined || typeof node === 'boolean') return
+    if (Array.isArray(node)) { for (const k of node) walk(k); return }
+    if (typeof node === 'object' && node.tag && node.props) {
+      if (String(node.tag) === 'Input' && node.props.placeholder === placeholder) inputs.push(node)
+      walk(node.props.children)
+    }
+  }
+  walk(root)
+  return inputs[0]
+}
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 20))
+const out = { errors: [] }
+
+// The ConfirmDialog stub keeps its title in props (children never render),
+// so confirm steps are located by title prop rather than subtree text.
+function findDialogByTitle(root, titleNeedle) {
+  const out2 = []
+  function walk(node) {
+    if (node === null || node === undefined || typeof node === 'boolean') return
+    if (Array.isArray(node)) { for (const k of node) walk(k); return }
+    if (typeof node === 'object' && node.tag && node.props) {
+      if (String(node.tag) === 'ConfirmDialog' && String(node.props.title || '').includes(titleNeedle)) out2.push(node)
+      walk(node.props.children)
+    }
+  }
+  walk(root)
+  return out2[0]
+}
+
+// ---------- Edit metadata: first pass (edit tags) ----------
+let tree = page.render()
+let editItem = findNodes(tree, 'DropdownMenuItem', 'Edit metadata')[0]
+if (!editItem) throw new Error('Edit metadata menu item not found in row actions')
+editItem.props.onClick()
+
+tree = page.render()
+if (findNodes(tree, 'DialogTitle', 'Edit metadata').length === 0) throw new Error('edit dialog did not open')
+let continueBtn = findNodes(tree, 'Button', 'Continue')[0]
+if (!continueBtn) throw new Error('Continue button not found in edit dialog')
+if (continueBtn.props.disabled !== true) out.errors.push('prefilled alias+tags must NOT count as a change (Continue enabled on open)')
+
+const tagsInput = inputByPlaceholder(tree, 'prod, personal')
+if (!tagsInput) throw new Error('tags input not found (prefill missing?)')
+if (tagsInput.props.value !== 'prod') throw new Error('tags input not prefilled with existing tags')
+tagsInput.props.onChange({ target: { value: 'staging, ci' } })
+
+tree = page.render()
+continueBtn = findNodes(tree, 'Button', 'Continue')[0]
+if (!continueBtn || continueBtn.props.disabled === true) out.errors.push('Continue must enable after editing tags')
+continueBtn.props.onClick()
+
+tree = page.render()
+const confirmDlg = findDialogByTitle(tree, 'Edit metadata')
+if (!confirmDlg) throw new Error('confirm step did not render')
+confirmDlg.props.onConfirm()
+await tick()
+
+if (calls.length !== 1) throw new Error('expected exactly one mutation call, got ' + calls.length)
+const editBody = JSON.parse(calls[0].opts.body)
+if (calls[0].path !== '/mutations/update-metadata') out.errors.push('edit call path: ' + calls[0].path)
+if (calls[0].opts.method !== 'POST') out.errors.push('edit call not POST')
+if (editBody.service_or_id !== 'demo') out.errors.push('service_or_id: ' + editBody.service_or_id)
+if (editBody.alias !== 'metadata') out.errors.push('resolution alias missing: ' + JSON.stringify(editBody))
+if (editBody.tags === undefined || String(editBody.tags) !== 'staging,ci') out.errors.push('tags: ' + JSON.stringify(editBody.tags))
+if ('secret' in editBody || 'new_secret' in editBody) out.errors.push('secret-shaped field in edit body')
+if ('notes' in editBody) out.errors.push('notes sent without operator input')
+
+tree = page.render()
+if (findNodes(tree, 'DialogTitle', 'Edit metadata').length !== 0) out.errors.push('edit dialog did not close after success')
+
+// ---------- Edit metadata: second pass (clear tags -> tags: []) ----------
+editItem = findNodes(tree, 'DropdownMenuItem', 'Edit metadata')[0]
+editItem.props.onClick()
+tree = page.render()
+const tagsInput2 = inputByPlaceholder(tree, 'prod, personal')
+if (!tagsInput2) throw new Error('tags input missing on reopen')
+tagsInput2.props.onChange({ target: { value: '' } })
+tree = page.render()
+continueBtn = findNodes(tree, 'Button', 'Continue')[0]
+if (!continueBtn || continueBtn.props.disabled === true) out.errors.push('Continue must enable when clearing tags')
+continueBtn.props.onClick()
+tree = page.render()
+findDialogByTitle(tree, 'Edit metadata').props.onConfirm()
+await tick()
+
+const clearBody = JSON.parse(calls[1].opts.body)
+if (JSON.stringify(clearBody.tags) !== '[]') out.errors.push('clearing tags must send tags: [], got ' + JSON.stringify(clearBody.tags))
+
+// ---------- Rebind origin ----------
+tree = page.render()
+const rebindItem = findNodes(tree, 'DropdownMenuItem', 'Rebind origin')[0]
+if (!rebindItem) throw new Error('Rebind origin menu item not found in row actions')
+rebindItem.props.onClick()
+
+tree = page.render()
+if (findNodes(tree, 'DialogTitle', 'Rebind origin').length === 0) throw new Error('rebind dialog did not open')
+const newOriginInput = inputByPlaceholder(tree, 'e.g. accounts.google.com')
+if (!newOriginInput) throw new Error('new-origin input not found')
+newOriginInput.props.onChange({ target: { value: 'GitHub Demo' } })
+
+tree = page.render()
+continueBtn = findNodes(tree, 'Button', 'Continue')[0]
+if (!continueBtn || continueBtn.props.disabled === true) out.errors.push('Continue must enable after typing a new origin')
+continueBtn.props.onClick()
+
+tree = page.render()
+if (findNodes(tree, 'DialogTitle', 'Confirm origin rebind').length === 0) throw new Error('rebind typeConfirm step did not render')
+const confirmInput = inputByPlaceholder(tree, 'github_demo')
+if (!confirmInput) throw new Error('confirm input placeholder must be the NORMALIZED new origin')
+confirmInput.props.onChange({ target: { value: 'github_demo' } })
+
+tree = page.render()
+const rebindBtn = findNodes(tree, 'Button', 'Rebind origin')[0]
+if (!rebindBtn || rebindBtn.props.disabled === true) out.errors.push('Rebind button must enable on exact match')
+if (findNodes(tree, 'Button', 'demo').length !== 0) out.errors.push('old origin must not be an accepted confirmation target')
+rebindBtn.props.onClick()
+
+// busy step must stay mounted (pre-fix: `step === 'busy'` fell through to
+// return null and the dialog vanished mid-flight).
+tree = page.render()
+if (findNodes(tree, 'DialogTitle', 'Confirm origin rebind').length === 0) out.errors.push('rebind dialog UNMOUNTED during busy step')
+if (findNodes(tree, 'Button', 'Working').length === 0) out.errors.push('busy Working button not rendered')
+await tick()
+
+const rebindBody = JSON.parse(calls[2].opts.body)
+if (calls[2].path !== '/mutations/rebind-origin') out.errors.push('rebind call path: ' + calls[2].path)
+if (rebindBody.new_service !== 'github_demo') out.errors.push('new_service: ' + JSON.stringify(rebindBody.new_service))
+if (rebindBody.confirmation !== 'github_demo') out.errors.push('confirmation must equal the NEW origin: ' + JSON.stringify(rebindBody.confirmation))
+if (rebindBody.service_or_id !== 'demo' || rebindBody.alias !== 'metadata') out.errors.push('rebind target: ' + JSON.stringify(rebindBody))
+if ('secret' in rebindBody || 'new_secret' in rebindBody) out.errors.push('secret-shaped field in rebind body')
+
+for (const c of calls) {
+  if (c.path.includes('?')) out.errors.push('mutation path must not carry query params: ' + c.path)
+}
+
+console.log('RESULT=' + JSON.stringify({ calls: calls.length, errors: out.errors }))
+"""
+
+
 def _unescape_css_class(selector: str) -> str:
     """Turn a CSS-escaped class selector (e.g. '.md\\:grid-cols-4') into the
     plain Tailwind class token the plugin puts in className (e.g. 'md:grid-cols-4')."""
@@ -706,7 +999,7 @@ def _run_render(tmp_path: Path, phase: str) -> dict:
     )
     assert result.returncode == 0, result.stderr + result.stdout
     line = next(l for l in result.stdout.strip().splitlines() if l.startswith("RESULT="))
-    return json.loads(line[len("RESULT="):])
+    return json.loads(line[len("RESULT=") :])
 
 
 def test_runtime_plugin_blank_panes_render_visible_after_settle(tmp_path: Path) -> None:
@@ -770,7 +1063,9 @@ def test_runtime_plugin_stylesheet_uses_only_bundle_vars(tmp_path: Path) -> None
 
     covered = _stylesheet_selectors(stylesheet)
     missing_uncovered = KNOWN_MISSING_UTILITIES - covered
-    assert not missing_uncovered, f"plugin stylesheet does not cover bundle-missing utilities: {sorted(missing_uncovered)}"
+    assert not missing_uncovered, (
+        f"plugin stylesheet does not cover bundle-missing utilities: {sorted(missing_uncovered)}"
+    )
 
     # Skeleton fill rule must set an actual background-color (not transparent).
     assert re.search(r"\.bg-\\\(--ui-control-background\\\)\s*\{[^}]*background-color", stylesheet)
@@ -826,7 +1121,7 @@ def test_runtime_plugin_vaultpage_hooks_stable_across_loading_to_success(tmp_pat
     )
     assert result.returncode == 0, result.stderr + result.stdout
     line = next(l for l in result.stdout.strip().splitlines() if l.startswith("RESULT="))
-    payload = json.loads(line[len("RESULT="):])
+    payload = json.loads(line[len("RESULT=") :])
 
     # Loading phase rendered the skeleton state (the four blank cards).
     assert payload["skeletonCards"] == 4
@@ -895,7 +1190,7 @@ def test_runtime_plugin_delete_dialog_hooks_stable_across_impact_to_typeconfirm(
     )
     assert result.returncode == 0, result.stderr + result.stdout
     line = next(l for l in result.stdout.strip().splitlines() if l.startswith("RESULT="))
-    payload = json.loads(line[len("RESULT="):])
+    payload = json.loads(line[len("RESULT=") :])
 
     # The row action menu rendered a Delete item and the dialog opened at impact.
     assert payload["deleteItemFound"] is True
@@ -904,3 +1199,58 @@ def test_runtime_plugin_delete_dialog_hooks_stable_across_impact_to_typeconfirm(
     # The typeConfirm step rendered with the confirm input + title (no #310).
     assert payload["hasConfirmInput"] is True
     assert payload["confirmTitleFound"] is True
+
+
+def test_runtime_plugin_editing_dialogs_full_flows(tmp_path: Path) -> None:
+    """Issue #90 behavioral coverage: drives the REAL click paths through both
+    editing dialogs (Edit metadata, Rebind origin) in one mount with a
+    stateful-hook stub, capturing every mutation call.
+
+    Guards the contract end-to-end at the renderer surface:
+    - row dropdown dispatches both new actions and VaultPage mounts the dialogs
+    - Edit: prefilled fields do not count as a change (no no-op audit writes);
+      only edited fields are sent; no secret-shaped keys; no ?profile= query
+      (mutation routes 400 on query params); tags can be CLEARED (tags: [])
+    - Rebind: new origin is normalized (spaces/case); type-to-confirm targets
+      the NEW origin (the bridge rejects the old origin/id token); the busy
+      step keeps the dialog mounted (pre-fix it returned null mid-flight)
+    - both bodies are metadata-only (no secret, no new_secret)
+    """
+    files = {
+        "sdk.mjs": SDK_EDITING_STUB,
+        "jsx.mjs": JSX_HOOKCOUNT_STUB,
+        "react.mjs": REACT_HOOKCOUNT_STATEFUL_STUB,
+        "loader.mjs": LOADER_RENDER,
+        "harness.mjs": HARNESS_EDITING_FLOWS,
+    }
+    paths = {}
+    for name, content in files.items():
+        path = tmp_path / name
+        path.write_text(content, encoding="utf-8")
+        paths[name] = path
+
+    env = {
+        "SDK_STUB": str(paths["sdk.mjs"]),
+        "JSX_STUB": str(paths["jsx.mjs"]),
+        "REACT_STUB": str(paths["react.mjs"]),
+        "PLUGIN": str(PLUGIN),
+    }
+    result = subprocess.run(
+        ["node", "--experimental-loader", paths["loader.mjs"].as_uri(), str(paths["harness.mjs"])],
+        cwd=ROOT,
+        env={**__import__("os").environ, **env},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    line = next(l for l in result.stdout.strip().splitlines() if l.startswith("RESULT="))
+    payload = json.loads(line[len("RESULT=") :])
+
+    # Three mutations captured: edit-tags, clear-tags, rebind.
+    assert payload["calls"] == 3, payload
+    # The harness collects contract violations as strings; all must be absent.
+    assert payload["errors"] == [], f"editing flow contract violations: {payload['errors']}"
