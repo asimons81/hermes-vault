@@ -1,5 +1,11 @@
 # Mutation Surface — Rollback and Recovery Guide
 
+> **v0.26.0 note (#90):** the mutation surface now also includes
+> `update_metadata` (edit alias/tags/notes) and `rebind_origin` (move a
+> credential to a different service). They follow the identical three-surface
+> gating, audit, and rollback story described below; their specifics are
+> called out inline.
+
 **Hermes Vault v0.24.0 → v0.25.0**
 **Branch:** `wt/hermes-vault-mutations-docs` (from `release/v0.24.0`)
 **Date:** 2026-08-09
@@ -35,6 +41,7 @@ Changes from v0.24.0 baseline:
   - Routes through `Broker` → `VaultMutations` (the single audited write path)
   - Traps `AuditIntegrityError` → `AUDIT_INTEGRITY` bridge error
   - Returns metadata-only response (`_mutation_result`, `:978`)
+- **#90 additions** — `_method_update_metadata` and `_method_rebind_origin` follow the same structure. `update_metadata` never accepts a secret-capable field. `rebind_origin` resolves the target read-only BEFORE any write, requires `confirmation` matching the NEW origin exactly (rejects old-origin confirmation and no-op rebinds), and the audit entry carries `old_service`/`new_service`.
 - **`delete` confirmation gate.** Before any write, `_method_delete` resolves the target by `service_or_id`/`alias` and checks `confirmation` matches the credential id or `service:alias` (`:936-950`). Mismatch → `CONFIRMATION_MISMATCH`.
 - **`_method_hello` advertises mutations** via `mutations: true` and adds `MUTATION_METHODS` to capabilities (`:675-677`) when `allow_mutations=True`.
 - **`run_desktop_bridge`** accepts `allow_mutations: bool = False` (`:1061`) and passes it to the handler.
@@ -50,6 +57,7 @@ Changes from v0.24.0 baseline:
 Changes from v0.24.0 baseline:
 
 - **Three POST routes** — `POST /mutations/add` (`:635`), `POST /mutations/rotate` (`:648`), `POST /mutations/delete` (`:661`). Gated behind `HERMES_VAULT_DESKTOP_MUTATIONS=1` (`:552-555`, returns 404 when not set).
+- **#90 additions** — `POST /mutations/update-metadata` and `POST /mutations/rebind-origin` follow the identical gating (`_require_mutations_enabled`), Bearer-only auth, `_no_query`, pre-spawn body validation, and `--allow-mutations` child argv. Their field allowlists contain no secret-capable field; `rebind-origin` rejects a missing/empty `confirmation` with 403 before child spawn and enforces the exact new-origin match.
 - **Bearer-only auth** on mutation routes. `_require_bearer` (`:452-460`) rejects missing/non-Bearer tokens with 401. No `?token=` query fallback on these routes.
 - **Pre-spawn body validation.** `_read_mutation_body` (`:684`) reads, bounds, and parses the body before any child spawn; oversized/invalid JSON → 400.
 - **`_validate_mutation_body`** (`:494`) enforces an allowlist of fields per mutation kind.

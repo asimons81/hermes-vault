@@ -286,6 +286,110 @@ hermes-vault run --service openai -- python agent.py   # agent from HERMES_VAULT
 
 See `docs/run.md` for the full contract.
 
+## Editing Credentials — edit vs rebind vs rotate vs delete (#90)
+
+Four operations, four different jobs. Picking the wrong one is how an operator
+ends up recreating credentials (churn, lost provenance) or weakening the
+authorization boundary (moving a secret somewhere policy never approved).
+
+| Operation | What changes | What it never touches | Confirmation |
+|---|---|---|---|
+| `edit-metadata` | alias, tags, notes | secret, origin | none (reversible metadata) |
+| `rebind-origin` | origin (the `service` column) | secret | `--yes` + typed new-origin confirmation (Desktop) |
+| `rotate` | the secret | alias/tags/notes/origin | typed confirmation (Desktop) |
+| `delete` | everything | — | typed confirmation (Desktop) |
+
+### Why origin is special
+
+Origin is not a label — it is the **authorization boundary**. Policy matches
+services (`services: {github: {actions: [...]}}`), leases are issued against a
+service, and broker access decisions are evaluated on the `service` column.
+Rebinding a credential from `mail.google.com` to `accounts.google.com` changes
+*which policy entries govern where that secret may be released*. That is why
+rebinding is deliberately its own audited action (`rebind_credential_origin`),
+not a field in a generic edit form, and why the UI makes you type the NEW
+origin exactly — the destination is the part of a rebind that can go
+catastrophically wrong, so that is what gets confirmed.
+
+Practical consequences of a rebind:
+
+- After the move, the credential is reachable only through policy entries for
+  the **new** service. If no agent policy covers it there, broker access stops
+  until you edit `policy.yaml` (policy doctor flags unknown services).
+- Existing leases issued under the old origin remain valid until they expire;
+  renewal is evaluated against the new origin.
+- The audit entry carries `old_service` and `new_service` metadata so the
+  boundary change is separately identifiable in the trail.
+
+### Editing metadata (CLI)
+
+```bash
+# Rename the alias
+hermes-vault edit-metadata openai --new-alias work
+
+# Replace tags wholesale (comma-separated)
+hermes-vault edit-metadata github --tags prod,ci
+
+# Set notes; --clear-notes removes them
+hermes-vault edit-metadata openai --notes "team key, renewed quarterly"
+hermes-vault edit-metadata openai --clear-notes
+
+# Disambiguate when a service has multiple credentials
+hermes-vault edit-metadata openai --alias old --new-alias new
+```
+
+`None` vs empty matters: omitting `--tags`/`--notes` leaves the field
+unchanged; `--clear-notes` (or an empty tags string) clears it. Renaming to an
+alias that already exists on the same service is rejected
+(`DuplicateCredentialError`) before anything is written.
+
+### Rebinding origin (CLI)
+
+```bash
+hermes-vault rebind-origin mail.google.com accounts.google.com --yes
+hermes-vault rebind-origin github --alias work gitlab --yes
+```
+
+Refuses to run without `--yes` (it changes where the credential may be
+released), rejects a no-op rebind to the current origin, and rejects a
+destination that already holds a credential under the same alias.
+
+### Agent-side permissions
+
+Operators bypass policy checks (audited as the `operator` agent). Non-operator
+agents need the matching service action:
+
+- `update_metadata` on the credential's service for metadata edits
+- `rebind_origin` on **both** the old and the new service for a rebind — the
+  authorization-boundary change must be permitted at both ends
+
+Legacy agents with no explicit action list (implicit all) keep access for
+backward compatibility; explicit-action policies are deny-by-default for the
+new actions until you add them.
+
+### Desktop parity
+
+Both operations are in the Desktop mutation surface behind the same opt-in
+gating as Add/Rotate/Delete (`HERMES_VAULT_DESKTOP_MUTATIONS=1` +
+`--allow-mutations` on mutation routes only): `Edit metadata` shows the
+service as read-only ("use Rebind origin"), and `Rebind origin` is a two-step
+dialog that displays `old → new` and requires typing the new origin exactly.
+See `docs/mutation-surface-rollback.md` for rollback and known limits.
+
+### Data-safety invariants (both operations)
+
+- The stored secret is never displayed, returned, or replaced — the payload is
+  decrypted and re-encrypted **in-process** only because the payload JSON
+  duplicates tags/notes and `aesgcm-v2` rows bind the alias into the AAD; a
+  fresh nonce is used per re-encryption.
+- Every attempt (allow and deny) produces a distinct audit entry
+  (`update_credential_metadata` / `rebind_credential_origin`) carrying only
+  ids, services, and aliases — never secret material.
+- Writes are atomic with the protected audit chain: if the audit append fails
+  after the row was updated, the before-image row is restored
+  (`AuditIntegrityError` → rollback; a rollback failure reports
+  `ROLLBACK FAILED` and tells you to restore from a trusted backup).
+
 ## Why this is better
 
 This setup gives you a few hard wins:

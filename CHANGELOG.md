@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.27.0 (unreleased) — #90: credential metadata editing + origin rebinding
+
+Closes #90. Two new mutations for correcting credentials in place instead of
+recreating them (create-replace-delete churn): **edit metadata** (alias, tags,
+notes) and **rebind origin** (move a credential to a different `service`).
+Origin is treated as authorization-sensitive — it is the policy/lease boundary
+— so rebinding is its own audited action with a typed new-origin confirmation,
+not a field in the metadata form.
+
+### Added
+
+- **`hermes-vault edit-metadata`** — edit non-secret credential metadata (alias, tags, notes) without touching the stored secret. `--new-alias` renames (rejected on alias collision via `DuplicateCredentialError`), `--tags` replaces wholesale, `--notes` sets, `--clear-notes` clears; `--alias` disambiguates the target when the alias itself is being renamed. Omitted fields are left unchanged; empty tags/notes clear.
+- **`hermes-vault rebind-origin <service_or_id> <new_service>`** — move a credential to a different origin. Requires `--yes` (it changes where the credential may be released); refuses a no-op rebind to the current origin and a destination already holding a credential under the same alias.
+- **`VaultMutations.update_credential_metadata` / `rebind_credential_origin`** — the two new centralized mutation-path operations behind everything else. Non-operator agents need the new `update_metadata` / `rebind_origin` service actions; **rebinding requires `rebind_origin` on BOTH the old and the new origin** (authorization-boundary change permitted at both ends). Legacy implicit-all agents keep access; explicit-action policies are deny-by-default for the new actions.
+- **`Vault.update_credential_metadata` / `rebind_credential_origin`** — vault-layer in-process re-encryption (decrypt with current AAD → rebuild payload JSON with new tags/notes → re-encrypt under new AAD, fresh AES-GCM nonce) because the payload JSON duplicates tags/notes and `aesgcm-v2` rows bind `service`/`alias` into the AAD. Legacy `aesgcm-v1` rows keep working (AAD ignored). Field update and payload swap commit in one statement.
+- **Desktop bridge + adapter + UI**: `update_metadata` / `rebind_origin` NDJSON bridge methods and `POST /mutations/{update-metadata,rebind-origin}` adapter routes follow the exact add/rotate/delete pattern — opt-in `HERMES_VAULT_DESKTOP_MUTATIONS=1` + `--allow-mutations` (mutation routes only), Bearer-only auth, pre-spawn body allowlisting with no secret-capable field, `request_id` validation. `rebind-origin` additionally requires `confirmation` matching the NEW origin exactly (typed by the operator) and rejects old-origin/no-op confirmations. The Desktop UI adds an `Edit metadata` dialog (service read-only — "use Rebind origin") and a two-step `Rebind origin` dialog showing `old → new`.
+- **Docs**: new operator-guide section "Editing Credentials — edit vs rebind vs rotate vs delete" (when to use which, why origin is special, policy impact); `docs/credential-lifecycle.md` Correction stage; `docs/architecture.md` mutation-surface updates; plugin README mutation-route truthing; `docs/mutation-surface-rollback.md` #90 notes.
+
+### Security
+
+- No secret exposure path: both operations accept no secret-capable fields anywhere (CLI flags, bridge params, adapter bodies); `MutationResult` responses carry only `CredentialRecord` metadata; audit entries carry ids/services/aliases (plus `old_service`/`new_service` for rebinds) — never secret material. Re-encryption happens in-process with a fresh nonce per call.
+- Audit-integrity atomicity: a failed protected audit append after the row update restores the before-image row; a rollback failure reports `ROLLBACK FAILED` and directs to trusted-backup restore (`AuditIntegrityError` handling identical to add/rotate/delete).
+
 ## 0.26.0 -- Feature: Trustworthy Under Failure (2026-09-11)
 
 Recovery that cannot brick the vault, authorization that is actually enforced, and existing surfaces (CLI, health, MCP) that stop lying — depth, not new surfaces. Nine packs: safe recovery (P1), authorization enforcement (P2), CLI truth (P3), MCP correctness (P4), crypto v2 default (P5), release & CI integrity (P6), `doctor` (P7), `run` (P8), and the Bitwarden interop on-ramp (P9). No vault storage-schema or backup-format changes; existing v1 credential rows stay readable.

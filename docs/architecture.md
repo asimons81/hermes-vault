@@ -26,7 +26,8 @@ v0.14.0 is the Native Windows + DPAPI release: `bootstrap` still guides operator
 
 - Stores encrypted credential payloads in SQLite
 - Keeps metadata separate from raw secret material
-- Supports add, list, show metadata, rotate, delete, and import workflows
+- Supports add, list, show metadata, rotate, delete, edit-metadata, rebind-origin, and import workflows
+- `update_credential_metadata` edits alias/tags/notes in place; `rebind_credential_origin` moves a credential between services — both re-encrypt the payload in-process (fresh nonce) because the payload JSON duplicates tags/notes and `aesgcm-v2` rows bind `service`/`alias` into the AAD, then commit fields + payload swap in one statement
 - Deterministic credential targeting: UUID, service+alias, or service-only (when unambiguous)
 - Raises `AmbiguousTargetError` when service-only matches multiple credentials
 
@@ -35,6 +36,8 @@ v0.14.0 is the Native Windows + DPAPI release: `bootstrap` still guides operator
 - Centralized mutation service layer for all write/destructive operations
 - Enforces policy checks (agent capability + service action) before mutations
 - Writes standardized audit entries for every mutation (allow and deny)
+- `update_credential_metadata` (issue #90): non-secret metadata edit — distinct audit action, before-image rollback on audit failure
+- `rebind_credential_origin` (issue #90): origin move as its own audited action carrying `old_service`/`new_service` audit metadata; non-operator agents need `rebind_origin` on BOTH origins
 - Operator path (``agent_id="operator"``) skips policy checks but still audits
 - Used by the Broker for agent-facing mutations and by the CLI for operator-facing mutations
 
@@ -48,7 +51,7 @@ v0.14.0 is the Native Windows + DPAPI release: `bootstrap` still guides operator
 
 - Loads deny-by-default YAML policy
 - Enforces service allowlists, raw secret access settings, env-only access, and TTL ceilings
-- Policy v2: per-service action permissions (get_credential, get_env, verify, metadata, add_credential, rotate, delete)
+- Policy v2: per-service action permissions (get_credential, get_env, verify, metadata, add_credential, rotate, delete, update_metadata, rebind_origin)
 - Agent-level capabilities for non-service-scoped actions (list_credentials, scan_secrets, export_backup, import_credentials)
 - Backward compatible with legacy flat-list service format
 - Normalizes all service names to canonical IDs on load
@@ -58,7 +61,7 @@ v0.14.0 is the Native Windows + DPAPI release: `bootstrap` still guides operator
 - Canonical credential access layer
 - Applies policy before access decisions
 - Preferentially materializes ephemeral environment variables instead of returning raw secrets
-- Routes mutations (add, rotate, delete, metadata) through ``VaultMutations`` for policy and audit
+- Routes mutations (add, rotate, delete, metadata, update_metadata, rebind_origin) through ``VaultMutations`` for policy and audit
 - Records broker decisions in `audit.py`
 
 ### `verifier.py`
