@@ -144,6 +144,46 @@ class StubMutations:
             record=rec,
         )
 
+    def update_credential_metadata(self, **kwargs):
+        self.calls.append(("update_metadata", kwargs))
+        from hermes_vault.models import CredentialRecord
+        rec = CredentialRecord(
+            id="test-id-123",
+            service=kwargs.get("service_or_id", "openai"),
+            alias=kwargs.get("alias") or "renamed",
+            credential_type="api_key",
+            encrypted_payload="encrypted",
+            tags=kwargs.get("tags") or [],
+            notes=kwargs.get("notes"),
+        )
+        return MutationResult(
+            allowed=True,
+            service=kwargs.get("service_or_id", "openai"),
+            agent_id="operator",
+            action="update_credential_metadata",
+            reason="ok",
+            record=rec,
+        )
+
+    def rebind_credential_origin(self, **kwargs):
+        self.calls.append(("rebind_origin", kwargs))
+        from hermes_vault.models import CredentialRecord
+        rec = CredentialRecord(
+            id="test-id-123",
+            service=kwargs.get("new_service", "github"),
+            alias="default",
+            credential_type="api_key",
+            encrypted_payload="encrypted",
+        )
+        return MutationResult(
+            allowed=True,
+            service=kwargs.get("new_service", "github"),
+            agent_id="operator",
+            action="rebind_credential_origin",
+            reason="ok",
+            record=rec,
+        )
+
     def delete_credential(self, **kwargs):
         self.calls.append(("delete", kwargs))
         return MutationResult(

@@ -235,3 +235,103 @@ def test_restore_credential_idempotent(tmp_path: Path) -> None:
     assert restored.tags == ["a", "b"]
     assert restored.notes == "keep me"
     assert restored.crypto_version == record.crypto_version
+
+
+# ── Issue #90: rollback guarantees for metadata edit + origin rebind ─────
+
+
+def test_update_metadata_audit_failure_rolls_back(tmp_path: Path) -> None:
+    """update_credential_metadata with a broken integrity chain must deny
+    and restore the ORIGINAL alias/tags/notes AND the original ciphertext
+    (the payload was re-encrypted during the attempt)."""
+    vault, logger, mutations = make_mutations(tmp_path)
+    record_id = _add_original(vault, logger, mutations)
+    before = vault.get_credential(record_id)
+    assert before is not None
+
+    _corrupt_checkpoint(logger)
+
+    result = mutations.update_credential_metadata(
+        agent_id="operator",
+        service_or_id=record_id,
+        alias="renamed-after-failure",
+        tags=["should-not", "persist"],
+        notes="should not persist",
+    )
+
+    assert result.allowed is False, "metadata edit must be denied when integrity chain is broken"
+    assert "integrity" in result.reason.lower() or "audit" in result.reason.lower(), (
+        f"reason should mention audit/integrity; got: {result.reason!r}"
+    )
+
+    surviving = vault.resolve_credential(record_id)
+    assert surviving is not None, "credential row was destroyed by audit-failure rollback"
+    assert surviving.alias == "rollback-test", "alias must be restored to the before-image"
+    assert surviving.tags == [], "tags must be restored to the before-image"
+    assert surviving.notes is None, "notes must be restored to the before-image"
+    secret = vault.get_secret(record_id)
+    assert secret is not None and secret.secret == "original-secret", (
+        "metadata edit must leave the original secret intact after rollback"
+    )
+
+
+def test_rebind_origin_audit_failure_rolls_back(tmp_path: Path) -> None:
+    """rebind_credential_origin with a broken integrity chain must deny and
+    restore the credential to its ORIGINAL origin with the original
+    ciphertext (the payload was re-encrypted under the new origin's AAD
+    during the attempt)."""
+    vault, logger, mutations = make_mutations(tmp_path)
+    record_id = _add_original(vault, logger, mutations)
+
+    _corrupt_checkpoint(logger)
+
+    result = mutations.rebind_credential_origin(
+        agent_id="operator",
+        service_or_id=record_id,
+        new_service="accounts.google.com",
+    )
+
+    assert result.allowed is False, "rebind must be denied when integrity chain is broken"
+    assert "integrity" in result.reason.lower() or "audit" in result.reason.lower(), (
+        f"reason should mention audit/integrity; got: {result.reason!r}"
+    )
+
+    # The credential must still exist under its ORIGINAL service.
+    surviving = vault.resolve_credential(record_id)
+    assert surviving is not None, "credential row was destroyed by audit-failure rollback"
+    assert surviving.service == "test-service", "origin must be restored to the before-image"
+    assert vault.get_credential("accounts.google.com") is None, (
+        "rebind must not leave a row under the new origin"
+    )
+    secret = vault.get_secret(record_id)
+    assert secret is not None and secret.secret == "original-secret", (
+        "rebind rollback must restore the original ciphertext"
+    )
+
+
+def test_update_metadata_rollback_failure_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed compensating write during a metadata-edit rollback must not
+    claim the prior row survived."""
+    vault, logger, mutations = make_mutations(tmp_path)
+    record_id = _add_original(vault, logger, mutations)
+
+    def _audit_boom(record: object) -> None:
+        raise AuditIntegrityError("deterministic append failure")
+
+    def _restore_boom(record: object) -> None:
+        raise RuntimeError("restore unavailable")
+
+    assert logger.integrity is not None
+    monkeypatch.setattr(logger.integrity, "append", _audit_boom)
+    monkeypatch.setattr(vault, "restore_credential", _restore_boom)
+
+    result = mutations.update_credential_metadata(
+        agent_id="operator",
+        service_or_id=record_id,
+        alias="renamed-anyway",
+    )
+
+    assert result.allowed is False
+    assert "ROLLBACK FAILED" in result.reason
+    assert "prior credential may be lost" in result.reason
+
