@@ -232,6 +232,16 @@ function shortDate(isoString) {
   return d.toISOString().slice(0, 10)
 }
 
+function tagsEqual(a, b) {
+  var left = Array.isArray(a) ? a : []
+  var right = Array.isArray(b) ? b : []
+  if (left.length !== right.length) return false
+  for (var i = 0; i < left.length; i++) {
+    if (String(left[i]) !== String(right[i])) return false
+  }
+  return true
+}
+
 // -- shared components --------------------------------------------------------
 function StateCard(_a) {
   var details = _a.details
@@ -735,6 +745,268 @@ function DeleteCredentialDialog(_a) {
   return null
 }
 
+// Edit metadata dialog (issue #90): alias / tags / notes only — no secret field.
+function EditMetadataDialog(_a) {
+  var target = _a.target
+  var onClose = _a.onClose
+  var mutationsEnabled = _a.mutationsEnabled
+  var mutateCall = _a.mutateCall
+  var onSuccess = _a.onSuccess
+
+  var _b = useState((target && target.alias) || ''), alias = _b[0], setAlias = _b[1]
+  var _c = useState((target && target.tags && target.tags.join(', ')) || ''), tags = _c[0], setTags = _c[1]
+  // Notes are not serialized to the renderer (only a has_notes flag), so the
+  // field starts empty and is only sent when the operator types something.
+  var _d = useState(''), notes = _d[0], setNotes = _d[1]
+  var _e = useState(false), clearNotes = _e[0], setClearNotes = _e[1]
+  var _f = useState('idle'), phase = _f[0], setPhase = _f[1]  // idle | confirming | busy
+  var _g = useState(null), mutationError = _g[0], setMutationError = _g[1]
+  var queryClient = useQueryClient()
+
+  var service = target ? target.service : ''
+  var label = service + (target && target.alias ? ' / ' + target.alias : '')
+
+  var parsedTags = tags ? tags.split(',').map(function (t) { return t.trim() }).filter(Boolean) : []
+
+  var resetForm = function () {
+    setAlias((target && target.alias) || '')
+    setTags((target && target.tags && target.tags.join(', ')) || '')
+    setNotes('')
+    setClearNotes(false)
+    setPhase('idle')
+    setMutationError(null)
+  }
+  var doClose = function () { resetForm(); onClose() }
+
+  var buildBody = function () {
+    var body = { service_or_id: service }
+    if (target && target.alias) body.alias = target.alias
+    if (alias && alias !== (target && target.alias)) body.new_alias = alias
+    // Tags: `[]` is a meaningful "clear all tags" (mutation layer treats
+    // omitted-as-None as unchanged, [] as clear). Send the parsed list
+    // whenever the visible tag text differs from the prefilled tags.
+    if (!tagsEqual(parsedTags, (target && target.tags) || [])) body.tags = parsedTags
+    if (clearNotes) body.notes = ''
+    else if (notes) body.notes = notes
+    return body
+  }
+  var hasChange = function () {
+    return Boolean(
+      (alias && alias !== (target && target.alias)) ||
+      !tagsEqual(parsedTags, (target && target.tags) || []) ||
+      (clearNotes || notes)
+    )
+  }
+
+  var handleConfirm = function () {
+    setPhase('busy')
+    setMutationError(null)
+    mutateCall('/mutations/update-metadata', buildBody())
+      .then(function () {
+        host.notify({ kind: 'success', message: 'Updated metadata for ' + label + ' — audit entry written. The secret is unchanged.' })
+        queryClient.invalidateQueries({ queryKey: QUERY_ROOT })
+        if (onSuccess) onSuccess()
+        resetForm()
+        onClose()
+      })
+      .catch(function (err) {
+        setMutationError(err)
+        setPhase('idle')
+      })
+  }
+
+  if (!target) return null
+
+  if (!mutationsEnabled) {
+    return jsx(ConfirmDialog, {
+      open: true,
+      onClose: doClose,
+      onConfirm: doClose,
+      title: 'Mutations unavailable',
+      description: 'The Vault bridge does not support mutations. The installed adapter must be run with --allow-mutations.',
+      confirmLabel: 'OK',
+      destructive: false
+    })
+  }
+
+  if (phase === 'confirming') {
+    return jsx(ConfirmDialog, {
+      open: true,
+      onClose: function () { setPhase('idle') },
+      onConfirm: handleConfirm,
+      title: 'Edit metadata: ' + label,
+      description: 'Only non-secret metadata changes. The stored secret is never displayed or replaced — use Rotate to change the secret.',
+      confirmLabel: 'Save metadata',
+      busyLabel: 'Working\u2026',
+      doneLabel: 'Done',
+      destructive: false
+    })
+  }
+
+  return jsx(Dialog, { open: true, onOpenChange: function (open) { if (!open) doClose() }, children: [
+    jsx(DialogContent, { className: 'max-w-md', children: [
+      jsx(DialogHeader, { children: [
+        jsx(DialogTitle, { children: 'Edit metadata' }),
+        jsx(DialogDescription, { children: 'Correct non-secret fields without recreating the credential. The secret is never shown or changed here.' })
+      ] }),
+      jsxs('div', { className: 'grid gap-4 py-4', children: [
+        jsxs('div', { className: 'grid gap-1.5', children: [
+          jsx('label', { className: 'text-xs font-medium', children: 'Service (read-only — use Rebind origin)' }),
+          jsx(Input, { value: service, disabled: true })
+        ] }),
+        jsxs('div', { className: 'grid gap-1.5', children: [
+          jsx('label', { className: 'text-xs font-medium', children: 'Alias / identifier' }),
+          jsx(Input, { value: alias, onChange: function (e) { setAlias(e.target.value) }, placeholder: 'default', autoFocus: true })
+        ] }),
+        jsxs('div', { className: 'grid gap-1.5', children: [
+          jsx('label', { className: 'text-xs font-medium', children: 'Tags (comma-separated)' }),
+          jsx(Input, { value: tags, onChange: function (e) { setTags(e.target.value) }, placeholder: 'prod, personal' })
+        ] }),
+        jsxs('div', { className: 'grid gap-1.5', children: [
+          jsx('label', { className: 'text-xs font-medium', children: 'Notes' }),
+          jsx(Input, { value: notes, onChange: function (e) { setNotes(e.target.value) }, placeholder: (target && target.has_notes) ? 'Existing notes are hidden — type to append/replace' : 'Add context for this credential' })
+        ] }),
+        (target && target.has_notes) ? jsxs('label', { className: 'flex items-center gap-2 text-xs text-(--ui-text-tertiary)', children: [
+          jsx(Checkbox, { checked: clearNotes, onCheckedChange: setClearNotes }),
+          'Clear existing notes'
+        ] }) : null,
+        mutationError ? jsx(ErrorState, { title: mutationErrorDetails(mutationError).title, description: mutationErrorDetails(mutationError).description, children: jsx(Button, { size: 'sm', variant: 'outline', onClick: function () { setMutationError(null) }, children: 'Dismiss' }) }) : null
+      ] }),
+      jsx(DialogFooter, { children: [
+        jsx(Button, { onClick: doClose, variant: 'ghost', size: 'sm', children: 'Cancel' }),
+        jsx(Button, { onClick: function () { setPhase('confirming') }, disabled: !hasChange() || phase === 'busy', size: 'sm', children: phase === 'busy' ? 'Working\u2026' : 'Continue' })
+      ] })
+    ] })
+  ] })
+}
+
+// Rebind origin dialog (issue #90): explicit OLD → NEW authorization-boundary change.
+function RebindOriginDialog(_a) {
+  var target = _a.target
+  var onClose = _a.onClose
+  var mutationsEnabled = _a.mutationsEnabled
+  var mutateCall = _a.mutateCall
+  var onSuccess = _a.onSuccess
+
+  var _b = useState(''), newService = _b[0], setNewService = _b[1]
+  var _c = useState(''), confirmText = _c[0], setConfirmText = _c[1]
+  var _d = useState('form'), step = _d[0], setStep = _d[1]  // form | typeConfirm | busy
+  var _e = useState(null), mutationError = _e[0], setMutationError = _e[1]
+  var queryClient = useQueryClient()
+
+  var service = target ? target.service : ''
+  var alias = target && target.alias ? target.alias : ''
+  var label = service + (alias ? ' / ' + alias : '')
+  var normalizedNew = String(newService).toLowerCase().trim().replace(/\s+/g, '_')
+
+  var resetForm = function () {
+    setNewService('')
+    setConfirmText('')
+    setStep('form')
+    setMutationError(null)
+  }
+  var doClose = function () { resetForm(); onClose() }
+
+  var doRebind = function () {
+    setStep('busy')
+    setMutationError(null)
+    var body = { service_or_id: service, new_service: normalizedNew, confirmation: confirmText }
+    if (alias) body.alias = alias
+    mutateCall('/mutations/rebind-origin', body)
+      .then(function () {
+        host.notify({ kind: 'info', message: 'Rebound ' + label + ' origin: ' + service + ' → ' + normalizedNew + ' — audit entry written.' })
+        queryClient.invalidateQueries({ queryKey: QUERY_ROOT })
+        if (onSuccess) onSuccess()
+        resetForm()
+        onClose()
+      })
+      .catch(function (err) {
+        setMutationError(err)
+        setStep('typeConfirm')
+      })
+  }
+
+  if (!target) return null
+
+  if (!mutationsEnabled) {
+    return jsx(ConfirmDialog, {
+      open: true,
+      onClose: doClose,
+      onConfirm: doClose,
+      title: 'Mutations unavailable',
+      description: 'The Vault bridge does not support mutations. The installed adapter must be run with --allow-mutations.',
+      confirmLabel: 'OK',
+      destructive: false
+    })
+  }
+
+  // Step 1: pick the new origin; show the boundary change explicitly.
+  if (step === 'form') {
+    return jsx(Dialog, { open: true, onOpenChange: function (open) { if (!open) doClose() }, children: [
+      jsx(DialogContent, { className: 'max-w-md', children: [
+        jsx(DialogHeader, { children: [
+          jsx(DialogTitle, { children: 'Rebind origin' }),
+          jsx(DialogDescription, { children: 'Move this credential to a different service origin. This is an authorization-boundary change.' })
+        ] }),
+        jsxs('div', { className: 'grid gap-4 py-4', children: [
+          jsxs('div', { className: 'rounded-lg border border-(--ui-stroke-secondary) p-3', children: [
+            jsxs('p', { className: 'text-sm', children: [
+              jsx(ServiceIcon, { service: service }),
+              ' ',
+              jsx('strong', { children: service }),
+              ' → ',
+              jsx('strong', { children: normalizedNew || '…' })
+            ] }),
+            jsx('p', { className: 'mt-2 text-xs text-(--ui-text-tertiary)', children: 'Origin determines where this credential may be released. Policy, leases, and agent access are evaluated against the new origin after rebinding.' })
+          ] }),
+          jsxs('div', { className: 'grid gap-1.5', children: [
+            jsx('label', { className: 'text-xs font-medium', children: 'New origin (service)' }),
+            jsx(Input, { value: newService, onChange: function (e) { setNewService(e.target.value) }, placeholder: 'e.g. accounts.google.com', autoFocus: true })
+          ] }),
+          jsx('p', { className: 'text-xs text-(--ui-text-quaternary)', children: 'The stored secret is moved unchanged — never displayed, never replaced. Use Rotate to replace secret material.' })
+        ] }),
+        jsx(DialogFooter, { children: [
+          jsx(Button, { onClick: doClose, variant: 'ghost', size: 'sm', children: 'Cancel' }),
+          jsx(Button, { onClick: function () { setStep('typeConfirm') }, disabled: !normalizedNew || normalizedNew === service, size: 'sm', children: 'Continue' })
+        ] })
+      ] })
+    ] })
+  }
+
+  // Step 2: type the NEW origin to confirm the destination. Also renders the
+  // in-flight 'busy' state (button disabled, 'Working…') so the dialog does
+  // not unmount while the request is outstanding — errors return here.
+  if (step === 'typeConfirm' || step === 'busy') {
+    return jsx(Dialog, { open: true, onOpenChange: function (open) { if (!open) doClose() }, children: [
+      jsx(DialogContent, { className: 'max-w-md', children: [
+        jsx(DialogHeader, { children: [
+          jsx(DialogTitle, { children: 'Confirm origin rebind' }),
+          jsx(DialogDescription, { children: 'Type the new origin to confirm where this credential will be releasable.' })
+        ] }),
+        jsxs('div', { className: 'grid gap-4 py-4', children: [
+          jsxs('div', { className: 'rounded-lg border border-(--ui-stroke-secondary) p-3', children: [
+            jsxs('p', { className: 'text-sm', children: [
+              jsx('strong', { children: service }),
+              ' → ',
+              jsx('strong', { children: normalizedNew })
+            ] }),
+            alias ? jsx('p', { className: 'mt-1 text-xs text-(--ui-text-tertiary)', children: 'Alias ' + alias + ' is unchanged.' }) : null
+          ] }),
+          jsx('label', { className: 'text-sm', children: 'Type \u201c' + normalizedNew + '\u201d to confirm' }),
+          jsx(Input, { value: confirmText, onChange: function (e) { setConfirmText(e.target.value) }, placeholder: normalizedNew, disabled: step === 'busy' }),
+          mutationError ? jsx(ErrorState, { title: mutationErrorDetails(mutationError).title, description: mutationErrorDetails(mutationError).description, children: jsx(Button, { size: 'sm', variant: 'outline', onClick: function () { setMutationError(null) }, children: 'Dismiss' }) }) : null
+        ] }),
+        jsx(DialogFooter, { children: [
+          jsx(Button, { onClick: function () { setStep('form') }, variant: 'ghost', size: 'sm', disabled: step === 'busy', children: 'Back' }),
+          jsx(Button, { onClick: doRebind, disabled: confirmText !== normalizedNew || step === 'busy', size: 'sm', children: step === 'busy' ? 'Working\u2026' : 'Rebind origin' })
+        ] })
+      ] })
+    ] })
+  }
+
+  return null
+}
+
 // -- credential inventory table + toolbar -------------------------------------
 
 var FILTER_BUCKETS = [
@@ -748,6 +1020,8 @@ function CredentialRow(_a) {
   var record = _a.record
   var onRotate = _a.onRotate
   var onDelete = _a.onDelete
+  var onEditMetadata = _a.onEditMetadata
+  var onRebindOrigin = _a.onRebindOrigin
   var _b = useState(false), expanded = _b[0], setExpanded = _b[1]
 
   var now = Date.now()
@@ -794,6 +1068,8 @@ function CredentialRow(_a) {
             jsx(DropdownMenuContent, { align: 'end', children: [
               jsx('div', { className: 'px-2 py-1.5 text-(--ui-text-quaternary) text-[0.6875rem]', children: safeText(record.service, 'credential') + ' / ' + safeText(record.alias || record.name, '') }),
               jsx(DropdownMenuSeparator, {}),
+              jsx(DropdownMenuItem, { onClick: function () { onEditMetadata(record) }, children: jsxs('span', { className: 'inline-flex items-center gap-2', children: [jsx(Codicon, { name: 'edit', size: '0.8rem' }), 'Edit metadata'] }) }),
+              jsx(DropdownMenuItem, { onClick: function () { onRebindOrigin(record) }, children: jsxs('span', { className: 'inline-flex items-center gap-2', children: [jsx(Codicon, { name: 'arrow-swap', size: '0.8rem' }), 'Rebind origin'] }) }),
               jsx(DropdownMenuItem, { onClick: function () { onRotate(record) }, children: jsxs('span', { className: 'inline-flex items-center gap-2', children: [jsx(Codicon, { name: 'sync', size: '0.8rem' }), 'Rotate'] }) }),
               jsx(DropdownMenuItem, { onClick: function () { onDelete(record) }, children: jsxs('span', { className: 'inline-flex items-center gap-2 text-destructive', children: [jsx(Codicon, { name: 'trash', size: '0.8rem' }), 'Delete'] }) })
             ] })
@@ -835,6 +1111,8 @@ function CredentialsTab(_a) {
   var onRotate = _a.onRotate
   var onDelete = _a.onDelete
   var onAdd = _a.onAdd
+  var onEditMetadata = _a.onEditMetadata
+  var onRebindOrigin = _a.onRebindOrigin
 
   var credentials = credentialsQ.data && credentialsQ.data.credentials || []
   var isLoading = credentialsQ.isLoading
@@ -893,7 +1171,7 @@ function CredentialsTab(_a) {
       mutationsEnabled ? jsx(Button, { onClick: onAdd, size: 'sm', children: jsxs('span', { className: 'inline-flex items-center gap-1.5', children: [jsx(Codicon, { name: 'plus', size: '0.8rem' }), 'Add'] }) }) : null
     ] }),
     filtered.length > 0
-      ? jsx('div', { className: 'grid gap-2', children: filtered.map(function (record, i) { return jsx(CredentialRow, { record: record, onRotate: onRotate, onDelete: onDelete, key: (record.id || safeText(record.service, 'cred')) + '-' + i }) }) })
+    ? jsx('div', { className: 'grid gap-2', children: filtered.map(function (record, i) { return jsx(CredentialRow, { record: record, onRotate: onRotate, onDelete: onDelete, onEditMetadata: onEditMetadata, onRebindOrigin: onRebindOrigin, key: (record.id || safeText(record.service, 'cred')) + '-' + i }) }) })
       : jsx(EmptyState, { title: searchQuery || statusFilter !== 'all' ? 'No credentials match your filters' : 'No credential metadata', description: searchQuery || statusFilter !== 'all' ? 'Try adjusting your search or filter selection.' : 'This profile does not currently report credential records.' })
   ] })
 }
@@ -1072,6 +1350,8 @@ function VaultPage(_a) {
   var _c = useState(null), openDialog = _c[0], setOpenDialog = _c[1]
   var _d = useState(null), rotateTarget = _d[0], setRotateTarget = _d[1]
   var _e = useState(null), deleteTarget = _e[0], setDeleteTarget = _e[1]
+  var _f = useState(null), editTarget = _f[0], setEditTarget = _f[1]
+  var _g = useState(null), rebindTarget = _g[0], setRebindTarget = _g[1]
   var queryClient = useQueryClient()
   var nowRef = useRef(Date.now())
 
@@ -1126,7 +1406,9 @@ function VaultPage(_a) {
   var openRotate = useCallback(function (record) { setRotateTarget(record); setOpenDialog('rotate') }, [])
   var openDelete = useCallback(function (record) { setDeleteTarget(record); setOpenDialog('delete') }, [])
   var openAdd = useCallback(function () { setOpenDialog('add') }, [])
-  var closeDialog = useCallback(function () { setOpenDialog(null); setRotateTarget(null); setDeleteTarget(null) }, [])
+  var openEditMetadata = useCallback(function (record) { setEditTarget(record); setOpenDialog('edit-metadata') }, [])
+  var openRebindOrigin = useCallback(function (record) { setRebindTarget(record); setOpenDialog('rebind-origin') }, [])
+  var closeDialog = useCallback(function () { setOpenDialog(null); setRotateTarget(null); setDeleteTarget(null); setEditTarget(null); setRebindTarget(null) }, [])
 
   // current tab state — MUST be hoisted above the loading/error early returns
   // below: hooks may not appear after a conditional return (React #310,
@@ -1163,7 +1445,9 @@ function VaultPage(_a) {
       mutationsEnabled: mutationsEnabled,
       onRotate: openRotate,
       onDelete: openDelete,
-      onAdd: openAdd
+      onAdd: openAdd,
+      onEditMetadata: openEditMetadata,
+      onRebindOrigin: openRebindOrigin
     })
   } else if (activeTab === 'requests') {
     tabContent = jsx(RequestsTab, { requestsQ: requestsQ })
@@ -1207,7 +1491,9 @@ function VaultPage(_a) {
           jsx('div', { className: 'pb-5 text-xs text-(--ui-text-quaternary)', children: 'Hermes Vault Desktop never renders or persists secret values, ciphertext, tokens, or materialized credentials.' }),
           openDialog === 'add' ? jsx(AddCredentialDialog, { onClose: closeDialog, mutationsEnabled: mutationsEnabled, mutateCall: mutateCall, onSuccess: refresh }) : null,
           openDialog === 'rotate' ? jsx(RotateCredentialDialog, { target: rotateTarget, onClose: closeDialog, mutationsEnabled: mutationsEnabled, mutateCall: mutateCall, onSuccess: refresh }) : null,
-          openDialog === 'delete' ? jsx(DeleteCredentialDialog, { target: deleteTarget, onClose: closeDialog, mutationsEnabled: mutationsEnabled, mutateCall: mutateCall, onSuccess: refresh, credentialsQ: credentialsQ, leasesQ: leasesQ }) : null
+          openDialog === 'delete' ? jsx(DeleteCredentialDialog, { target: deleteTarget, onClose: closeDialog, mutationsEnabled: mutationsEnabled, mutateCall: mutateCall, onSuccess: refresh, credentialsQ: credentialsQ, leasesQ: leasesQ }) : null,
+          openDialog === 'edit-metadata' ? jsx(EditMetadataDialog, { target: editTarget, onClose: closeDialog, mutationsEnabled: mutationsEnabled, mutateCall: mutateCall, onSuccess: refresh }) : null,
+          openDialog === 'rebind-origin' ? jsx(RebindOriginDialog, { target: rebindTarget, onClose: closeDialog, mutationsEnabled: mutationsEnabled, mutateCall: mutateCall, onSuccess: refresh }) : null
         ]
       })
     ]

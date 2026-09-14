@@ -405,6 +405,8 @@ hermes-vault import --from-env ~/.hermes/.env --dry-run
 hermes-vault import --from-env ~/.hermes/.env
 hermes-vault import --from-env ~/.hermes/.env --map CUSTOM_VENDOR_TOKEN=custom-vendor:personal_access_token
 hermes-vault add openai --alias primary
+hermes-vault edit-metadata openai --alias primary --new-alias work --tags prod,ci
+hermes-vault rebind-origin mail.google.com accounts.google.com --yes
 hermes-vault list
 hermes-vault verify openai
 hermes-vault broker env openai --agent dwight --ttl 900

@@ -619,3 +619,174 @@ def test_host_header_loopback_accepted(client, fake_popen, clean_env, host):
     fake_popen.stdout = _ok_result({"profile": "default"})
     resp = client.get("/overview", headers={"host": host})
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Issue #90: update-metadata and rebind-origin routes
+# ---------------------------------------------------------------------------
+
+
+def test_update_metadata_route(client, fake_popen, clean_env, mutations_on):
+    fake_popen.stdout = _ok_result(
+        {"allowed": True, "action": "update_credential_metadata", "service": "openai",
+         "record": {"service": "openai", "alias": "renamed", "tags": ["prod"]}}
+    )
+    resp = client.post(
+        "/mutations/update-metadata",
+        json={"service_or_id": "openai", "alias": "default", "new_alias": "renamed", "tags": ["prod"]},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["action"] == "update_credential_metadata"
+    assert body["record"]["alias"] == "renamed"
+    assert "secret" not in json.dumps(body)
+    assert len(fake_popen.instances) == 1
+    proc = fake_popen.instances[0]
+    assert proc.args == ["hermes-vault-canonical", "--no-banner", "desktop-bridge", "--allow-mutations"]
+    sent = json.loads(proc.input)
+    assert sent["method"] == "update_metadata"
+    assert sent["params"]["service_or_id"] == "openai"
+    assert sent["params"]["alias"] == "default"
+    assert sent["params"]["new_alias"] == "renamed"
+    assert sent["params"]["tags"] == ["prod"]
+
+
+def test_update_metadata_route_clears_notes(client, fake_popen, clean_env, mutations_on):
+    fake_popen.stdout = _ok_result({"allowed": True, "action": "update_credential_metadata"})
+    resp = client.post(
+        "/mutations/update-metadata",
+        json={"service_or_id": "openai", "notes": ""},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200
+    sent = json.loads(fake_popen.instances[0].input)
+    assert sent["params"]["notes"] == ""
+
+
+def test_update_metadata_route_clears_tags(client, fake_popen, clean_env, mutations_on):
+    """Issue #90: ``tags: []`` is a meaningful clear (mutation layer treats
+    omitted as unchanged, [] as clear) and must reach the bridge — not be
+    dropped by the adapter like the add-credential route's optional tags."""
+    fake_popen.stdout = _ok_result({"allowed": True, "action": "update_credential_metadata"})
+    resp = client.post(
+        "/mutations/update-metadata",
+        json={"service_or_id": "openai", "tags": []},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200
+    sent = json.loads(fake_popen.instances[0].input)
+    assert sent["params"]["tags"] == []
+
+
+def test_update_metadata_route_requires_a_field(client, fake_popen, clean_env, mutations_on):
+    resp = client.post(
+        "/mutations/update-metadata",
+        json={"service_or_id": "openai"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 400
+    assert "at least one" in resp.json()["detail"]
+    assert fake_popen.instances == []
+
+
+def test_update_metadata_route_rejects_unknown_fields(client, fake_popen, clean_env, mutations_on):
+    resp = client.post(
+        "/mutations/update-metadata",
+        json={"service_or_id": "openai", "new_secret": POISON_SECRET},
+        headers=AUTH,
+    )
+    assert resp.status_code == 400
+    assert "unknown field" in resp.json()["detail"]
+    assert fake_popen.instances == []
+
+
+def test_update_metadata_route_rejects_non_bearer(client, fake_popen, clean_env, mutations_on):
+    resp = client.post(
+        "/mutations/update-metadata",
+        json={"service_or_id": "openai", "new_alias": "x"},
+    )
+    assert resp.status_code == 401
+    assert fake_popen.instances == []
+
+
+def test_rebind_origin_route(client, fake_popen, clean_env, mutations_on):
+    fake_popen.stdout = _ok_result(
+        {"allowed": True, "action": "rebind_credential_origin", "service": "openai",
+         "record": {"service": "github", "alias": "default"}}
+    )
+    resp = client.post(
+        "/mutations/rebind-origin",
+        json={"service_or_id": "openai", "alias": "default", "new_service": "github", "confirmation": "github"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["action"] == "rebind_credential_origin"
+    assert body["record"]["service"] == "github"
+    assert len(fake_popen.instances) == 1
+    proc = fake_popen.instances[0]
+    assert proc.args == ["hermes-vault-canonical", "--no-banner", "desktop-bridge", "--allow-mutations"]
+    sent = json.loads(proc.input)
+    assert sent["method"] == "rebind_origin"
+    assert sent["params"]["new_service"] == "github"
+    assert sent["params"]["confirmation"] == "github"
+
+
+def test_rebind_origin_route_requires_confirmation(client, fake_popen, clean_env, mutations_on):
+    resp = client.post(
+        "/mutations/rebind-origin",
+        json={"service_or_id": "openai", "new_service": "github"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 403
+    assert "confirmation" in resp.json()["detail"]
+    assert fake_popen.instances == []
+
+
+def test_rebind_origin_route_rejects_secret_fields(client, fake_popen, clean_env, mutations_on):
+    resp = client.post(
+        "/mutations/rebind-origin",
+        json={"service_or_id": "openai", "new_service": "github", "confirmation": "github", "secret": POISON_SECRET},
+        headers=AUTH,
+    )
+    assert resp.status_code == 400
+    assert "unknown field" in resp.json()["detail"]
+    assert fake_popen.instances == []
+
+
+@pytest.mark.parametrize("route", ["/mutations/update-metadata", "/mutations/rebind-origin"])
+def test_editing_routes_reject_query_params(client, fake_popen, clean_env, mutations_on, route):
+    body = {"service_or_id": "openai", "new_alias": "x"}
+    if route.endswith("rebind-origin"):
+        body = {"service_or_id": "openai", "new_service": "github", "confirmation": "github"}
+    resp = client.post(f"{route}?profile=default", json=body, headers=AUTH)
+    assert resp.status_code == 400
+    assert fake_popen.instances == []
+
+
+@pytest.mark.parametrize("route", ["/mutations/update-metadata", "/mutations/rebind-origin"])
+def test_editing_routes_404_when_disabled(client, fake_popen, clean_env, route):
+    body = {"service_or_id": "openai", "new_alias": "x"}
+    if route.endswith("rebind-origin"):
+        body = {"service_or_id": "openai", "new_service": "github", "confirmation": "github"}
+    resp = client.post(route, json=body, headers=AUTH)
+    assert resp.status_code == 404
+    assert fake_popen.instances == []
+
+
+def test_hello_advertises_editing_methods(client, fake_popen, clean_env, mutations_on):
+    fake_popen.stdout = _ok_result(
+        {
+            "name": "hermes-vault-desktop-bridge",
+            "read_only": True,
+            "mutations": False,
+            "capabilities": list(plugin_api.ALL_METHODS),
+        }
+    )
+    resp = client.get("/hello")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mutations"] is True
+    assert "update_metadata" in body["capabilities"]
+    assert "rebind_origin" in body["capabilities"]

@@ -1240,6 +1240,108 @@ def delete(
 
 
 @_typer_app.command()
+def edit_metadata(
+    ctx: typer.Context,
+    service_or_id: str = typer.Argument(help=SELECTOR_HELP),
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
+    new_alias: str | None = typer.Option(None, "--new-alias", help="Rename the credential's alias (identifier)."),
+    tags: str | None = typer.Option(None, "--tags", help="Comma-separated tags (replaces existing tags)."),
+    notes: str | None = typer.Option(None, "--notes", help="Set notes (use --clear-notes to remove)."),
+    clear_notes: bool = typer.Option(False, "--clear-notes", help="Clear the notes field."),
+) -> None:
+    """Edit non-secret credential metadata (alias, tags, notes).
+
+    The stored secret is never displayed or replaced; use rotate to change
+    secret material. Produces an ``update_credential_metadata`` audit entry.
+
+    \b
+    Examples:
+      hermes-vault edit-metadata openai --new-alias work
+      hermes-vault edit-metadata github --tags prod,ci
+      hermes-vault edit-metadata openai --alias old --new-alias new --clear-notes
+    """
+    parsed_tags = [t.strip() for t in tags.split(",") if t.strip()] if tags is not None else None
+    notes_value: str | None
+    if clear_notes:
+        notes_value = ""
+    else:
+        notes_value = notes
+    if new_alias is None and parsed_tags is None and notes_value is None:
+        console.print("[red]Nothing to edit: provide --new-alias, --tags, --notes, or --clear-notes.[/red]")
+        raise typer.Exit(code=1)
+    _, _, _, mutations = build_services(prompt=True)
+    try:
+        result = mutations.update_credential_metadata(
+            agent_id=OPERATOR_AGENT_ID,
+            service_or_id=service_or_id,
+            alias=new_alias,
+            tags=parsed_tags,
+            notes=notes_value,
+            resolution_alias=alias,
+        )
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+        raise typer.Exit(code=1)
+    except KeyError as exc:
+        console.print(f"[red]Not found: {exc}[/red]")
+        raise typer.Exit(code=1)
+    _handle_mutation_error(result)
+    assert result.record is not None
+    console.print(
+        f"Updated metadata for credential [cyan]{result.record.id}[/cyan] "
+        f"alias '{result.record.alias}', {len(result.record.tags)} tag(s), "
+        f"{'notes set' if result.record.notes else 'no notes'}. The secret is unchanged."
+    )
+
+
+@_typer_app.command()
+def rebind_origin(
+    ctx: typer.Context,
+    service_or_id: str = typer.Argument(help=SELECTOR_HELP),
+    new_service: str = typer.Argument(help="The new origin (service) for the credential."),
+    alias: str | None = typer.Option(None, "--alias", help="Target a specific alias when multiple credentials exist for a service."),
+    yes: bool = typer.Option(False, "--yes", help="Confirm the origin rebind without prompting."),
+) -> None:
+    """Move a credential to a different origin (service).
+
+    Origin is the authorization boundary: policy, leases, and agent access
+    are evaluated against the new service after rebinding. The stored secret
+    is moved unchanged. Requires --yes; produces a ``rebind_credential_origin``
+    audit entry.
+
+    \b
+    Examples:
+      hermes-vault rebind-origin mail.google.com accounts.google.com --yes
+      hermes-vault rebind-origin github --alias work gitlab --yes
+    """
+    if not yes:
+        console.print("[red]Origin rebinding requires --yes (it changes where the credential may be released).[/red]")
+        raise typer.Exit(code=1)
+    _, _, _, mutations = build_services(prompt=True)
+    try:
+        result = mutations.rebind_credential_origin(
+            agent_id=OPERATOR_AGENT_ID,
+            service_or_id=service_or_id,
+            new_service=new_service,
+            alias=alias,
+        )
+    except AmbiguousTargetError as exc:
+        console.print(f"[red]Ambiguous: {exc}[/red]")
+        console.print("[yellow]Use --alias or provide the credential ID.[/yellow]")
+        raise typer.Exit(code=1)
+    except KeyError as exc:
+        console.print(f"[red]Not found: {exc}[/red]")
+        raise typer.Exit(code=1)
+    _handle_mutation_error(result)
+    assert result.record is not None
+    console.print(
+        f"Rebound credential [cyan]{result.record.id}[/cyan] origin: "
+        f"[bold]{service_or_id}[/bold] → [bold]{result.record.service}[/bold]. The secret is unchanged."
+    )
+
+
+@_typer_app.command()
 def audit(
     ctx: typer.Context,
     agent: str | None = typer.Option(None, "--agent", help="Filter by agent ID."),

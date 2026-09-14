@@ -570,3 +570,415 @@ def test_full_lifecycle_through_mutations(tmp_path: Path) -> None:
     assert "rotate_credential" in actions
     assert "add_credential" in actions
     assert all(e["decision"] == "allow" for e in entries)
+
+
+# ── Issue #90: update_credential_metadata + rebind_credential_origin ────
+
+
+def _make_issue90_mutations(
+    tmp_path: Path,
+    crypto_version: str | None = None,
+) -> tuple[Vault, AuditLogger, VaultMutations]:
+    """Fresh vault + mutations with one 'openai/legacy-alias' credential.
+
+    ``crypto_version`` forces the row's envelope version (aesgcm-v1 legacy or
+    aesgcm-v2 AAD-bound) via the documented env flag so both re-encryption
+    paths can be exercised."""
+    import os
+
+    if crypto_version is not None:
+        os.environ["HERMES_VAULT_CRYPTO_VERSION"] = crypto_version
+    try:
+        vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-pass")
+        vault.add_credential(
+            "openai",
+            "sk-original-7f3a",
+            "api_key",
+            alias="legacy-alias",
+            tags=["stale"],
+            notes="old note",
+        )
+    finally:
+        if crypto_version is not None:
+            os.environ.pop("HERMES_VAULT_CRYPTO_VERSION", None)
+    policy = PolicyEngine(PolicyConfig())
+    audit = AuditLogger(tmp_path / "vault.db")
+    mutations = VaultMutations(vault, policy, audit)
+    return vault, audit, mutations
+
+
+def test_operator_update_metadata_alias_tags_notes(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+
+    result = mutations.update_credential_metadata(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="openai",
+        alias="renamed",
+        tags=["prod", "ci"],
+        notes="fresh note",
+        resolution_alias="legacy-alias",
+    )
+
+    assert result.allowed is True
+    assert result.record is not None
+    assert result.record.alias == "renamed"
+    assert result.record.tags == ["prod", "ci"]
+    assert result.record.notes == "fresh note"
+    assert result.action == "update_credential_metadata"
+
+    record = vault.resolve_credential("openai", alias="renamed")
+    secret = vault.get_secret(record.id)
+    assert secret is not None and secret.secret == "sk-original-7f3a", (
+        "metadata edit must not change the stored secret"
+    )
+    assert secret.tags == ["prod", "ci"], "payload tags mirror the row after re-encryption"
+    assert secret.notes == "fresh note"
+
+    entries = audit.list_recent(limit=5, action="update_credential_metadata")
+    assert len(entries) == 1
+    assert entries[0]["decision"] == "allow"
+    assert entries[0]["service"] == "openai"
+
+
+def test_update_metadata_clears_notes_with_empty_string(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+
+    result = mutations.update_credential_metadata(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="openai",
+        notes="",
+        resolution_alias="legacy-alias",
+    )
+
+    assert result.allowed is True
+    record = vault.resolve_credential("openai", alias="legacy-alias")
+    assert record.notes is None
+    secret = vault.get_secret(record.id)
+    assert secret is not None and secret.secret == "sk-original-7f3a"
+    assert secret.notes is None
+
+
+def test_update_metadata_no_fields_is_denied(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+
+    result = mutations.update_credential_metadata(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="openai",
+        resolution_alias="legacy-alias",
+    )
+
+    assert result.allowed is False
+    assert "no metadata fields" in result.reason
+    assert len(vault.list_credentials()) == 1, "row untouched by the denied call"
+
+
+def test_update_metadata_duplicate_alias_denied(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+    vault.add_credential("openai", "sk-other", "api_key", alias="taken")
+
+    result = mutations.update_credential_metadata(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="openai",
+        alias="taken",
+        resolution_alias="legacy-alias",
+    )
+
+    assert result.allowed is False
+    assert "already exists" in result.reason
+    record = vault.resolve_credential("openai", alias="legacy-alias")
+    secret = vault.get_secret(record.id)
+    assert secret is not None and secret.secret == "sk-original-7f3a"
+
+
+def test_update_metadata_unknown_credential_denied(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+
+    result = mutations.update_credential_metadata(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="nope",
+        tags=["x"],
+    )
+
+    assert result.allowed is False
+    assert "not found" in result.reason
+
+
+def test_update_metadata_legacy_v1_row_still_decrypts(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path, crypto_version="aesgcm-v1")
+
+    result = mutations.update_credential_metadata(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="openai",
+        alias="v1-renamed",
+        resolution_alias="legacy-alias",
+    )
+
+    assert result.allowed is True
+    record = vault.resolve_credential("openai", alias="v1-renamed")
+    assert record.crypto_version == "aesgcm-v1"
+    secret = vault.get_secret(record.id)
+    assert secret is not None and secret.secret == "sk-original-7f3a"
+
+
+def test_update_metadata_v2_row_rebinds_aad(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path, crypto_version="aesgcm-v2")
+
+    result = mutations.update_credential_metadata(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="openai",
+        alias="v2-renamed",
+        tags=["renamed"],
+        resolution_alias="legacy-alias",
+    )
+
+    assert result.allowed is True
+    record = vault.resolve_credential("openai", alias="v2-renamed")
+    assert record.crypto_version == "aesgcm-v2"
+    # The renamed row must decrypt under the AAD derived from its NEW alias —
+    # proof the payload was re-encrypted, not just relabeled (issue #60 class).
+    secret = vault.get_secret(record.id)
+    assert secret is not None and secret.secret == "sk-original-7f3a"
+    assert secret.tags == ["renamed"]
+
+
+def test_operator_rebind_origin_moves_service(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+
+    result = mutations.rebind_credential_origin(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="openai",
+        new_service="accounts.google.com",
+        alias="legacy-alias",
+    )
+
+    assert result.allowed is True
+    assert result.record is not None
+    assert result.record.service == "accounts.google.com"
+    assert result.record.alias == "legacy-alias"
+    assert result.action == "rebind_credential_origin"
+
+    record = vault.resolve_credential("accounts.google.com", alias="legacy-alias")
+    secret = vault.get_secret(record.id)
+    assert secret is not None and secret.secret == "sk-original-7f3a", (
+        "rebind must move the secret unchanged"
+    )
+    # The old origin no longer resolves to this credential.
+    try:
+        vault.resolve_credential("openai", alias="legacy-alias")
+        raised = False
+    except KeyError:
+        raised = True
+    assert raised, "old origin must stop resolving after the rebind"
+
+    entries = audit.list_recent(limit=5, action="rebind_credential_origin")
+    assert len(entries) == 1
+    assert entries[0]["decision"] == "allow"
+    # The authority change must be identifiable in the audit metadata.
+    entry_meta = entries[0]["metadata"]
+    assert isinstance(entry_meta, dict)
+    assert entry_meta["old_service"] == "openai"
+    assert entry_meta["new_service"] == "accounts.google.com"
+
+
+def test_rebind_origin_normalizes_new_service(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+
+    result = mutations.rebind_credential_origin(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="openai",
+        new_service="  GITHUB  ",
+        alias="legacy-alias",
+    )
+
+    assert result.allowed is True
+    assert result.record is not None
+    assert result.record.service == "github"
+
+
+def test_rebind_origin_same_origin_denied(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+
+    result = mutations.rebind_credential_origin(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="openai",
+        new_service="openai",
+        alias="legacy-alias",
+    )
+
+    assert result.allowed is False
+    assert "matches the current origin" in result.reason
+
+
+def test_rebind_origin_duplicate_destination_denied(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+    vault.add_credential("github", "gh-existing", "api_key", alias="legacy-alias")
+
+    result = mutations.rebind_credential_origin(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="openai",
+        new_service="github",
+        alias="legacy-alias",
+    )
+
+    assert result.allowed is False
+    assert "already exists" in result.reason
+    # Both rows keep their original secrets.
+    github_secret = vault.get_secret("github")
+    assert github_secret is not None and github_secret.secret == "gh-existing"
+    openai_record = vault.resolve_credential("openai", alias="legacy-alias")
+    openai_secret = vault.get_secret(openai_record.id)
+    assert openai_secret is not None and openai_secret.secret == "sk-original-7f3a"
+
+
+def test_rebind_origin_v2_row_rebinds_aad(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path, crypto_version="aesgcm-v2")
+
+    result = mutations.rebind_credential_origin(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="openai",
+        new_service="accounts.google.com",
+        alias="legacy-alias",
+    )
+
+    assert result.allowed is True
+    record = vault.resolve_credential("accounts.google.com", alias="legacy-alias")
+    assert record.crypto_version == "aesgcm-v2"
+    secret = vault.get_secret(record.id)
+    assert secret is not None and secret.secret == "sk-original-7f3a", (
+        "v2 row must decrypt under the NEW origin's AAD after rebind"
+    )
+
+
+def test_rebind_origin_unknown_credential_denied(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+
+    result = mutations.rebind_credential_origin(
+        agent_id=OPERATOR_AGENT_ID,
+        service_or_id="nope",
+        new_service="github",
+    )
+
+    assert result.allowed is False
+    assert "not found" in result.reason
+
+
+# ── Issue #90: agent policy paths ────────────────────────────────────────
+
+
+def test_agent_update_metadata_denied_without_action(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+    policy = _make_policy_with_actions(
+        "agent1",
+        services={"openai": [ServiceAction.get_env]},  # no update_metadata
+    )
+    audit2 = AuditLogger(vault.db_path)
+    mutations2 = VaultMutations(vault, policy, audit2)
+
+    result = mutations2.update_credential_metadata(
+        agent_id="agent1",
+        service_or_id="openai",
+        tags=["x"],
+        resolution_alias="legacy-alias",
+    )
+
+    assert result.allowed is False
+    assert "not permitted" in result.reason
+
+
+def test_agent_update_metadata_allowed_with_action(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+    policy = _make_policy_with_actions(
+        "agent1",
+        services={"openai": [ServiceAction.update_metadata]},
+    )
+    audit2 = AuditLogger(vault.db_path)
+    mutations2 = VaultMutations(vault, policy, audit2)
+
+    result = mutations2.update_credential_metadata(
+        agent_id="agent1",
+        service_or_id="openai",
+        notes="agent edited",
+        resolution_alias="legacy-alias",
+    )
+
+    assert result.allowed is True
+    record = vault.resolve_credential("openai", alias="legacy-alias")
+    assert record.notes == "agent edited"
+
+
+def test_agent_rebind_denied_without_new_origin_permission(tmp_path: Path) -> None:
+    """Rebind is an authorization-boundary change: the agent must hold
+    rebind_origin on BOTH the old and the new origin. Old-origin permission
+    alone must not be enough to move a credential somewhere new."""
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+    policy = _make_policy_with_actions(
+        "agent1",
+        services={
+            "openai": [ServiceAction.rebind_origin],
+            # github: absent — agent not permitted there
+        },
+    )
+    audit2 = AuditLogger(vault.db_path)
+    mutations2 = VaultMutations(vault, policy, audit2)
+
+    result = mutations2.rebind_credential_origin(
+        agent_id="agent1",
+        service_or_id="openai",
+        new_service="github",
+        alias="legacy-alias",
+    )
+
+    assert result.allowed is False
+    assert "not allowed" in result.reason
+    record = vault.resolve_credential("openai", alias="legacy-alias")
+    kept_secret = vault.get_secret(record.id)
+    assert kept_secret is not None and kept_secret.secret == "sk-original-7f3a"
+
+
+def test_agent_rebind_denied_without_old_origin_permission(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+    policy = _make_policy_with_actions(
+        "agent1",
+        services={
+            "openai": [ServiceAction.get_env],  # no rebind_origin on old origin
+            "github": [ServiceAction.rebind_origin],
+        },
+    )
+    audit2 = AuditLogger(vault.db_path)
+    mutations2 = VaultMutations(vault, policy, audit2)
+
+    result = mutations2.rebind_credential_origin(
+        agent_id="agent1",
+        service_or_id="openai",
+        new_service="github",
+        alias="legacy-alias",
+    )
+
+    assert result.allowed is False
+    assert "not permitted" in result.reason
+
+
+def test_agent_rebind_allowed_with_both_origins(tmp_path: Path) -> None:
+    vault, audit, mutations = _make_issue90_mutations(tmp_path)
+    policy = _make_policy_with_actions(
+        "agent1",
+        services={
+            "openai": [ServiceAction.rebind_origin],
+            "github": [ServiceAction.rebind_origin],
+        },
+    )
+    audit2 = AuditLogger(vault.db_path)
+    mutations2 = VaultMutations(vault, policy, audit2)
+
+    result = mutations2.rebind_credential_origin(
+        agent_id="agent1",
+        service_or_id="openai",
+        new_service="github",
+        alias="legacy-alias",
+    )
+
+    assert result.allowed is True
+    record = vault.resolve_credential("github", alias="legacy-alias")
+    moved_secret = vault.get_secret(record.id)
+    assert moved_secret is not None and moved_secret.secret == "sk-original-7f3a"
+

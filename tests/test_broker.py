@@ -1263,3 +1263,57 @@ def test_get_ephemeral_env_oauth_refresh_cooldown_respected(tmp_path: Path) -> N
         assert len(endpoint.calls) == first_call_count
         # The second call should return the already-refreshed token
         assert decision2.env["OPENAI_API_KEY"] == "cooldown_token"
+
+
+# ── Issue #90: broker wrappers for metadata edit + origin rebind ─────────
+
+
+def test_broker_update_credential_metadata_wrapper(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-pass")
+    record = vault.add_credential("openai", "sk-wrap", "api_key", alias="primary")
+    broker = Broker(vault, PolicyEngine(PolicyConfig()), StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+
+    result = broker.update_credential_metadata(
+        agent_id="operator",
+        service_or_id=record.id,
+        alias="secondary",
+        tags=["wrapped"],
+        notes="via broker",
+    )
+
+    assert result.allowed is True
+    assert result.record is not None
+    assert result.record.alias == "secondary"
+    entries = broker.audit.list_recent(limit=5, action="update_credential_metadata")
+    assert len(entries) == 1
+    assert entries[0]["decision"] == Decision.allow.value
+    updated = vault.resolve_credential("openai", alias="secondary")
+    secret = vault.get_secret(updated.id)
+    assert secret is not None and secret.secret == "sk-wrap"
+
+
+def test_broker_rebind_credential_origin_wrapper(tmp_path: Path) -> None:
+    vault = Vault(tmp_path / "vault.db", tmp_path / "salt.bin", "test-pass")
+    record = vault.add_credential("openai", "sk-rebind", "api_key", alias="primary")
+    broker = Broker(vault, PolicyEngine(PolicyConfig()), StubVerifier(), AuditLogger(tmp_path / "vault.db"))
+
+    result = broker.rebind_credential_origin(
+        agent_id="operator",
+        service_or_id=record.id,
+        new_service="accounts.google.com",
+    )
+
+    assert result.allowed is True
+    assert result.record is not None
+    assert result.record.service == "accounts.google.com"
+    entries = broker.audit.list_recent(limit=5, action="rebind_credential_origin")
+    assert len(entries) == 1
+    assert entries[0]["decision"] == Decision.allow.value
+    entry_meta = entries[0]["metadata"]
+    assert isinstance(entry_meta, dict)
+    assert entry_meta["old_service"] == "openai"
+    assert entry_meta["new_service"] == "accounts.google.com"
+    moved = vault.resolve_credential("accounts.google.com", alias="primary")
+    secret = vault.get_secret(moved.id)
+    assert secret is not None and secret.secret == "sk-rebind"
+

@@ -34,7 +34,16 @@ v0.13.0 treats this doc as the operator loop behind the release story. The vault
 - Vault status and last verified timestamp are updated
 - Non-auth failures such as network, scope, endpoint, and rate limit should remain distinct from invalid/expired credential results
 
-## 5. Rotation
+## 5. Correction (#90)
+
+Credentials get fixed in place instead of recreated:
+
+- **Metadata edit** — operator or permitted agent corrects alias, tags, or notes through `VaultMutations.update_credential_metadata`; the secret is neither displayed nor replaced, and the attempt is audited as `update_credential_metadata`
+- **Origin rebind** — moving a credential to a different `service` is an authorization-boundary change: it flows through `VaultMutations.rebind_credential_origin` as its own audited action (carrying `old_service`/`new_service`), requires typed confirmation of the new origin (Desktop) or `--yes` (CLI), and non-operator agents need `rebind_origin` permission on both origins
+- Both operations re-encrypt the payload in-process (fresh nonce) because the payload JSON duplicates tags/notes and `aesgcm-v2` rows bind the alias into the AAD; the field update and payload swap commit atomically
+- Both roll back to the before-image row when the protected audit append fails
+
+## 6. Rotation
 
 - Operator replaces the secret for an existing record
 - Rotation flows through ``VaultMutations`` with policy check and audit
@@ -42,14 +51,14 @@ v0.13.0 treats this doc as the operator loop behind the release story. The vault
 - Old ciphertext is overwritten in the record
 - Status returns to unknown until verification runs again
 
-## 6. Deletion
+## 7. Deletion
 
 - Operator explicitly confirms deletion
 - Deletion flows through ``VaultMutations`` with policy check and audit
 - Agent path requires ``delete`` service action permission
 - Metadata and encrypted payload are removed from SQLite
 
-## 7. Skill Contract
+## 8. Skill Contract
 
 - Generated SKILL.md files tell agents to stop credential freelancing
 - Verification-before-reauth is part of the required workflow

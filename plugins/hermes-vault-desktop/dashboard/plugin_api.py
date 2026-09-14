@@ -125,8 +125,10 @@ ALL_METHODS = (
 
 # Mutation methods are dispatched only when the child was launched with
 # ``--allow-mutations``. The adapter appends that flag to the child argv
-# ONLY on the three mutation routes below; GET routes never pass it.
-MUTATION_METHODS = ("add", "rotate", "delete")
+# ONLY on the mutation routes below; GET routes never pass it.
+# ``update_metadata`` and ``rebind_origin`` (issue #90) follow the same
+# gating, bearer-only auth, and pre-spawn body validation as add/rotate/delete.
+MUTATION_METHODS = ("add", "rotate", "delete", "update_metadata", "rebind_origin")
 
 # Opt-in gate: mutation routes exist but return 404 unless this env var is
 # set to a truthy value. Keeps the installed adapter read-only until the
@@ -169,12 +171,26 @@ MUTATION_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
     ),
     "rotate": frozenset({"service_or_id", "alias", "new_secret", "request_id"}),
     "delete": frozenset({"service_or_id", "alias", "confirmation", "request_id"}),
+    # Issue #90: metadata editing never carries secret material. ``alias`` is
+    # the resolution alias (which credential); ``new_alias``/``tags``/``notes``
+    # are the edited fields. No field here can replace the secret.
+    "update_metadata": frozenset(
+        {"service_or_id", "alias", "new_alias", "tags", "notes", "request_id"}
+    ),
+    # Issue #90: origin rebinding. ``confirmation`` must match the NEW origin
+    # exactly (typed by the operator in the UI) — the destination is the
+    # authorization-sensitive part of a rebind. No secret fields.
+    "rebind_origin": frozenset(
+        {"service_or_id", "alias", "new_service", "confirmation", "request_id"}
+    ),
 }
 
 MUTATION_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "add": frozenset({"service", "secret"}),
     "rotate": frozenset({"service_or_id", "new_secret"}),
     "delete": frozenset({"service_or_id", "confirmation"}),
+    "update_metadata": frozenset({"service_or_id"}),
+    "rebind_origin": frozenset({"service_or_id", "new_service", "confirmation"}),
 }
 
 # Query parameters the adapter understands. Unknown keys are rejected.
@@ -546,6 +562,50 @@ def _validate_mutation_body(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         )
         if "alias" in body and body["alias"] not in (None, ""):
             params["alias"] = _require_bounded_str(body["alias"], field="alias", required=False, max_len=MAX_ALIAS_LENGTH)
+    elif kind == "update_metadata":
+        params["service_or_id"] = _require_bounded_str(
+            body["service_or_id"], field="service_or_id", required=True, max_len=MAX_TARGET_LENGTH
+        )
+        if "alias" in body and body["alias"] not in (None, ""):
+            params["alias"] = _require_bounded_str(body["alias"], field="alias", required=False, max_len=MAX_ALIAS_LENGTH)
+        if "new_alias" in body and body["new_alias"] not in (None, ""):
+            params["new_alias"] = _require_bounded_str(
+                body["new_alias"], field="new_alias", required=False, max_len=MAX_ALIAS_LENGTH
+            )
+        # tags may be intentionally cleared: an empty list is meaningful here
+        # (omitted/None = leave unchanged), mirroring the notes clear-through.
+        if "tags" in body and body["tags"] is not None:
+            tags = body["tags"]
+            if not isinstance(tags, list) or len(tags) > MAX_TAGS_COUNT:
+                raise HTTPException(status_code=400, detail="tags must be a list (max 32)")
+            clean_tags: list[str] = []
+            for tag in tags:
+                clean_tags.append(_require_bounded_str(tag, field="tag", required=False, max_len=MAX_TAG_LENGTH))
+            params["tags"] = clean_tags
+        # notes may be intentionally cleared: empty string is meaningful here
+        if "notes" in body and body["notes"] is not None:
+            if not isinstance(body["notes"], str):
+                raise HTTPException(status_code=400, detail="notes must be a string")
+            if len(body["notes"]) > MAX_NOTES_LENGTH:
+                raise HTTPException(status_code=400, detail="notes too long")
+            params["notes"] = body["notes"]
+        if "new_alias" not in params and "tags" not in params and "notes" not in params:
+            raise HTTPException(
+                status_code=400,
+                detail="at least one of new_alias, tags, notes is required",
+            )
+    elif kind == "rebind_origin":
+        params["service_or_id"] = _require_bounded_str(
+            body["service_or_id"], field="service_or_id", required=True, max_len=MAX_TARGET_LENGTH
+        )
+        params["new_service"] = _require_bounded_str(
+            body["new_service"], field="new_service", required=True, max_len=MAX_SERVICE_LENGTH
+        )
+        params["confirmation"] = _require_bounded_str(
+            body["confirmation"], field="confirmation", required=True, max_len=MAX_SERVICE_LENGTH
+        )
+        if "alias" in body and body["alias"] not in (None, ""):
+            params["alias"] = _require_bounded_str(body["alias"], field="alias", required=False, max_len=MAX_ALIAS_LENGTH)
 
     request_id = _validate_request_id(body.get("request_id"))
     if request_id is not None:
@@ -685,6 +745,47 @@ async def mutations_delete(
         )
     params = _validate_mutation_body("delete", body)
     return _call("delete", params, allow_mutations=True)
+
+
+@router.post("/mutations/update-metadata")
+async def mutations_update_metadata(
+    request: Request,
+    _enabled: None = Depends(_require_mutations_enabled),
+    _query: None = Depends(_no_query),
+    _bearer: None = Depends(_require_bearer),
+) -> dict[str, Any]:
+    """Edit credential metadata (alias/tags/notes) without touching the secret.
+
+    Operator-only, audited via the bridge; the stored secret is neither
+    exposed nor replaced. The body carries no secret-capable fields.
+    """
+    body = await _read_mutation_body(request)
+    params = _validate_mutation_body("update_metadata", body)
+    return _call("update_metadata", params, allow_mutations=True)
+
+
+@router.post("/mutations/rebind-origin")
+async def mutations_rebind_origin(
+    request: Request,
+    _enabled: None = Depends(_require_mutations_enabled),
+    _query: None = Depends(_no_query),
+    _bearer: None = Depends(_require_bearer),
+) -> dict[str, Any]:
+    """Rebind a credential's origin (service) — authorization-sensitive.
+
+    Operator-only, audited via the bridge as its own ``rebind_credential_origin``
+    action. ``confirmation`` must match the NEW origin exactly; the operator
+    sees and types the destination. No secret material in the body or response.
+    """
+    body = await _read_mutation_body(request)
+    confirmation = body.get("confirmation") if isinstance(body, dict) else None
+    if not isinstance(confirmation, str) or not confirmation.strip():
+        raise HTTPException(
+            status_code=403,
+            detail="confirmation is required and must match the new origin",
+        )
+    params = _validate_mutation_body("rebind_origin", body)
+    return _call("rebind_origin", params, allow_mutations=True)
 
 
 async def _read_mutation_body(request: Request) -> dict[str, Any]:

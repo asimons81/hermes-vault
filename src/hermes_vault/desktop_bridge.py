@@ -93,9 +93,11 @@ ALL_METHODS = (
 
 # Mutation methods are dispatched only when the bridge is launched with
 # ``allow_mutations=True`` (the adapter passes ``--allow-mutations`` on the
-# three mutation routes only). Without the flag every mutation method returns
+# mutation routes only). Without the flag every mutation method returns
 # a ``MUTATIONS_DISABLED`` (503-style) error envelope.
-MUTATION_METHODS = ("add", "rotate", "delete")
+# ``update_metadata`` and ``rebind_origin`` were added for issue #90; they
+# follow the identical opt-in gating and audit path as add/rotate/delete.
+MUTATION_METHODS = ("add", "rotate", "delete", "update_metadata", "rebind_origin")
 
 MAX_REQUEST_ID_LENGTH = 64
 # Alphanumeric plus '-'/'_' (spec example uses "r-1"); hard 64-char cap.
@@ -911,6 +913,113 @@ class DesktopBridge:
                 agent_id=OPERATOR_AGENT_ID,
                 service_or_id=service_or_id,
                 new_secret=new_secret,
+                alias=alias,
+                audit_metadata=audit_metadata,
+            )
+        except AuditIntegrityError as exc:
+            raise BridgeError("AUDIT_INTEGRITY", _safe_text(exc)) from None
+        if not result.allowed:
+            raise _mutation_denial(result)
+        return _mutation_result(request_id, result)
+
+    def _method_update_metadata(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._require_mutations()
+        self._reject_renderer_agent_id(params)
+        request_id = self._validate_request_id(params)
+
+        service_or_id = params.get("service_or_id")
+        if not isinstance(service_or_id, str) or not service_or_id.strip():
+            raise ValueError("service_or_id is required")
+        alias = self._optional_alias(params)
+        new_alias = params.get("new_alias")
+        if new_alias is not None and (not isinstance(new_alias, str) or not new_alias.strip()):
+            raise ValueError("new_alias must be a non-empty string when provided")
+        tags = params.get("tags")
+        if tags is not None and not isinstance(tags, list):
+            raise ValueError("tags must be a list of strings")
+        if tags is not None and not all(isinstance(tag, str) and tag for tag in tags):
+            raise ValueError("tags must be a list of non-empty strings")
+        notes = params.get("notes")
+        if notes is not None and not isinstance(notes, str):
+            raise ValueError("notes must be a string")
+        if new_alias is None and tags is None and notes is None:
+            raise ValueError("at least one of new_alias, tags, notes is required")
+
+        ctx = self._wctx(params.get("profile"))
+        audit_metadata = {"request_id": request_id} if request_id is not None else None
+        try:
+            result = ctx.broker.update_credential_metadata(
+                agent_id=OPERATOR_AGENT_ID,
+                service_or_id=service_or_id,
+                alias=new_alias,
+                tags=tags,
+                notes=notes,
+                resolution_alias=alias,
+                audit_metadata=audit_metadata,
+            )
+        except AuditIntegrityError as exc:
+            raise BridgeError("AUDIT_INTEGRITY", _safe_text(exc)) from None
+        if not result.allowed:
+            raise _mutation_denial(result)
+        return _mutation_result(request_id, result)
+
+    def _method_rebind_origin(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._require_mutations()
+        self._reject_renderer_agent_id(params)
+        request_id = self._validate_request_id(params)
+
+        service_or_id = params.get("service_or_id")
+        if not isinstance(service_or_id, str) or not service_or_id.strip():
+            raise ValueError("service_or_id is required")
+        new_service = params.get("new_service")
+        if not isinstance(new_service, str) or not new_service.strip():
+            raise ValueError("new_service is required")
+        confirmation = params.get("confirmation")
+        if not isinstance(confirmation, str) or not confirmation.strip():
+            raise BridgeError(
+                "CONFIRMATION_MISMATCH",
+                "confirmation is required and must match the target credential",
+            )
+        alias = self._optional_alias(params)
+
+        ctx = self._wctx(params.get("profile"))
+
+        # Resolve the target BEFORE any write (read-only) so the request can
+        # fail closed on unknown/ambiguous targets and so the old→new origin
+        # pair can be validated before any mutation happens.
+        try:
+            target = ctx.vault.resolve_credential(service_or_id, alias=alias)
+        except KeyError:
+            raise BridgeError(
+                "DENIED", f"credential '{service_or_id}' not found"
+            ) from None
+        except AmbiguousTargetError as exc:
+            raise BridgeError("DENIED", _safe_text(exc)) from None
+
+        # Authorization-boundary confirmation (issue #90): the operator must
+        # type the NEW origin exactly. The credential token (id/service:alias)
+        # already identifies the target in the request body; what a rebind can
+        # get catastrophically wrong is the destination, so that is what is
+        # confirmed. Accepting the old origin would silently no-op-confirm.
+        normalized_new = normalize(new_service)
+        acceptable = {new_service.strip(), new_service.strip().lower(), normalized_new}
+        if confirmation.strip() not in acceptable:
+            raise BridgeError(
+                "CONFIRMATION_MISMATCH",
+                "confirmation must match the new origin exactly (this changes where the credential may be released)",
+            )
+        if confirmation.strip() == target.service:
+            raise BridgeError(
+                "CONFIRMATION_MISMATCH",
+                "new origin must differ from the current origin",
+            )
+
+        audit_metadata = {"request_id": request_id} if request_id is not None else None
+        try:
+            result = ctx.broker.rebind_credential_origin(
+                agent_id=OPERATOR_AGENT_ID,
+                service_or_id=service_or_id,
+                new_service=new_service,
                 alias=alias,
                 audit_metadata=audit_metadata,
             )

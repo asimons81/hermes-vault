@@ -691,6 +691,44 @@ class Broker:
             audit_metadata=audit_metadata,
         )
 
+    def update_credential_metadata(
+        self,
+        agent_id: str,
+        service_or_id: str,
+        alias: str | None = None,
+        tags: list[str] | None = None,
+        notes: str | None = None,
+        resolution_alias: str | None = None,
+        audit_metadata: dict | None = None,
+    ) -> MutationResult:
+        """Edit non-secret metadata through the centralized mutation path."""
+        return self._mutations.update_credential_metadata(
+            agent_id=agent_id,
+            service_or_id=service_or_id,
+            alias=alias,
+            tags=tags,
+            notes=notes,
+            resolution_alias=resolution_alias,
+            audit_metadata=audit_metadata,
+        )
+
+    def rebind_credential_origin(
+        self,
+        agent_id: str,
+        service_or_id: str,
+        new_service: str,
+        alias: str | None = None,
+        audit_metadata: dict | None = None,
+    ) -> MutationResult:
+        """Rebind a credential's origin through the centralized mutation path."""
+        return self._mutations.rebind_credential_origin(
+            agent_id=agent_id,
+            service_or_id=service_or_id,
+            new_service=new_service,
+            alias=alias,
+            audit_metadata=audit_metadata,
+        )
+
     def delete_credential(
         self,
         agent_id: str,
