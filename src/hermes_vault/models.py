@@ -158,6 +158,12 @@ class ServiceAction(str, Enum):
     add_credential = "add_credential"
     rotate = "rotate"
     delete = "delete"
+    # Issue #90: non-secret metadata editing and origin rebinding are distinct
+    # audited mutations. ``update_metadata`` edits alias/tags/notes without
+    # touching secret material; ``rebind_origin`` moves a credential between
+    # authorization domains (the ``service`` policy boundary).
+    update_metadata = "update_metadata"
+    rebind_origin = "rebind_origin"
     issue_lease = "issue_lease"
     list_leases = "list_leases"
     show_lease = "show_lease"

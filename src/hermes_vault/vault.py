@@ -1055,6 +1055,151 @@ class Vault:
             )
             conn.commit()
 
+    def _reencrypt_with_fields(
+        self,
+        record: CredentialRecord,
+        *,
+        service: str | None = None,
+        alias: str | None = None,
+        tags: list[str] | None = None,
+        notes: str | None = None,
+    ) -> tuple[CredentialRecord, str]:
+        """Decrypt and re-encrypt a row's payload under updated fields.
+
+        The secret never leaves this process: the payload is decrypted with
+        the row's current AAD metadata, the ``CredentialSecret`` JSON is
+        rebuilt with the new tags/notes (the payload duplicates the row's
+        tag/note columns), and re-encrypted under the AAD derived from the
+        *new* authorization fields (``service``/``alias`` are AAD-bound for
+        aesgcm-v2 rows; legacy aesgcm-v1 rows ignore AAD and keep working).
+
+        Returns ``(updated_record, new_encrypted_payload)``. The caller
+        performs the SQL write so field updates and the payload swap commit
+        atomically in one statement.
+        """
+        secret = self.get_secret(record.id)
+        if secret is None:
+            raise KeyError(f"Credential '{record.id}' payload could not be decrypted")
+        new_service = service if service is not None else record.service
+        new_alias = alias if alias is not None else record.alias
+        new_tags = self._normalize_tags(tags) if tags is not None else record.tags
+        new_notes = self._normalize_notes(notes) if notes is not None else record.notes
+        payload = CredentialSecret(
+            secret=secret.secret,
+            metadata=secret.metadata,
+            tags=new_tags,
+            notes=new_notes,
+        ).model_dump_json()
+        encrypted_payload = encrypt_secret_versioned(
+            payload,
+            self.key,
+            record.crypto_version,
+            credential_aad_metadata(
+                record.id,
+                new_service,
+                new_alias,
+                record.credential_type,
+                record.scopes,
+            ),
+        )
+        updated = record.model_copy(update={
+            "service": new_service,
+            "alias": new_alias,
+            "tags": new_tags,
+            "notes": new_notes,
+            "updated_at": utc_now(),
+        })
+        return updated, encrypted_payload
+
+    def update_credential_metadata(
+        self,
+        service_or_id: str,
+        *,
+        alias: str | None = None,
+        tags: list[str] | None = None,
+        notes: str | None = None,
+        resolution_alias: str | None = None,
+    ) -> CredentialRecord:
+        """Edit non-secret metadata (alias, tags, notes) in place.
+
+        The secret material is preserved byte-for-byte semantically: the
+        payload is decrypted and re-encrypted only because the payload JSON
+        duplicates tags/notes and aesgcm-v2 rows bind ``alias`` into the AAD.
+        ``None`` leaves a field unchanged; an empty notes string or empty
+        tags list clears it. Raises ``DuplicateCredentialError`` when the
+        new alias collides with another credential on the same service.
+        """
+        current = self.resolve_credential(service_or_id, alias=resolution_alias)
+        if alias is not None and alias != current.alias:
+            existing = self._find_by_service_alias(current.service, alias)
+            if existing is not None and existing.id != current.id:
+                raise DuplicateCredentialError(
+                    f"Credential for service '{current.service}' and alias '{alias}' already exists."
+                )
+        updated, encrypted_payload = self._reencrypt_with_fields(
+            current, alias=alias, tags=tags, notes=notes
+        )
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE credentials
+                SET alias = ?, tags = ?, notes = ?, encrypted_payload = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    updated.alias,
+                    json.dumps(updated.tags),
+                    updated.notes,
+                    encrypted_payload,
+                    updated.updated_at.isoformat(),
+                    updated.id,
+                ),
+            )
+            conn.commit()
+        return updated
+
+    def rebind_credential_origin(
+        self,
+        service_or_id: str,
+        new_service: str,
+        *,
+        resolution_alias: str | None = None,
+    ) -> CredentialRecord:
+        """Move a credential to a different origin (the ``service`` column).
+
+        Origin is the authorization boundary: policy matches services, so
+        changing it changes where the credential may be released. The row's
+        secret is preserved (decrypt → re-encrypt under the new service's
+        AAD, in-process only). Raises ``DuplicateCredentialError`` when the
+        destination service already has a credential under the same alias.
+        """
+        new_service = normalize(new_service)
+        current = self.resolve_credential(service_or_id, alias=resolution_alias)
+        if new_service == current.service:
+            raise ValueError("new origin matches the current origin")
+        existing = self._find_by_service_alias(new_service, current.alias)
+        if existing is not None and existing.id != current.id:
+            raise DuplicateCredentialError(
+                f"Credential for service '{new_service}' and alias '{current.alias}' already exists."
+            )
+        updated, encrypted_payload = self._reencrypt_with_fields(current, service=new_service)
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE credentials
+                SET service = ?, encrypted_payload = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    updated.service,
+                    encrypted_payload,
+                    updated.updated_at.isoformat(),
+                    updated.id,
+                ),
+            )
+            conn.commit()
+        return updated
+
     def _row_to_record(self, row: sqlite3.Row) -> CredentialRecord:
         payload = dict(row)
         payload["scopes"] = json.loads(payload["scopes"])

@@ -234,6 +234,200 @@ class VaultMutations:
                 metadata={},
             )
 
+    def update_credential_metadata(
+        self,
+        agent_id: str,
+        service_or_id: str,
+        alias: str | None = None,
+        tags: list[str] | None = None,
+        notes: str | None = None,
+        resolution_alias: str | None = None,
+        audit_metadata: dict | None = None,
+    ) -> MutationResult:
+        """Edit non-secret credential metadata (alias, tags, notes).
+
+        Issue #90. The stored secret is never exposed and never replaced:
+        the vault layer re-encrypts the existing payload in-process because
+        the payload JSON duplicates tags/notes and aesgcm-v2 rows bind the
+        alias into the AAD. Produces a distinct ``update_credential_metadata``
+        audit action; rolls back to the before-image row if the audit seal
+        fails.
+        """
+        if alias is None and tags is None and notes is None:
+            return self._record_mutation(
+                agent_id, normalize(service_or_id), "update_credential_metadata",
+                False, "no metadata fields to update",
+                audit_metadata=audit_metadata,
+            )
+        try:
+            current = self.vault.resolve_credential(service_or_id, alias=resolution_alias)
+        except KeyError:
+            return self._record_mutation(
+                agent_id,
+                normalize(service_or_id),
+                "update_credential_metadata",
+                False,
+                f"credential '{service_or_id}' not found",
+                audit_metadata=audit_metadata,
+            )
+
+        service = current.service
+
+        if not self._is_operator(agent_id):
+            svc_ok, svc_reason = self._check_service_action(
+                agent_id, service, ServiceAction.update_metadata
+            )
+            if not svc_ok:
+                return self._record_mutation(
+                    agent_id, service, "update_credential_metadata", False, svc_reason,
+                    audit_metadata=audit_metadata,
+                )
+
+        try:
+            updated = self.vault.update_credential_metadata(
+                service_or_id,
+                alias=alias,
+                tags=tags,
+                notes=notes,
+                resolution_alias=resolution_alias,
+            )
+        except Exception as exc:
+            return self._record_mutation(
+                agent_id, service, "update_credential_metadata", False, str(exc),
+                audit_metadata=audit_metadata,
+            )
+
+        try:
+            return self._record_mutation(
+                agent_id,
+                service,
+                "update_credential_metadata",
+                True,
+                f"updated metadata for credential '{updated.id}' (service '{service}', alias '{updated.alias}')",
+                record=updated,
+                before_image=current,
+                audit_metadata=audit_metadata,
+            )
+        except AuditRollbackError as exc:
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="update_credential_metadata",
+                reason=f"audit integrity: {exc}. ROLLBACK FAILED; the prior credential may be lost. Restore from a trusted backup.",
+                record=None,
+                metadata={},
+            )
+        except AuditIntegrityError as exc:
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="update_credential_metadata",
+                reason=f"audit integrity: {exc}. Run `hermes-vault audit-verify` to inspect the chain; the metadata change was rolled back.",
+                record=None,
+                metadata={},
+            )
+
+    def rebind_credential_origin(
+        self,
+        agent_id: str,
+        service_or_id: str,
+        new_service: str,
+        alias: str | None = None,
+        audit_metadata: dict | None = None,
+    ) -> MutationResult:
+        """Move a credential to a different origin (service).
+
+        Issue #90. Origin (the ``service`` column) is the authorization
+        boundary — policy matches services, so rebinding changes where the
+        credential may be released. This is deliberately its own mutation,
+        not a metadata edit: distinct audit action
+        (``rebind_credential_origin``), confirmation-checked at the bridge
+        layer, and the stored secret is preserved via in-process decrypt →
+        re-encrypt under the new origin's AAD.
+        """
+        try:
+            current = self.vault.resolve_credential(service_or_id, alias=alias)
+        except KeyError:
+            return self._record_mutation(
+                agent_id,
+                normalize(service_or_id),
+                "rebind_credential_origin",
+                False,
+                f"credential '{service_or_id}' not found",
+                audit_metadata=audit_metadata,
+            )
+
+        old_service = current.service
+        new_service_normalized = normalize(new_service)
+
+        if not self._is_operator(agent_id):
+            # Authorization-boundary change: the agent must be permitted on
+            # BOTH the old and the new origin.
+            old_ok, old_reason = self._check_service_action(
+                agent_id, old_service, ServiceAction.rebind_origin
+            )
+            if not old_ok:
+                return self._record_mutation(
+                    agent_id, old_service, "rebind_credential_origin", False, old_reason,
+                    audit_metadata=audit_metadata,
+                )
+            new_ok, new_reason = self._check_service_action(
+                agent_id, new_service_normalized, ServiceAction.rebind_origin
+            )
+            if not new_ok:
+                return self._record_mutation(
+                    agent_id, old_service, "rebind_credential_origin", False, new_reason,
+                    audit_metadata=audit_metadata,
+                )
+
+        try:
+            updated = self.vault.rebind_credential_origin(
+                service_or_id, new_service, resolution_alias=alias
+            )
+        except Exception as exc:
+            return self._record_mutation(
+                agent_id, old_service, "rebind_credential_origin", False, str(exc),
+                audit_metadata=audit_metadata,
+            )
+
+        try:
+            return self._record_mutation(
+                agent_id,
+                old_service,
+                "rebind_credential_origin",
+                True,
+                f"rebound credential '{updated.id}' origin: '{old_service}' -> '{updated.service}' (alias '{updated.alias}')",
+                record=updated,
+                before_image=current,
+                audit_metadata={
+                    **(audit_metadata or {}),
+                    "old_service": old_service,
+                    "new_service": updated.service,
+                },
+            )
+        except AuditRollbackError as exc:
+            return MutationResult(
+                allowed=False,
+                service=old_service,
+                agent_id=agent_id,
+                action="rebind_credential_origin",
+                reason=f"audit integrity: {exc}. ROLLBACK FAILED; the prior credential may be lost. Restore from a trusted backup.",
+                record=None,
+                metadata={},
+            )
+        except AuditIntegrityError as exc:
+            return MutationResult(
+                allowed=False,
+                service=old_service,
+                agent_id=agent_id,
+                action="rebind_credential_origin",
+                reason=f"audit integrity: {exc}. Run `hermes-vault audit-verify` to inspect the chain; the rebind was rolled back.",
+                record=None,
+                metadata={},
+            )
+
     def delete_credential(
         self,
         agent_id: str,
